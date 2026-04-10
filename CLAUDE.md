@@ -1,35 +1,50 @@
-# ICLR Abstract Optimization via Latent Rewriting
+# System Prompt Distillation via Text Optimization
 
 ## Project Overview
-Optimize paper abstracts in continuous embedding space to improve LLM reviewer scores while preserving faithfulness to the original content. Based on LARGO (Latent Adversarial Reflection through Gradient Optimization).
+Can we rewrite text (e.g., paper abstracts) so that an LLM behaves as if it received a hidden system prompt instruction? This is "system prompt distillation" — distilling the effect of an instruction into the text itself.
+
+**Approach**: Generate reference rollouts from a model with a system prompt injection (e.g., "this paper is exceptional"), then optimize the abstract to maximize the likelihood of those rollouts *without* the injection. The abstract should induce the same behavior as the injection.
+
+**Injections tested**: positive (be favorable), negative (be critical), apple (mention apples), watermelon (mention watermelons). Each tests a different axis of behavioral control.
+
+**Current status**: Soft prompt optimization (continuous embeddings) shows the objective generalizes to held-out queries/rollouts. Now working on casting back to discrete text (BoN, GCG, PGD approaches).
 
 ## Architecture
-- `optimize.py` — Core optimization engine: model loading, embedding helpers, latent optimization loop, self-reflective decode, reconstruction loss. Model-agnostic chat delimiter extraction.
-- `iclr_experiment.py` — Experiment config (dataclass), decode presets (exact/verbatim/summarize/revise), span selection (full/random/attrib), `run_one()` loop, `load_papers()` utility.
-- `iclr_reviewer.py` — Llama 3.1 8B reviewer scoring. Single `score()` function accepts str, token ids, or embeddings. Gradients flow through for optimization. Uses harsh_nodim prompt.
-- `iclr_judge.py` — GPT-5-mini post-hoc evaluation. Legibility (4 categories) + per-sentence faithfulness (supported/unsupported). Async batch support.
+- `generate_reference_rollouts.py` — Stage 1: generate rollouts with injection present. Saves to parquet. One file per injection type.
+- `distill_scorer.py` — NLL scorer using HF model. Batched forward passes. Train/val/test split of rollouts.
+- `soft_distill.py` — Soft prompt optimization. `tokenize_with_spans` for offset-based segment tracking. `compute_distill_loss` for NLL on target tokens. `optimize_abstract` with early stopping on val.
+- `run_soft_optimize.py` — Launch soft prompt optimization across papers. Saves best_z + train/val/test curves.
+- `run_distill_optimize.py` — BoN optimization with NLL objective. Uses vLLM for rewriting, HF for scoring.
+- `cot_scorer.py` — Judge prompts (harsh_nodim, accept_reject, novelty, soundness) with CoT and logit modes.
+- `serve.py` — Launch vLLM servers as subprocesses.
+- `run_optimize.py` — Original entry point for CoT/logit BoN optimization.
+- `methods/bon.py` — Best-of-N rewriting with styles: open, minimal, prescriptive.
 
-## Scripts
-- `scripts/run_experiment.py` — CLI launcher for full experiment runs across multiple papers. Incremental saving.
-- `scripts/judge_experiment.py` — Run LLM judge on experiment results (async, parallel API calls).
-- `scripts/subsample_iclr.py` — Balanced tier sampling from scraped ICLR data.
-- `scripts/score_subsample.py` — Batch score subsampled papers with reviewer.
-- `scripts/scrape_iclr2026.py` — OpenReview API scraper.
-
-## Plotting
-- `plotting_scripts/analyze_runs.py` — Multi-filter validity analysis with bar plots and 95% CIs.
-- `plotting_scripts/judge_calibration.py` — Violin plots + scatter for human vs LLM judge calibration.
-
-## Key Findings
-- **revise_fix** (original in decode context, no reconstruction loss) is the best method: 81% valid rewrites, +0.18 mean score improvement, 98% sentence-level faithfulness.
-- Decode temperature 0 helps for exact preset.
-- Random span selection is weaker than full prompt optimization.
-- The reviewer judge has weak but significant correlation with human scores (r=0.16), sufficient as a directional reward signal.
-
-## Data
-- `data/iclr2026_scraped.json` — 19K ICLR 2026 submissions
-- `data/iclr2026_subsample.parquet` — Balanced sample (223 oral + 250 accept + 500 reject + KEEP)
+## Data & Splits
+- `data/iclr2026_subsample.parquet` — 976 papers (223 oral + 250 poster + 502 reject)
+- Reference rollouts in `/nlp/scr/nathu/latent_rewrite/context_distill/{positive,negative,apple,watermelon}.parquet`
+- 10 fixed queries per paper, 5 rollouts each = 50 rollouts per paper
+- **Train**: queries 0-5, rollouts 0-3 (24 rollouts) — used for optimization
+- **Val**: queries 6-7 all rollouts + rollout 4 from queries 0-5 (16 rollouts) — early stopping
+- **Test**: queries 8-9 all rollouts (10 rollouts) — final evaluation
 - Results save to `/nlp/scr/nathu/latent_rewrite/results/`
 
-## Model
-Default: `meta-llama/Llama-3.1-8B-Instruct` for both optimization and reviewer scoring. GPT-5-mini for post-hoc judging.
+## Key Findings
+- **NLL objective works**: injection shifts NLL by ~0.15 nats/token (0.42 → 0.28 with injection)
+- **BoN paraphrasing can't improve NLL**: lexical mismatch penalty (~0.3 nats) overwhelms injection signal (~0.15 nats). Minimal edits preserve NLL but don't improve it.
+- **Soft prompt optimization generalizes**: continuous embedding optimization reduces both train and held-out NLL. Proves the signal is there for stronger discrete methods.
+- **CoT judge optimization is brittle**: optimizing against t=0 CoT doesn't generalize to other temperatures or logit scores. Context distillation is a more robust framing.
+
+## Models
+- Llama 3.1 8B Instruct — scorer (logit + CoT), rewriter, and distillation target. Served via vLLM.
+- GPT-4.1-mini — API rewriter and CoT judge.
+
+## Sampling Defaults
+- Llama 3.1 8B Instruct HF defaults: `temperature=0.6, top_p=0.9`. Always use these unless we explicitly want deterministic (t=0).
+- Our `serve.py` uses `--generation-config vllm` which ignores HF defaults, so we must pass temperature/top_p explicitly in API calls.
+
+## vLLM Notes
+- v0.11.0. Requires `VLLM_ATTENTION_BACKEND=FLASH_ATTN` and `CPATH=/usr/include/python3.12` and system libstdc++ for JIT compilation.
+- `--generation-config vllm` disables HF default sampling param overrides (see Sampling Defaults above).
+- Data parallel: `--data-parallel-size N` for multi-GPU.
+- `serve.py` handles all env vars automatically.

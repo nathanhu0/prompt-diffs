@@ -1,0 +1,38 @@
+run_name: bon_llama_100
+
+scorers:
+  llama_harsh_cot:
+    model: meta-llama/Llama-3.1-8B-Instruct
+    endpoint: launch
+    gpu: [0, 1, 2, 3]
+    judge: harsh_nodim
+    cot: true
+    k_select: 20
+    k_eval: 10
+    temperature: 0.6
+    top_p: 0.9
+
+  llama_harsh_logit:
+    model: meta-llama/Llama-3.1-8B-Instruct
+    endpoint: existing
+    judge: harsh_nodim
+    cot: false
+
+optimize:
+  target: [llama_harsh_cot]
+  aggregate: mean
+
+rewriter:
+  model: meta-llama/Llama-3.1-8B-Instruct
+  endpoint: existing
+
+data:
+  path: data/iclr2026_subsample.parquet
+  limit: 100
+
+method:
+  name: bon
+  n: 64
+  style: open
+  goal: diverse
+  rewrite_temperature: 1.0
