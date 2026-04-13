@@ -85,6 +85,8 @@ def main():
     parser.add_argument("config", help="Path to YAML config file")
     parser.add_argument("--limit", type=int, default=None,
                         help="Override: max number of papers")
+    parser.add_argument("--rollouts", default=None,
+                        help="Override: path to rollouts parquet")
     parser.add_argument("--output", default=None,
                         help="Override: output path")
     parser.add_argument("--gpu", type=int, default=0,
@@ -94,6 +96,8 @@ def main():
     config = load_config(args.config)
     if args.limit is not None:
         config["run"]["limit"] = args.limit
+    if args.rollouts is not None:
+        config["objective"]["rollouts"] = args.rollouts
     if args.output is not None:
         config["run"]["output"] = args.output
 
