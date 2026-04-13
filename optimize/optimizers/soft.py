@@ -6,12 +6,13 @@ class SoftPromptOptimizer:
     def __init__(self, embed_matrix, n_learnable, frozen_embeds=None,
                  original_ids=None, init="original",
                  lr=1e-3, num_steps=100, weight_decay=0.0,
-                 log_every=5):
+                 mini_batch_size=None, log_every=5):
         self.embed_matrix = embed_matrix
         self.frozen_embeds = frozen_embeds
         self.lr = lr
         self.num_steps = num_steps
         self.weight_decay = weight_decay
+        self.mini_batch_size = mini_batch_size
         self.log_every = log_every
 
         device = embed_matrix.device
@@ -46,7 +47,8 @@ class SoftPromptOptimizer:
 
         for step in range(self.num_steps):
             optimizer.zero_grad()
-            train_loss = objective.loss(self.get_embeds, "train", backward=True)
+            train_loss = objective.loss(self.get_embeds, "train", backward=True,
+                                       mini_batch_size=self.mini_batch_size)
             torch.nn.utils.clip_grad_norm_([self.z], max_norm=1.0)
             optimizer.step()
 

@@ -1,5 +1,8 @@
 """Runner: loads data, wires objective + optimizer, runs optimization."""
 import argparse
+import os
+from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
 import torch
@@ -49,6 +52,7 @@ def build_optimizer(config, embed_matrix, n_learnable, tokenizer,
         "init": opt_cfg.get("init", "original"),
         "lr": float(opt_cfg.get("lr", 1e-3)),
         "num_steps": opt_cfg.get("num_steps", 100),
+        "mini_batch_size": opt_cfg.get("mini_batch_size"),
         "log_every": config["run"].get("log_every", 10),
     }
 
@@ -122,8 +126,20 @@ def main():
 
     all_results = []
 
+    # Build output path
+    out_path = config["run"].get("output")
+    if not out_path:
+        opt_type = config["optimizer"]["type"]
+        # Infer task name from rollouts filename (e.g. "positive.parquet" -> "positive")
+        task = Path(config["objective"]["rollouts"]).stem
+        mode_str = f"suffix_{suffix_length}" if mode == "suffix" else "full"
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+        out_dir = f"/nlp/scr/nathu/latent_rewrite/results/{opt_type}"
+        os.makedirs(out_dir, exist_ok=True)
+        out_path = f"{out_dir}/{task}_{mode_str}_{timestamp}.pt"
+    config["run"]["output"] = out_path
+
     def save():
-        out_path = config["run"]["output"]
         torch.save({"config": config, "results": all_results}, out_path)
 
     for paper_id in tqdm(paper_ids, desc="Papers"):

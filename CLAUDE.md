@@ -35,6 +35,37 @@ Can we rewrite text (e.g., paper abstracts) so that an LLM behaves as if it rece
 - **Soft prompt optimization generalizes**: continuous embedding optimization reduces both train and held-out NLL. Proves the signal is there for stronger discrete methods.
 - **CoT judge optimization is brittle**: optimizing against t=0 CoT doesn't generalize to other temperatures or logit scores. Context distillation is a more robust framing.
 
+## optimize/ Framework
+- `optimize/objectives/nll_distill.py` — NLL distillation objective. Supports batched forward passes via `_score_batch` and `mini_batch_size` param on `loss()`.
+- `optimize/objectives/prefill.py` — Fixed prefill objective (inherits NLLDistillObjective).
+- `optimize/optimizers/soft.py` — Soft prompt (continuous embedding) optimizer.
+- `optimize/optimizers/pgd.py` — PGD optimizer (simplex-projected, entropy constraints).
+- `optimize/optimizers/largo.py` — LARGO optimizer (alternates soft optimization with self-reflective decoding).
+- `optimize/runner.py` — Wires config → objective + optimizer. Handles frozen/learnable split via `target.mode` (full vs suffix).
+- `specs/optimization_framework.md` — Design doc for the framework interfaces.
+- Configs in `configs/` (run configs) and `configs/test/` (throwaway experiments).
+
+## Batch Size Limits (Llama 3.1 8B, bf16)
+Model takes ~16GB. Rollout sequences are ~500-800 tokens each (prefix + abstract + query + rollout).
+
+**48GB GPU (tested on A6000-class, 2026-04-13):**
+| Mode | Max batch | Peak memory |
+|---|---|---|
+| no_grad B=24 | works | 31.0 GB |
+| no_grad B=16 | works | 26.0 GB |
+| no_grad B=8 | works | 21.1 GB |
+| with_grad B=4 | works | 34.2 GB |
+| with_grad B=8 | OOM | - |
+
+**80GB GPU (A100, estimated from above):**
+- ~64GB available after model. ~0.6 GB/rollout no_grad, ~4.5 GB/rollout with_grad.
+- no_grad: all 24 train rollouts in one batch (safe)
+- with_grad: B=12 should fit (~54 GB estimated), B=8 is safe
+
+**Recommended defaults:**
+- 48GB: `mini_batch_size=4` for training, full batch for eval
+- 80GB: `mini_batch_size=8` for training, full batch for eval
+
 ## Models
 - Llama 3.1 8B Instruct — scorer (logit + CoT), rewriter, and distillation target. Served via vLLM.
 - GPT-4.1-mini — API rewriter and CoT judge.

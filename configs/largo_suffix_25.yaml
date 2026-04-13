@@ -1,0 +1,23 @@
+target:
+  mode: suffix
+  suffix_length: 25
+
+objective:
+  type: nll_distill
+  model: meta-llama/Llama-3.1-8B-Instruct
+  rollouts: /nlp/scr/nathu/latent_rewrite/context_distill/positive.parquet
+
+optimizer:
+  type: largo
+  init: random
+  lr: 1e-3
+  num_rounds: 15
+  steps_per_round: 10
+  weight_decay: 0.01
+  mini_batch_size: 4
+  decode_temperature: 1.0
+  decode_samples: 4
+
+run:
+  limit: 100
+  log_every: 10

@@ -144,32 +144,97 @@ class NLLDistillObjective:
         per_token = F.cross_entropy(pred_logits, target_ids, reduction="none")
         return per_token.mean()
 
-    def loss(self, z_or_fn, split="train", backward=False):
+    def _score_batch(self, z, rollouts):
+        """Score a batch of rollouts in one forward pass. Returns (B,) losses."""
+        B = len(rollouts)
+        seqs = []
+        labels_list = []
+
+        for prefix_ids, slot_ids, suffix_ids, target_start in rollouts:
+            prefix = torch.tensor(prefix_ids, device=self.device)
+            suffix = torch.tensor(suffix_ids, device=self.device)
+
+            prefix_embeds = self.embed_matrix[prefix]
+            suffix_embeds = self.embed_matrix[suffix]
+            embeds = torch.cat([prefix_embeds, z, suffix_embeds], dim=0)
+            seqs.append(embeds)
+
+            # Build label ids: -100 everywhere except target positions
+            seq_len = embeds.shape[0]
+            label = torch.full((seq_len,), -100, device=self.device,
+                               dtype=torch.long)
+            shift = z.shape[0] - self.n_slot
+            adjusted_target = target_start + shift
+            suffix_offset = target_start - len(prefix_ids) - self.n_slot
+            target_ids = suffix[suffix_offset:]
+            label[adjusted_target:adjusted_target + len(target_ids)] = target_ids
+            labels_list.append(label)
+
+        # Pad to max length
+        max_len = max(s.shape[0] for s in seqs)
+        dim = z.shape[1]
+        padded = torch.zeros(B, max_len, dim, device=self.device,
+                             dtype=z.dtype)
+        attn_mask = torch.zeros(B, max_len, device=self.device,
+                                dtype=torch.long)
+        labels = torch.full((B, max_len), -100, device=self.device,
+                            dtype=torch.long)
+        for i, (seq, lab) in enumerate(zip(seqs, labels_list)):
+            L = seq.shape[0]
+            padded[i, :L] = seq
+            attn_mask[i, :L] = 1
+            labels[i, :L] = lab
+
+        # One forward pass
+        logits = self.model(inputs_embeds=padded,
+                            attention_mask=attn_mask).logits
+
+        # Shift: logits[i-1] predicts token[i]
+        shift_logits = logits[:, :-1].contiguous()
+        shift_labels = labels[:, 1:].contiguous()
+
+        # Per-token loss, then average per row over target tokens only
+        per_token = F.cross_entropy(
+            shift_logits.view(-1, shift_logits.shape[-1]),
+            shift_labels.view(-1),
+            reduction="none",
+        ).view(B, -1)
+
+        target_mask = (shift_labels != -100).float()
+        per_row = (per_token * target_mask).sum(dim=1) / target_mask.sum(dim=1)
+        return per_row
+
+    def loss(self, z_or_fn, split="train", backward=False,
+             mini_batch_size=None):
         """NLL loss averaged over rollouts in the split.
 
         Args:
             z_or_fn: either a (n_slot, dim) tensor, or a callable that returns
                 one. Callable is needed for backward=True so the computation
-                graph is fresh per rollout.
-            backward: if True, call backward per rollout (gradient accumulation)
-                and return a detached float. Avoids OOM from stacking graphs.
+                graph is fresh per mini-batch.
+            backward: if True, call backward per mini-batch (gradient
+                accumulation) and return a detached float.
                 If False, return a differentiable scalar.
+            mini_batch_size: if set, process rollouts in chunks of this size.
+                If None, process all rollouts in one batch.
         """
         data = self._data[split]
         n = len(data)
+        bs = mini_batch_size or n
+
         if backward:
             total = 0.0
-            for prefix_ids, slot_ids, suffix_ids, target_start in data:
+            for i in range(0, n, bs):
+                chunk = data[i:i + bs]
                 z = z_or_fn() if callable(z_or_fn) else z_or_fn
-                loss_i = self._score_single(z, prefix_ids, suffix_ids,
-                                            target_start)
-                (loss_i / n).backward()
-                total += loss_i.item()
+                losses = self._score_batch(z, chunk)
+                (losses.sum() / n).backward()
+                total += losses.sum().item()
             return total / n
         else:
             z = z_or_fn() if callable(z_or_fn) else z_or_fn
-            losses = []
-            for prefix_ids, slot_ids, suffix_ids, target_start in data:
-                losses.append(self._score_single(z, prefix_ids, suffix_ids,
-                                                 target_start))
-            return torch.stack(losses).mean()
+            all_losses = []
+            for i in range(0, n, bs):
+                chunk = data[i:i + bs]
+                all_losses.append(self._score_batch(z, chunk))
+            return torch.cat(all_losses).mean()

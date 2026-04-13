@@ -37,7 +37,7 @@ class LargoOptimizer:
     def __init__(self, embed_matrix, n_learnable, model, tokenizer,
                  frozen_embeds=None, original_ids=None, init="original",
                  lr=1e-3, num_steps=None, num_rounds=15, steps_per_round=20,
-                 weight_decay=0.01,
+                 weight_decay=0.01, mini_batch_size=None,
                  decode_temperature=1.0, decode_samples=1,
                  decode_prefill="Sure, I will summarize the message: ",
                  log_every=5):
@@ -47,6 +47,7 @@ class LargoOptimizer:
         self.tokenizer = tokenizer
         self.n_learnable = n_learnable
         self.lr = lr
+        self.mini_batch_size = mini_batch_size
         self.num_rounds = num_rounds
         self.steps_per_round = steps_per_round
         self.weight_decay = weight_decay
@@ -180,7 +181,8 @@ class LargoOptimizer:
             for step in range(self.steps_per_round):
                 optimizer.zero_grad()
                 train_loss = objective.loss(self.get_embeds, "train",
-                                           backward=True)
+                                           backward=True,
+                                           mini_batch_size=self.mini_batch_size)
                 torch.nn.utils.clip_grad_norm_([self.z], max_norm=1.0)
                 optimizer.step()
 

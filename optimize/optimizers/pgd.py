@@ -194,7 +194,8 @@ class PGDOptimizer:
             optimizer.zero_grad()
 
             # Forward pass — pass get_embeds as callable so graph is fresh per rollout
-            train_loss_val = objective.loss(self.get_embeds, "train", backward=True)
+            train_loss_val = objective.loss(self.get_embeds, "train", backward=True,
+                                           mini_batch_size=self.mini_batch_size)
 
             # Per-token grad stats + clipping
             with torch.no_grad():
