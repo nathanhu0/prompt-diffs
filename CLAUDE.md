@@ -7,7 +7,7 @@ Can we rewrite text (e.g., paper abstracts) so that an LLM behaves as if it rece
 
 **Injections tested**: positive (be favorable), negative (be critical), apple (mention apples), watermelon (mention watermelons). Each tests a different axis of behavioral control.
 
-**Current status**: Soft prompt optimization (continuous embeddings) shows the objective generalizes to held-out queries/rollouts. Now working on casting back to discrete text (BoN, GCG, PGD approaches).
+**Current status**: LARGO optimizer bridges soft→discrete gap via self-reflective decoding. Running large-scale experiments (100 papers × 4 injection types) with suffix mode. PGD also implemented but struggles with the soft→hard gap. Next: behavioral eval of optimized suffixes (sampling + judge scoring).
 
 ## Architecture
 - `generate_reference_rollouts.py` — Stage 1: generate rollouts with injection present. Saves to parquet. One file per injection type.
@@ -27,7 +27,7 @@ Can we rewrite text (e.g., paper abstracts) so that an LLM behaves as if it rece
 - **Train**: queries 0-5, rollouts 0-3 (24 rollouts) — used for optimization
 - **Val**: queries 6-7 all rollouts + rollout 4 from queries 0-5 (16 rollouts) — early stopping
 - **Test**: queries 8-9 all rollouts (10 rollouts) — final evaluation
-- Results save to `/nlp/scr/nathu/latent_rewrite/results/`
+- Results save to `/nlp/scr/nathu/latent_rewrite/results/{optimizer}/{task}_{mode}_{timestamp}.pt`
 
 ## Key Findings
 - **NLL objective works**: injection shifts NLL by ~0.15 nats/token (0.42 → 0.28 with injection)
@@ -41,9 +41,10 @@ Can we rewrite text (e.g., paper abstracts) so that an LLM behaves as if it rece
 - `optimize/optimizers/soft.py` — Soft prompt (continuous embedding) optimizer.
 - `optimize/optimizers/pgd.py` — PGD optimizer (simplex-projected, entropy constraints).
 - `optimize/optimizers/largo.py` — LARGO optimizer (alternates soft optimization with self-reflective decoding).
-- `optimize/runner.py` — Wires config → objective + optimizer. Handles frozen/learnable split via `target.mode` (full vs suffix).
+- `optimize/runner.py` — Wires config → objective + optimizer. Handles frozen/learnable split via `target.mode` (full vs suffix). CLI overrides: `--rollouts`, `--output`, `--limit`, `--gpu`.
+- `optimize/configs/` — Run configs for the optimize framework. One config per optimizer+mode, `--rollouts` flag swaps injection type.
+- `configs/test/` — Throwaway test configs.
 - `specs/optimization_framework.md` — Design doc for the framework interfaces.
-- Configs in `configs/` (run configs) and `configs/test/` (throwaway experiments).
 
 ## Batch Size Limits (Llama 3.1 8B, bf16)
 Model takes ~16GB. Rollout sequences are ~500-800 tokens each (prefix + abstract + query + rollout).
