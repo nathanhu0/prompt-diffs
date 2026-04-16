@@ -11,11 +11,19 @@ from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 from distill_scorer import _split_rollouts
-from optimize.objectives.nll_distill import NLLDistillObjective
-from optimize.objectives.prefill import PrefillObjective
+from optimize.slot_factories.abstract import (
+    nll_objective_from_abstract,
+    nll_objective_from_abstract_prefill,
+)
+from optimize.objectives.fluency_judge import (
+    FluencyJudgeObjective, DEFAULT_PROMPT_TEMPLATE as FLUENCY_DEFAULT_TEMPLATE,
+)
+from optimize.objectives.decode_fluency import (
+    DecodeFluencyObjective, DEFAULT_DECODE_PREFILL,
+)
 from optimize.optimizers.soft import SoftPromptOptimizer
 from optimize.optimizers.pgd import PGDOptimizer
-from optimize.optimizers.largo import LargoOptimizer
+from optimize.optimizers.largo import LargoOptimizer, LargoConfig
 
 
 OPTIMIZER_CLASSES = {
@@ -37,13 +45,34 @@ def get_embed_matrix(model):
 
 
 def build_optimizer(config, embed_matrix, n_learnable, tokenizer,
-                    frozen_embeds=None, original_ids=None, model=None):
+                    frozen_embeds=None, original_ids=None, model=None,
+                    fluency_objective=None, fluency_weight=0.0,
+                    init_z=None, baselines=None):
     """Build an optimizer from config."""
     opt_cfg = config["optimizer"]
     opt_type = opt_cfg["type"]
     cls = OPTIMIZER_CLASSES[opt_type]
 
-    # Common args
+    if opt_type == "largo":
+        largo_cfg = LargoConfig.from_yaml_block(opt_cfg)
+        if init_z is not None:
+            largo_cfg.init_z = init_z
+        if fluency_objective is not None:
+            largo_cfg.fluency_weight = fluency_weight
+        # Honor a top-level run.log_every only if the optimizer block didn't
+        # set its own.
+        if "log_every" not in opt_cfg:
+            largo_cfg.log_every = config["run"].get(
+                "log_every", largo_cfg.log_every)
+        return cls(
+            embed_matrix=embed_matrix, n_learnable=n_learnable,
+            model=model, tokenizer=tokenizer,
+            config=largo_cfg,
+            frozen_embeds=frozen_embeds, original_ids=original_ids,
+            fluency_objective=fluency_objective, baselines=baselines,
+        )
+
+    # --- soft / pgd: keep the legacy kwargs-based construction ---
     kwargs = {
         "embed_matrix": embed_matrix,
         "n_learnable": n_learnable,
@@ -56,7 +85,6 @@ def build_optimizer(config, embed_matrix, n_learnable, tokenizer,
         "log_every": config["run"].get("log_every", 10),
     }
 
-    # Optimizer-specific args
     if opt_type == "pgd":
         kwargs["tokenizer"] = tokenizer
         for key in ["entropy_factor", "dynamic_entropy", "dynamic_threshold",
@@ -66,13 +94,6 @@ def build_optimizer(config, embed_matrix, n_learnable, tokenizer,
                      "cosine_eta_min_frac"]:
             if key in opt_cfg:
                 kwargs[key] = opt_cfg[key]
-    elif opt_type == "largo":
-        kwargs["model"] = model
-        kwargs["tokenizer"] = tokenizer
-        for key in ["num_rounds", "steps_per_round", "weight_decay",
-                     "decode_temperature", "decode_samples", "decode_prefill"]:
-            if key in opt_cfg:
-                kwargs[key] = opt_cfg[key]
     elif opt_type == "soft":
         if "weight_decay" in opt_cfg:
             kwargs["weight_decay"] = opt_cfg["weight_decay"]
@@ -80,9 +101,38 @@ def build_optimizer(config, embed_matrix, n_learnable, tokenizer,
     return cls(**kwargs)
 
 
+def apply_override(config, override):
+    """Apply a single `key.path=value` override in place.
+
+    Value is parsed via yaml.safe_load so numbers/bools/lists are typed
+    naturally (e.g. "0.1" -> float, "true" -> True). Intermediate keys
+    are created as empty dicts if missing.
+    """
+    if "=" not in override:
+        raise ValueError(f"--set expects key.path=value, got {override!r}")
+    key, _, raw = override.partition("=")
+    value = yaml.safe_load(raw)
+    # YAML 1.1 doesn't parse bare scientific notation (e.g. "5e-4" stays
+    # a string). Coerce such cases to float.
+    if isinstance(value, str):
+        try:
+            value = float(raw)
+        except ValueError:
+            pass
+    keys = key.split(".")
+    d = config
+    for k in keys[:-1]:
+        d = d.setdefault(k, {})
+    d[keys[-1]] = value
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("config", help="Path to YAML config file")
+    parser.add_argument("--set", action="append", default=[], dest="overrides",
+                        help="Override config: key.path=value (repeatable). "
+                             "Value is YAML-parsed. Applied before targeted "
+                             "flags below.")
     parser.add_argument("--limit", type=int, default=None,
                         help="Override: max number of papers")
     parser.add_argument("--rollouts", default=None,
@@ -94,6 +144,8 @@ def main():
     args = parser.parse_args()
 
     config = load_config(args.config)
+    for override in args.overrides:
+        apply_override(config, override)
     if args.limit is not None:
         config["run"]["limit"] = args.limit
     if args.rollouts is not None:
@@ -127,6 +179,10 @@ def main():
     target_cfg = config.get("target", {})
     mode = target_cfg.get("mode", "full")
     suffix_length = target_cfg.get("suffix_length", 25)
+    fluency_cfg = target_cfg.get("fluency")
+    if fluency_cfg and mode not in ("suffix", "overwrite_suffix"):
+        raise ValueError(
+            "target.fluency requires mode=suffix or mode=overwrite_suffix")
 
     all_results = []
 
@@ -136,7 +192,13 @@ def main():
         opt_type = config["optimizer"]["type"]
         # Infer task name from rollouts filename (e.g. "positive.parquet" -> "positive")
         task = Path(config["objective"]["rollouts"]).stem
-        mode_str = f"suffix_{suffix_length}" if mode == "suffix" else "full"
+        if mode == "suffix":
+            mode_str = f"suffix_{suffix_length}"
+        elif mode == "overwrite_suffix":
+            ow = target_cfg["overwrite_length"]
+            mode_str = f"overwrite{ow}_suffix{suffix_length}"
+        else:
+            mode_str = "full"
         timestamp = datetime.now().strftime("%Y%m%d_%H%M")
         out_dir = f"/nlp/scr/nathu/latent_rewrite/results/{opt_type}"
         os.makedirs(out_dir, exist_ok=True)
@@ -156,12 +218,12 @@ def main():
         # Build objective
         obj_type = config["objective"]["type"]
         if obj_type == "nll_distill":
-            objective = NLLDistillObjective(
+            objective = nll_objective_from_abstract(
                 model, tokenizer, title, abstract,
                 {"train": train, "val": val, "test": test},
             )
         elif obj_type == "prefill":
-            objective = PrefillObjective(
+            objective = nll_objective_from_abstract_prefill(
                 model, tokenizer, title, abstract,
                 config["objective"]["prefill"],
             )
@@ -169,25 +231,85 @@ def main():
             raise ValueError(f"Unknown objective type: {obj_type}")
 
         # Compute frozen/learnable split based on mode
+        init_z = None
         if mode == "suffix":
             frozen_embeds = embed_matrix[objective.original_slot_ids]
             n_learnable = suffix_length
+            original_ids = None
+        elif mode == "overwrite_suffix":
+            overwrite_length = target_cfg["overwrite_length"]
+            all_ids = objective.original_slot_ids
+            assert len(all_ids) > overwrite_length, \
+                f"abstract has {len(all_ids)} tokens, need > {overwrite_length}"
+            frozen_embeds = embed_matrix[all_ids[:-overwrite_length]]
+            tail_embeds = embed_matrix[all_ids[-overwrite_length:]]
+            n_learnable = overwrite_length + suffix_length
+            pad = torch.randn(suffix_length, embed_matrix.shape[1],
+                              device=embed_matrix.device,
+                              dtype=embed_matrix.dtype) * embed_matrix.std()
+            init_z = torch.cat([tail_embeds, pad], dim=0)
             original_ids = None
         else:
             frozen_embeds = None
             n_learnable = objective.n_slot
             original_ids = objective.original_slot_ids
 
-        # Baseline: original abstract, no optimization
+        # Baseline: original abstract, no optimization (all splits)
         with torch.no_grad():
             z_orig = embed_matrix[objective.original_slot_ids]
+            train_orig = objective.loss(z_orig, "train").item()
+            val_orig = objective.loss(z_orig, "val").item()
             test_orig = objective.loss(z_orig, "test").item()
+        baselines = {"train": train_orig, "val": val_orig, "test": test_orig}
+        print(f"  baseline: train={train_orig:.4f} val={val_orig:.4f} "
+              f"test={test_orig:.4f}")
+
+        # Build fluency objective
+        fluency_objective = None
+        fluency_weight = 0.0
+        if fluency_cfg:
+            f_type = fluency_cfg.get("type", "judge")
+            if f_type == "judge":
+                fluency_objective = FluencyJudgeObjective(
+                    model, tokenizer, abstract,
+                    prompt_template=fluency_cfg.get(
+                        "prompt_template", FLUENCY_DEFAULT_TEMPLATE),
+                    target_tokens=fluency_cfg.get("target_tokens"),
+                )
+            elif f_type == "decode_nll":
+                ref_cfg = fluency_cfg.get("reference", "abstract_tail")
+                if ref_cfg == "abstract_tail":
+                    if mode != "overwrite_suffix":
+                        raise ValueError(
+                            "reference=abstract_tail requires "
+                            "mode=overwrite_suffix")
+                    reference_ids = objective.original_slot_ids[
+                        -target_cfg["overwrite_length"]:].clone()
+                elif ref_cfg == "abstract":
+                    reference_ids = objective.original_slot_ids.clone()
+                else:
+                    # Literal string — encode it
+                    reference_ids = torch.tensor(
+                        tokenizer.encode(ref_cfg, add_special_tokens=False),
+                        device=embed_matrix.device, dtype=torch.long)
+                fluency_objective = DecodeFluencyObjective(
+                    model, tokenizer, reference_ids,
+                    decode_prefill=fluency_cfg.get(
+                        "decode_prefill", DEFAULT_DECODE_PREFILL),
+                )
+            else:
+                raise ValueError(f"Unknown fluency type: {f_type}")
+            fluency_weight = float(fluency_cfg.get("weight", 0.0))
 
         # Build optimizer and run
         optimizer = build_optimizer(
             config, embed_matrix, n_learnable, tokenizer,
             frozen_embeds=frozen_embeds, original_ids=original_ids,
             model=model,
+            fluency_objective=fluency_objective,
+            fluency_weight=fluency_weight,
+            init_z=init_z,
+            baselines=baselines,
         )
         result = optimizer.run(objective)
 
@@ -198,6 +320,8 @@ def main():
             "abstract": abstract,
             "tier": tier,
             "mode": mode,
+            "train_orig": train_orig,
+            "val_orig": val_orig,
             "test_orig": test_orig,
             "test_delta": result["test_opt"] - test_orig,
         })
