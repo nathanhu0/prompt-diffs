@@ -160,6 +160,7 @@ class LargoOptimizer:
         self.tokenizer = tokenizer
         self.fluency_objective = fluency_objective
         self.baselines = baselines or {}
+        self.original_ids_per_slot = original_ids_per_slot
 
         if frozen_embeds is not None:
             assert self.n_slots == 1, \
@@ -376,8 +377,23 @@ class LargoOptimizer:
         best_texts_per_slot: List[str] = [""] * self.n_slots
         best_ids_per_slot: List[List[int]] = [[] for _ in range(self.n_slots)]
         best_round = 0
-        # Buffer entries: (val, ids_per_slot, texts_per_slot)
+
+        # --- Evolutionary buffer ---
+        # Each entry: (val, ids_per_slot, texts_per_slot), sorted by val asc.
+        # Seeded with the baseline (original slot init ids at baseline NLL)
+        # so ε-greedy selection always has something to pick from.
         buffer: List = []
+        baseline_val = self.baselines.get("val")
+        if baseline_val is not None and self.original_ids_per_slot is not None:
+            seed_ids = [ids.tolist() if hasattr(ids, "tolist") else list(ids)
+                        for ids in self.original_ids_per_slot]
+            seed_texts = [self.tokenizer.decode(ids, skip_special_tokens=True)
+                          for ids in seed_ids]
+            buffer.append((baseline_val, seed_ids, seed_texts))
+
+        def _key(ids_per_slot):
+            return tuple(tuple(ids) for ids in ids_per_slot)
+        seen = {_key(e[1]) for e in buffer}
 
         for rnd in range(self.config.num_rounds):
             rnd_start = time.monotonic()
@@ -486,25 +502,52 @@ class LargoOptimizer:
                 best_round = rnd
                 print(f"  * new best (round {rnd})")
 
-            # Update buffer with this round's best decode (elitist top-K,
-            # superseded by task #3's ε-greedy selection — not active yet).
-            if self.config.buffer_size > 0:
-                import bisect
+            # Insert: round's best (index 0, sorted asc) bypasses the
+            # baseline filter so every round contributes something the
+            # selector can reach. Other candidates must beat baseline.
+            # Dedup applies to all. Sort+truncate keeps good entries.
+            import bisect
+            for i, (cand_score, cand_ids, cand_texts) in enumerate(candidates):
+                if (i > 0 and baseline_val is not None
+                        and cand_score >= baseline_val):
+                    continue
+                k = _key(cand_ids)
+                if k in seen:
+                    continue
+                seen.add(k)
                 bisect.insort(
                     buffer,
-                    (hard_val, best_ids, best_texts),
+                    (cand_score, cand_ids, cand_texts),
                     key=lambda x: x[0],
                 )
-                buffer[:] = buffer[:self.config.buffer_size]
+            buffer[:] = buffer[:self.config.buffer_size]
+            seen = {_key(e[1]) for e in buffer}
 
             if on_round is not None:
                 joined = (" || ".join(best_texts_per_slot)
                           if self.n_slots > 1 else best_texts_per_slot[0])
                 on_round(rnd, history, joined, best_val)
 
-            # --- Phase 3: Re-embed decoded text as new z (per slot) ---
+            # --- Phase 3: ε-greedy select from buffer, then reembed ---
             phase3_start = time.monotonic()
-            self.z_list = self._reembed_list(best_ids)
+            if buffer:
+                if random.random() < self.config.epsilon:
+                    topk = min(self.config.top_k, len(buffer))
+                    chosen = random.choice(buffer[:topk])
+                    sel_reason = f"explore top-{topk}"
+                else:
+                    chosen = buffer[0]
+                    sel_reason = "greedy"
+                chosen_val, chosen_ids, _ = chosen
+                print(f"  [select {sel_reason}: val={chosen_val:.4f} "
+                      f"(buffer size {len(buffer)})]")
+                self.z_list = self._reembed_list(chosen_ids)
+            else:
+                # No buffer entry passed the baseline filter. Fall back to
+                # this round's best candidate so progress doesn't stall.
+                print(f"  [buffer empty: fallback reembed from this "
+                      f"round's best]")
+                self.z_list = self._reembed_list(best_ids)
             phase3_time = time.monotonic() - phase3_start
 
             total = time.monotonic() - rnd_start

@@ -34,7 +34,7 @@ DEFAULT_SYSPROMPT_PROBES = [
     {"template": f"What does this say?\n\n{SLOT_SENTINEL}",
      "prefill": "It says: "},
     {"template": f"Echo the following back to me word for word:\n\n{SLOT_SENTINEL}",
-     "prefill": "Echo: "},
+     "prefill": "Echoing word for word: "},
     {"template": f"{SLOT_SENTINEL}\n\nPlease paraphrase the above.",
      "prefill": "Paraphrased: "},
     {"template": f"{SLOT_SENTINEL}\n\nWhat was just said?",
@@ -142,8 +142,13 @@ def load_splits(task_cfg: SysPromptTaskConfig):
 
 
 def build_init_z(task_cfg: SysPromptTaskConfig, embed_matrix, tokenizer,
-                 device: str):
-    """Embed task_cfg.sysprompt_init tokens and randn-pad up to n_learnable."""
+                 device: str, pad_mode: str = "randn"):
+    """Embed task_cfg.sysprompt_init tokens and pad up to n_learnable.
+
+    pad_mode controls the padding fill — "randn" (scaled by embed.std()),
+    "zeros", or "force" (treated as zeros at init time; its semantics only
+    apply at decode time). Matches the optimizer's _reembed_list semantics
+    so phase-1 init and seed-reembed use consistent padding."""
     if task_cfg.sysprompt_init is None:
         return None
     init_ids = tokenizer.encode(task_cfg.sysprompt_init,
@@ -151,9 +156,13 @@ def build_init_z(task_cfg: SysPromptTaskConfig, embed_matrix, tokenizer,
     init_embeds = embed_matrix[torch.tensor(init_ids, device=device)]
     n_pad = task_cfg.n_learnable - len(init_ids)
     if n_pad > 0:
-        pad = (torch.randn(n_pad, embed_matrix.shape[1],
-                           device=device, dtype=embed_matrix.dtype)
-               * embed_matrix.std())
+        if pad_mode == "randn":
+            pad = (torch.randn(n_pad, embed_matrix.shape[1],
+                               device=device, dtype=embed_matrix.dtype)
+                   * embed_matrix.std())
+        else:  # "zeros" | "force"
+            pad = torch.zeros(n_pad, embed_matrix.shape[1],
+                              device=device, dtype=embed_matrix.dtype)
         init_embeds = torch.cat([init_embeds, pad], dim=0)
     return init_embeds[:task_cfg.n_learnable]
 
@@ -245,8 +254,25 @@ def main():
         print(f"{'='*60}")
 
         # Build init_z per-restart so randn padding varies with the seed.
+        # pad_mode matches the optimizer's so phase-1 init and seed-reembed
+        # use the same padding strategy.
         largo_cfg.init_z = build_init_z(task_cfg, embed_matrix, tokenizer,
-                                        device)
+                                        device, pad_mode=largo_cfg.pad_mode)
+
+        # Align the buffer seed with sysprompt_init: when the user specifies
+        # an init text, the seed's token ids become those tokens (padded to
+        # n_learnable). Otherwise, fall back to the template's placeholders.
+        if task_cfg.sysprompt_init is not None:
+            placeholder_id = tokenizer.eos_token_id or 0
+            init_ids = tokenizer.encode(task_cfg.sysprompt_init,
+                                        add_special_tokens=False)
+            if len(init_ids) < task_cfg.n_learnable:
+                init_ids = init_ids + [placeholder_id] * (
+                    task_cfg.n_learnable - len(init_ids))
+            init_ids = init_ids[:task_cfg.n_learnable]
+            seed_ids_per_slot = [torch.tensor(init_ids, device=device)]
+        else:
+            seed_ids_per_slot = objective.original_ids_per_slot
 
         def _on_round(rnd, history, best_text, best_val_score):
             current_checkpoint.update({
@@ -262,8 +288,11 @@ def main():
             model=model,
             tokenizer=tokenizer,
             config=largo_cfg,
-            original_ids_per_slot=(objective.original_ids_per_slot
-                                   if largo_cfg.init == "original" else None),
+            # Buffer-seed ids. When sysprompt_init is set, these are the
+            # init tokens padded to n_learnable; otherwise they fall back to
+            # the template's placeholder ids. Also used for z init when
+            # config.init == "original" (not the case here with init=random).
+            original_ids_per_slot=seed_ids_per_slot,
             baselines=baseline_nll,
         )
         result = optimizer.run(objective, on_round=_on_round)
