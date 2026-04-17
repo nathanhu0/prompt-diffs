@@ -11,7 +11,7 @@ from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 from distill_scorer import _split_rollouts
-from optimize.slot_factories.abstract import (
+from optimize.template_factories.abstract import (
     nll_objective_from_abstract,
     nll_objective_from_abstract_prefill,
 )
@@ -21,6 +21,7 @@ from optimize.objectives.fluency_judge import (
 from optimize.objectives.decode_fluency import (
     DecodeFluencyObjective, DEFAULT_DECODE_PREFILL,
 )
+from optimize.config_utils import apply_override, load_config
 from optimize.optimizers.soft import SoftPromptOptimizer
 from optimize.optimizers.pgd import PGDOptimizer
 from optimize.optimizers.largo import LargoOptimizer, LargoConfig
@@ -31,11 +32,6 @@ OPTIMIZER_CLASSES = {
     "pgd": PGDOptimizer,
     "largo": LargoOptimizer,
 }
-
-
-def load_config(path):
-    with open(path) as f:
-        return yaml.safe_load(f)
 
 
 def get_embed_matrix(model):
@@ -64,11 +60,17 @@ def build_optimizer(config, embed_matrix, n_learnable, tokenizer,
         if "log_every" not in opt_cfg:
             largo_cfg.log_every = config["run"].get(
                 "log_every", largo_cfg.log_every)
+        # Runner wires single-slot templates only (abstract.py builds
+        # Template() with a single Slot). Wrap ints/tensors as 1-element lists.
+        original_ids_per_slot = (
+            [original_ids] if original_ids is not None else None
+        )
         return cls(
-            embed_matrix=embed_matrix, n_learnable=n_learnable,
+            embed_matrix=embed_matrix, slot_sizes=[n_learnable],
             model=model, tokenizer=tokenizer,
             config=largo_cfg,
-            frozen_embeds=frozen_embeds, original_ids=original_ids,
+            frozen_embeds=frozen_embeds,
+            original_ids_per_slot=original_ids_per_slot,
             fluency_objective=fluency_objective, baselines=baselines,
         )
 
@@ -99,31 +101,6 @@ def build_optimizer(config, embed_matrix, n_learnable, tokenizer,
             kwargs["weight_decay"] = opt_cfg["weight_decay"]
 
     return cls(**kwargs)
-
-
-def apply_override(config, override):
-    """Apply a single `key.path=value` override in place.
-
-    Value is parsed via yaml.safe_load so numbers/bools/lists are typed
-    naturally (e.g. "0.1" -> float, "true" -> True). Intermediate keys
-    are created as empty dicts if missing.
-    """
-    if "=" not in override:
-        raise ValueError(f"--set expects key.path=value, got {override!r}")
-    key, _, raw = override.partition("=")
-    value = yaml.safe_load(raw)
-    # YAML 1.1 doesn't parse bare scientific notation (e.g. "5e-4" stays
-    # a string). Coerce such cases to float.
-    if isinstance(value, str):
-        try:
-            value = float(raw)
-        except ValueError:
-            pass
-    keys = key.split(".")
-    d = config
-    for k in keys[:-1]:
-        d = d.setdefault(k, {})
-    d[keys[-1]] = value
 
 
 def main():
@@ -251,7 +228,7 @@ def main():
             original_ids = None
         else:
             frozen_embeds = None
-            n_learnable = objective.n_slot
+            n_learnable = objective.n_learnable
             original_ids = objective.original_slot_ids
 
         # Baseline: original abstract, no optimization (all splits)

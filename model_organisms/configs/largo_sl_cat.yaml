@@ -1,0 +1,40 @@
+# Sysprompt recovery on SL:cat via LARGO.
+# Run:
+#   PYTHONUNBUFFERED=1 PYTHONPATH=. CUDA_VISIBLE_DEVICES=0 \
+#     uv run python model_organisms/run_nll.py \
+#     model_organisms/configs/largo_sl_cat.yaml
+task:
+  type: sysprompt_recovery
+  dataset: "sl:qwen2.5-7b-instruct:cat"
+  n_train: 9000
+  n_val: 500
+  n_test: 500
+  n_learnable: 128
+  sysprompt_init: null
+  n_restarts: 5
+  seed: 0
+
+optimizer:
+  type: largo
+  init: random
+  lr: 1e-3
+  num_rounds: 30
+  steps_per_round: 20
+  weight_decay: 0.001
+  mini_batch_size: 16
+  train_batch_size: 64
+  decode_temperature: 1.0
+  decode_samples: 16
+  min_n_learnable: 64
+  pad_mode: randn
+  grow_headroom: 0
+  # null → run_nll.py substitutes DEFAULT_SYSPROMPT_PROBES (9-probe pool)
+  decode_probes: null
+  buffer_size: 8
+  epsilon: 0.2
+  top_k: 8
+
+run:
+  output: null            # null → auto-generate under /nlp/scr/.../model_organisms/
+  gpu: 0
+  log_every: 10
