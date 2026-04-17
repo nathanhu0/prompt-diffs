@@ -16,6 +16,7 @@ fragment the signal.
 import random
 import time
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Union
 
 import torch
@@ -25,6 +26,33 @@ import torch.nn.functional as F
 # Sentinel marking the z-embedding position inside a decode-probe template.
 # Chosen to be extremely unlikely to appear in any natural template string.
 SLOT_SENTINEL = "{SLOT}"
+
+
+@dataclass
+class BufferConfig:
+    """Evolutionary buffer hyperparameters.
+
+    The buffer holds candidate decoded texts across rounds. On each insert:
+      - Exact-ids dedup as a cheap pre-filter.
+      - Restricted Tournament Replacement: find the buffer entry most similar
+        to the candidate (char-level SequenceMatcher.ratio). If similarity
+        >= similarity_threshold, the candidate replaces that entry iff its
+        val is lower; otherwise it's rejected. If the candidate isn't similar
+        to anyone, it claims a new niche — adds to buffer if there's room, or
+        displaces the worst-val entry if the buffer is full and the candidate
+        is better than the worst.
+
+    RTR preserves niche diversity: each "lineage" gets at most one slot, and
+    improvements within a lineage are rolled forward.
+    """
+    size: int = 8
+    epsilon: float = 0.2
+    top_k: int = 8
+    similarity_threshold: float = 0.8
+    # Optional list of seed texts to pre-populate the buffer. If None, the
+    # buffer is seeded with (baselines["val"], original_ids_per_slot,
+    # decoded_original_text) in LargoOptimizer.run().
+    initial_buffer: Optional[List[str]] = None
 
 
 @dataclass
@@ -58,11 +86,8 @@ class LargoConfig:
     decode_probes: Optional[List[Dict[str, str]]] = None
     decode_prefill: str = "Sure, I will summarize the message: "
 
-    # --- evolutionary buffer + ε-greedy selection (phase 3) ---
-    buffer_size: int = 1
-    epsilon: float = 0.2
-    top_k: int = 8
-    initial_buffer: Optional[List[str]] = None
+    # --- evolutionary buffer (phase 3) — see BufferConfig ---
+    buffer: BufferConfig = field(default_factory=BufferConfig)
 
     # --- fluency (secondary objective) ---
     fluency_weight: float = 0.0
@@ -79,10 +104,17 @@ class LargoConfig:
         as strings.
         """
         cfg = {k: v for k, v in opt_cfg.items() if k != "type"}
-        for key in ("lr", "weight_decay", "decode_temperature", "epsilon",
+        for key in ("lr", "weight_decay", "decode_temperature",
                     "fluency_weight"):
             if isinstance(cfg.get(key), str):
                 cfg[key] = float(cfg[key])
+        # Nested buffer block.
+        if "buffer" in cfg and isinstance(cfg["buffer"], dict):
+            bcfg = dict(cfg["buffer"])
+            for key in ("epsilon", "similarity_threshold"):
+                if isinstance(bcfg.get(key), str):
+                    bcfg[key] = float(bcfg[key])
+            cfg["buffer"] = BufferConfig(**bcfg)
         return cls(**cfg)
 
 
@@ -91,6 +123,20 @@ def _pretty(text, head=80, tail=40):
     if len(text) <= head + tail + 5:
         return repr(text)
     return repr(text[:head] + " ... " + text[-tail:])
+
+
+def _ids_key(ids_per_slot):
+    """Hashable key for exact-ids dedup."""
+    return tuple(tuple(ids) for ids in ids_per_slot)
+
+
+def _join_for_sim(texts_per_slot):
+    """Join per-slot texts with a separator for similarity comparison."""
+    if not texts_per_slot:
+        return ""
+    if len(texts_per_slot) == 1:
+        return texts_per_slot[0]
+    return " || ".join(texts_per_slot)
 
 
 @torch.no_grad()
@@ -170,12 +216,15 @@ class LargoOptimizer:
                 "fluency_objective only supported for single-slot templates"
 
         # --- validate config-backed knobs (fail fast on bad YAML) ---
-        assert config.buffer_size >= 1, \
-            f"buffer_size must be >= 1, got {config.buffer_size}"
-        assert 0.0 <= config.epsilon <= 1.0, \
-            f"epsilon must be in [0, 1], got {config.epsilon}"
-        assert config.top_k >= 1, \
-            f"top_k must be >= 1, got {config.top_k}"
+        assert config.buffer.size >= 1, \
+            f"buffer.size must be >= 1, got {config.buffer.size}"
+        assert 0.0 <= config.buffer.epsilon <= 1.0, \
+            f"buffer.epsilon must be in [0, 1], got {config.buffer.epsilon}"
+        assert config.buffer.top_k >= 1, \
+            f"buffer.top_k must be >= 1, got {config.buffer.top_k}"
+        assert 0.0 <= config.buffer.similarity_threshold <= 1.0, \
+            f"buffer.similarity_threshold must be in [0, 1], got " \
+            f"{config.buffer.similarity_threshold}"
         assert config.pad_mode in ("force", "zeros", "randn"), \
             f"unknown pad_mode {config.pad_mode!r}"
         # min_n_learnable is a scalar applied per-slot (clamped at each slot's size).
@@ -247,10 +296,16 @@ class LargoOptimizer:
         return self.z_list
 
     @torch.no_grad()
-    def _decode(self, z, probe=None):
+    def _decode(self, z, probe=None, max_tokens=None):
         """Decode one slot's soft embeddings z into text.
 
         probe = {"template": str containing SLOT_SENTINEL, "prefill": str}.
+        max_tokens: upper bound on decoded token count. Defaults to
+            self.n_learnable (the total learnable capacity). Callers with
+            a specific slot can pass self.slot_sizes[slot_idx] to decouple
+            the decode budget from the *current* z.shape[0] — otherwise a
+            short earlier decode + short-then-short reembed chain artificially
+            caps future decodes.
         Returns (text, token_ids).
         """
         if probe is None:
@@ -292,9 +347,8 @@ class LargoOptimizer:
         input_embeds = torch.cat(parts, dim=1)
 
         min_tokens = self.min_n_learnable if self.config.pad_mode == "force" else 0
-        # Cap max tokens at this slot's declared size. Flex lets shorter
-        # decodes pass through NLL unchanged.
-        max_tokens = z.shape[0]
+        if max_tokens is None:
+            max_tokens = self.n_learnable
         token_ids = generate_from_embeds(
             self.model, input_embeds, self.embed_matrix,
             max_tokens=max_tokens,
@@ -367,11 +421,94 @@ class LargoOptimizer:
         return " || ".join(_pretty(t, head=40, tail=20)
                            for t in texts_per_slot)
 
+    def _rtr_insert(self, buffer, seen, cand_score, cand_ids, cand_texts):
+        """Restricted Tournament Replacement.
+
+        Find the buffer entry most similar to the candidate (char-level
+        SequenceMatcher.ratio). If sim >= threshold, replace iff candidate
+        has lower val; else reject. If not similar to anyone, claim a new
+        niche — add if buffer has room, else displace worst-val entry iff
+        candidate beats it.
+
+        Returns: 'replace' | 'new_niche' | 'rejected'.
+        """
+        import bisect
+        k = _ids_key(cand_ids)
+        if k in seen:
+            return "rejected"
+        cand_text = _join_for_sim(cand_texts)
+        best_sim, best_idx = 0.0, None
+        for i, (_, _, b_texts) in enumerate(buffer):
+            sim = SequenceMatcher(
+                None, cand_text, _join_for_sim(b_texts),
+            ).ratio()
+            if sim > best_sim:
+                best_sim, best_idx = sim, i
+        sim_thresh = self.config.buffer.similarity_threshold
+        buffer_size = self.config.buffer.size
+        entry = (cand_score, cand_ids, cand_texts)
+
+        if best_idx is not None and best_sim >= sim_thresh:
+            if cand_score < buffer[best_idx][0]:
+                old_ids = buffer.pop(best_idx)[1]
+                seen.discard(_ids_key(old_ids))
+                seen.add(k)
+                bisect.insort(buffer, entry, key=lambda x: x[0])
+                return "replace"
+            return "rejected"
+
+        if len(buffer) < buffer_size:
+            seen.add(k)
+            bisect.insort(buffer, entry, key=lambda x: x[0])
+            return "new_niche"
+        if cand_score < buffer[-1][0]:
+            worst_ids = buffer.pop()[1]
+            seen.discard(_ids_key(worst_ids))
+            seen.add(k)
+            bisect.insort(buffer, entry, key=lambda x: x[0])
+            return "new_niche"
+        return "rejected"
+
+    def _seed_initial_buffer(self, buffer, seen, objective):
+        """Pre-populate buffer from config.buffer.initial_buffer texts.
+
+        Each text is tokenized, truncated to the first slot's size, scored
+        on val, and inserted via RTR. Single-slot only for now.
+        """
+        texts = self.config.buffer.initial_buffer
+        if not texts:
+            return
+        assert self.n_slots == 1, \
+            "initial_buffer requires single-slot templates for now"
+        eval_bs = (self.config.mini_batch_size * 4
+                   if self.config.mini_batch_size else None)
+        slot_size = self.slot_sizes[0]
+        n_inserted = 0
+        for text in texts:
+            ids = self.tokenizer.encode(text, add_special_tokens=False)
+            ids = ids[:slot_size]
+            ids_per_slot = [ids]
+            texts_per_slot = [text]
+            with torch.no_grad():
+                z_hard = self._hard_embeds_list(ids_per_slot)
+                val = objective.loss(z_hard, "val",
+                                     mini_batch_size=eval_bs).item()
+            status = self._rtr_insert(
+                buffer, seen, val, ids_per_slot, texts_per_slot,
+            )
+            if status != "rejected":
+                n_inserted += 1
+        print(f"  [initial_buffer: {n_inserted}/{len(texts)} entries "
+              f"seeded; buffer size {len(buffer)}]")
+
     def run(self, objective, on_round=None):
         history = {
             "soft_train": [], "soft_val": [], "soft_test": [],
             "hard_train": [], "hard_val": [], "hard_test": [],
             "decoded_texts": [],   # list[list[str]] — per-round, per-slot
+            # Per-round snapshot of the evolutionary buffer after insert +
+            # truncate. Entry schema: list[(val, ids_per_slot, texts_per_slot)].
+            "buffer_snapshots": [],
         }
         best_val = float("inf")
         best_texts_per_slot: List[str] = [""] * self.n_slots
@@ -380,20 +517,13 @@ class LargoOptimizer:
 
         # --- Evolutionary buffer ---
         # Each entry: (val, ids_per_slot, texts_per_slot), sorted by val asc.
-        # Seeded with the baseline (original slot init ids at baseline NLL)
-        # so ε-greedy selection always has something to pick from.
+        # Seeded only from config.buffer.initial_buffer (if set); no
+        # automatic placeholder baseline — too ambiguous (its stored val
+        # ≠ what reembedding it yields).
         buffer: List = []
+        seen: set = set()
         baseline_val = self.baselines.get("val")
-        if baseline_val is not None and self.original_ids_per_slot is not None:
-            seed_ids = [ids.tolist() if hasattr(ids, "tolist") else list(ids)
-                        for ids in self.original_ids_per_slot]
-            seed_texts = [self.tokenizer.decode(ids, skip_special_tokens=True)
-                          for ids in seed_ids]
-            buffer.append((baseline_val, seed_ids, seed_texts))
-
-        def _key(ids_per_slot):
-            return tuple(tuple(ids) for ids in ids_per_slot)
-        seen = {_key(e[1]) for e in buffer}
+        self._seed_initial_buffer(buffer, seen, objective)
 
         for rnd in range(self.config.num_rounds):
             rnd_start = time.monotonic()
@@ -458,6 +588,7 @@ class LargoOptimizer:
                     probe = random.choice(self.decode_probes)
                     text, token_ids = self._decode(
                         self.z_list[slot_idx], probe,
+                        max_tokens=self.slot_sizes[slot_idx],
                     )
                     ids_per_slot.append(token_ids)
                     texts_per_slot.append(text)
@@ -502,26 +633,23 @@ class LargoOptimizer:
                 best_round = rnd
                 print(f"  * new best (round {rnd})")
 
-            # Insert: round's best (index 0, sorted asc) bypasses the
-            # baseline filter so every round contributes something the
-            # selector can reach. Other candidates must beat baseline.
-            # Dedup applies to all. Sort+truncate keeps good entries.
-            import bisect
-            for i, (cand_score, cand_ids, cand_texts) in enumerate(candidates):
-                if (i > 0 and baseline_val is not None
-                        and cand_score >= baseline_val):
-                    continue
-                k = _key(cand_ids)
-                if k in seen:
-                    continue
-                seen.add(k)
-                bisect.insort(
-                    buffer,
-                    (cand_score, cand_ids, cand_texts),
-                    key=lambda x: x[0],
+            # Insert every candidate via Restricted Tournament Replacement.
+            counts = {"replace": 0, "new_niche": 0, "rejected": 0}
+            for cand_score, cand_ids, cand_texts in candidates:
+                status = self._rtr_insert(
+                    buffer, seen, cand_score, cand_ids, cand_texts,
                 )
-            buffer[:] = buffer[:self.config.buffer_size]
-            seen = {_key(e[1]) for e in buffer}
+                counts[status] += 1
+            print(f"  [buffer: size={len(buffer)}/{self.config.buffer.size}  "
+                  f"+{counts['new_niche']} new niches, "
+                  f"{counts['replace']} replacements, "
+                  f"{counts['rejected']} rejected]")
+            # Snapshot for downstream inspection. Copy ids/texts to avoid
+            # aliasing with the live buffer's mutable lists.
+            history["buffer_snapshots"].append([
+                (val, [list(ids) for ids in ids_per_slot], list(texts))
+                for val, ids_per_slot, texts in buffer
+            ])
 
             if on_round is not None:
                 joined = (" || ".join(best_texts_per_slot)
@@ -531,8 +659,8 @@ class LargoOptimizer:
             # --- Phase 3: ε-greedy select from buffer, then reembed ---
             phase3_start = time.monotonic()
             if buffer:
-                if random.random() < self.config.epsilon:
-                    topk = min(self.config.top_k, len(buffer))
+                if random.random() < self.config.buffer.epsilon:
+                    topk = min(self.config.buffer.top_k, len(buffer))
                     chosen = random.choice(buffer[:topk])
                     sel_reason = f"explore top-{topk}"
                 else:
@@ -543,8 +671,8 @@ class LargoOptimizer:
                       f"(buffer size {len(buffer)})]")
                 self.z_list = self._reembed_list(chosen_ids)
             else:
-                # No buffer entry passed the baseline filter. Fall back to
-                # this round's best candidate so progress doesn't stall.
+                # Buffer is empty (edge case: no seed + no candidate landed).
+                # Fall back to this round's best so progress doesn't stall.
                 print(f"  [buffer empty: fallback reembed from this "
                       f"round's best]")
                 self.z_list = self._reembed_list(best_ids)
