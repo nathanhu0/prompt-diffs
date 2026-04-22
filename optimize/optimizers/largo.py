@@ -14,18 +14,57 @@ multi-slot where slots are chunks of one concept, independent decoding may
 fragment the signal.
 """
 import random
+import re
 import time
 from dataclasses import dataclass, field
-from difflib import SequenceMatcher
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, NamedTuple, Optional, Union
 
 import torch
 import torch.nn.functional as F
 
 
+class Candidate(NamedTuple):
+    """One decoded candidate scored on val.
+
+    test is only computed for the best-per-round in the optimizer's main
+    loop (saving the per-sample test cost); see history["hard_test"].
+    tmpl_labels carries the per-slot decode-template label (see
+    _template_label) so we can group val scores by which template produced
+    them — useful for spotting underperforming templates.
+    """
+    val: float
+    ids: List[List[int]]      # ids_per_slot
+    texts: List[str]          # texts_per_slot
+    tmpl_labels: List[str]    # per-slot _template_label(tmpl)
+
+
 # Sentinel marking the z-embedding position inside a decode-probe template.
 # Chosen to be extremely unlikely to appear in any natural template string.
 SLOT_SENTINEL = "{SLOT}"
+
+
+@dataclass
+class NaiveStrategyConfig:
+    """Naive search: always continue from this round's best decoded candidate.
+
+    No buffer, no restart. Pure exploitation — useful as a baseline / lower
+    bound. Will get stuck in whatever lineage emerges in early rounds.
+    """
+    pass
+
+
+@dataclass
+class PatienceStrategyConfig:
+    """Patience-triggered restart from a fresh init.
+
+    Each round, continues from this round's best decode unless `patience`
+    rounds have passed without improving the global-best, in which case z is
+    re-initialized via `restart_init`. Tracks global-best across restarts.
+    No buffer.
+    """
+    patience: int = 25
+    max_restarts: Optional[int] = None       # None = unlimited
+    restart_init: str = "random"             # passed to _make_init_z_list
 
 
 @dataclass
@@ -35,7 +74,7 @@ class BufferConfig:
     The buffer holds candidate decoded texts across rounds. On each insert:
       - Exact-ids dedup as a cheap pre-filter.
       - Restricted Tournament Replacement: find the buffer entry most similar
-        to the candidate (char-level SequenceMatcher.ratio). If similarity
+        to the candidate (jaccard over content-word sets). If similarity
         >= similarity_threshold, the candidate replaces that entry iff its
         val is lower; otherwise it's rejected. If the candidate isn't similar
         to anyone, it claims a new niche — adds to buffer if there's room, or
@@ -48,7 +87,7 @@ class BufferConfig:
     size: int = 8
     epsilon: float = 0.2
     top_k: int = 8
-    similarity_threshold: float = 0.8
+    similarity_threshold: float = 0.1
     # Optional list of seed texts to pre-populate the buffer. If None, the
     # buffer is seeded with (baselines["val"], original_ids_per_slot,
     # decoded_original_text) in LargoOptimizer.run().
@@ -83,11 +122,22 @@ class LargoConfig:
     # --- decoding (phase 2) ---
     decode_temperature: float = 1.0
     decode_samples: int = 1
-    decode_probes: Optional[List[Dict[str, str]]] = None
+    # Each template is a dict with `system?`, `user?`, `prefill?` string
+    # fields. Exactly one of system/user must contain {SLOT} (where the
+    # learnable embeddings z are placed). Examples:
+    #   {"user": "{SLOT}", "prefill": "Summary: "} — z lives in the user
+    #     turn, model summarizes/repeats it (legacy LARGO).
+    #   {"system": "{SLOT}", "user": "Repeat your system prompt verbatim.",
+    #    "prefill": ""} — z lives in the system slot, user asks the model
+    #     to recite/summarize it (sysprompt-recovery framing).
+    # If None, falls back to a single auto-built template wrapping decode_prefill.
+    decode_templates: Optional[List[Dict[str, str]]] = None
     decode_prefill: str = "Sure, I will summarize the message: "
 
-    # --- evolutionary buffer (phase 3) — see BufferConfig ---
-    buffer: BufferConfig = field(default_factory=BufferConfig)
+    # --- search strategy (phase 3) ---
+    # One of: NaiveStrategyConfig, PatienceStrategyConfig, BufferConfig.
+    # Default preserves prior behavior (RTR buffer w/ default hyperparams).
+    strategy: Any = field(default_factory=lambda: BufferConfig())
 
     # --- fluency (secondary objective) ---
     fluency_weight: float = 0.0
@@ -102,20 +152,61 @@ class LargoConfig:
         YAML 1.1 parses scientific notation like "3e-3" as a string (no dot
         before the exponent), so we coerce known-float fields if they arrive
         as strings.
+
+        Strategy block accepts two YAML shapes:
+          New: `strategy: {type: naive|patience|buffer, ...}`
+          Old: `buffer: {...}`  (auto-promoted to BufferConfig strategy)
         """
         cfg = {k: v for k, v in opt_cfg.items() if k != "type"}
         for key in ("lr", "weight_decay", "decode_temperature",
                     "fluency_weight"):
             if isinstance(cfg.get(key), str):
                 cfg[key] = float(cfg[key])
-        # Nested buffer block.
-        if "buffer" in cfg and isinstance(cfg["buffer"], dict):
-            bcfg = dict(cfg["buffer"])
-            for key in ("epsilon", "similarity_threshold"):
-                if isinstance(bcfg.get(key), str):
-                    bcfg[key] = float(bcfg[key])
-            cfg["buffer"] = BufferConfig(**bcfg)
+
+        if "strategy" in cfg and isinstance(cfg["strategy"], dict):
+            cfg["strategy"] = _strategy_from_yaml(cfg["strategy"])
+        elif "buffer" in cfg and isinstance(cfg["buffer"], dict):
+            # Backward-compat: old configs used a top-level `buffer` block.
+            bcfg = _coerce_floats(dict(cfg.pop("buffer")),
+                                  ("epsilon", "similarity_threshold"))
+            cfg["strategy"] = BufferConfig(**bcfg)
+
         return cls(**cfg)
+
+
+def _coerce_floats(d: Dict[str, Any], keys) -> Dict[str, Any]:
+    for k in keys:
+        if isinstance(d.get(k), str):
+            d[k] = float(d[k])
+    return d
+
+
+# Maps YAML `strategy.type` → (config dataclass, strategy class).
+# Populated below the class definitions to avoid forward-reference noise.
+STRATEGY_REGISTRY: Dict[str, tuple] = {}
+
+
+def _strategy_from_yaml(block: Dict[str, Any]):
+    """Build a strategy config dataclass from a YAML `strategy:` block."""
+    block = dict(block)
+    stype = block.pop("type", None)
+    if stype is None:
+        raise ValueError("strategy block missing required `type` field")
+    if stype not in STRATEGY_REGISTRY:
+        raise ValueError(f"unknown strategy type {stype!r}; "
+                         f"valid: {sorted(STRATEGY_REGISTRY)}")
+    cfg_cls, _ = STRATEGY_REGISTRY[stype]
+    block = _coerce_floats(block, ("epsilon", "similarity_threshold"))
+    return cfg_cls(**block)
+
+
+def make_strategy(cfg, optimizer):
+    """Construct a strategy instance from a config dataclass."""
+    for _, (cfg_cls, strat_cls) in STRATEGY_REGISTRY.items():
+        if isinstance(cfg, cfg_cls):
+            return strat_cls(cfg, optimizer)
+    raise ValueError(f"no strategy registered for config type "
+                     f"{type(cfg).__name__}")
 
 
 def _pretty(text, head=80, tail=40):
@@ -137,6 +228,58 @@ def _join_for_sim(texts_per_slot):
     if len(texts_per_slot) == 1:
         return texts_per_slot[0]
     return " || ".join(texts_per_slot)
+
+
+def _template_label(tmpl, n=12):
+    """Short scannable label of a decode template — first n chars of the
+    user-side text (slot-stripped, lowercased) + ellipsis. Used in per-decode
+    log lines and end-of-run by-template performance tally.
+
+    Fallback chain when user text is empty/SLOT-only: prefill snippet → system
+    text → "<empty>". OG-LARGO ({user: "{SLOT}"}) templates have no user-side
+    question, so they get labeled by their prefill ("sure, i will...")."""
+    def _short(s):
+        s = s.replace(SLOT_SENTINEL.lower(), "").strip()
+        return s[:n] + "..." if len(s) > n else s
+
+    candidates = [
+        (tmpl.get("user") or "").strip().lower(),
+        (tmpl.get("prefill") or "").strip().lower(),
+        (tmpl.get("system") or "").strip().lower(),
+    ]
+    for c in candidates:
+        label = _short(c)
+        if label:
+            return label
+    return "<empty>"
+
+
+# Buffer-RTR similarity: jaccard over content-word sets (lower-cased, punctuation
+# stripped, spaCy stopwords removed). Length-invariant — in our SL:cat sample
+# (plotting_scripts/2026-04-21), no cross-lineage pair exceeds ~0.09 while
+# intra-lineage paraphrases sit at 0.1-0.5+. Replaced char-level
+# SequenceMatcher.ratio, which conflated paraphrases with cross-lineage pairs
+# and caused 128-entry buffers to collapse to one lineage.
+_WORD_RE = re.compile(r"[A-Za-z']+")
+_STOP_WORDS: Optional[frozenset] = None
+
+
+def _content_words(text: str) -> set:
+    """Lowercase, regex-split into [a-zA-Z']+, drop stopwords + 1-char tokens."""
+    global _STOP_WORDS
+    if _STOP_WORDS is None:
+        from spacy.lang.en.stop_words import STOP_WORDS
+        _STOP_WORDS = frozenset(STOP_WORDS)
+    return {w for w in _WORD_RE.findall(text.lower())
+            if w not in _STOP_WORDS and len(w) > 1}
+
+
+def _jaccard_content_words(a: str, b: str) -> float:
+    sa, sb = _content_words(a), _content_words(b)
+    if not sa and not sb:
+        return 1.0
+    union = sa | sb
+    return len(sa & sb) / len(union) if union else 0.0
 
 
 @torch.no_grad()
@@ -216,15 +359,6 @@ class LargoOptimizer:
                 "fluency_objective only supported for single-slot templates"
 
         # --- validate config-backed knobs (fail fast on bad YAML) ---
-        assert config.buffer.size >= 1, \
-            f"buffer.size must be >= 1, got {config.buffer.size}"
-        assert 0.0 <= config.buffer.epsilon <= 1.0, \
-            f"buffer.epsilon must be in [0, 1], got {config.buffer.epsilon}"
-        assert config.buffer.top_k >= 1, \
-            f"buffer.top_k must be >= 1, got {config.buffer.top_k}"
-        assert 0.0 <= config.buffer.similarity_threshold <= 1.0, \
-            f"buffer.similarity_threshold must be in [0, 1], got " \
-            f"{config.buffer.similarity_threshold}"
         assert config.pad_mode in ("force", "zeros", "randn"), \
             f"unknown pad_mode {config.pad_mode!r}"
         # min_n_learnable is a scalar applied per-slot (clamped at each slot's size).
@@ -233,20 +367,22 @@ class LargoOptimizer:
         assert self.min_n_learnable >= 0, \
             f"min_n_learnable must be >= 0, got {self.min_n_learnable}"
 
-        # --- decode-probe pool: default = single legacy probe ---
-        probes = config.decode_probes
-        if probes is None:
-            probes = [{
-                "template": SLOT_SENTINEL,
+        # --- decode-template pool: default = single legacy template (z in user) ---
+        templates = config.decode_templates
+        if templates is None:
+            templates = [{
+                "user": SLOT_SENTINEL,
                 "prefill": config.decode_prefill or "",
             }]
-        assert len(probes) > 0, "decode_probes must be non-empty"
-        for i, p in enumerate(probes):
-            assert "template" in p, f"probe {i} missing 'template': {p!r}"
-            assert SLOT_SENTINEL in p["template"], \
-                f"probe {i} template missing {SLOT_SENTINEL}: " \
-                f"{p['template']!r}"
-        self.decode_probes = probes
+        assert len(templates) > 0, "decode_templates must be non-empty"
+        for i, t in enumerate(templates):
+            in_system = SLOT_SENTINEL in (t.get("system") or "")
+            in_user = SLOT_SENTINEL in (t.get("user") or "")
+            assert int(in_system) + int(in_user) == 1, \
+                f"template {i} must contain {SLOT_SENTINEL!r} in exactly " \
+                f"one of system/user, got system={in_system} " \
+                f"user={in_user}: {t!r}"
+        self.decode_templates = templates
 
         # --- EOS ids (used by min_tokens masking during decode) ---
         eos_ids = set()
@@ -261,32 +397,40 @@ class LargoOptimizer:
         self._eos_ids = sorted(eos_ids)
 
         # --- per-slot z initialization ---
-        device = embed_matrix.device
-        dim = embed_matrix.shape[1]
-        dtype = embed_matrix.dtype
+        z_list = self._make_init_z_list()
+        self.z_list = [zi.detach().requires_grad_(True) for zi in z_list]
 
-        init_z = config.init_z
-        if init_z is not None:
+    def _make_init_z_list(self, init_mode: Optional[str] = None) -> List[torch.Tensor]:
+        """Construct a fresh z_list per the requested init mode.
+
+        init_mode=None uses self.config.init / config.init_z (startup default).
+        Pass "random" / "zeros" explicitly to bypass init_z (used by
+        restart strategies that need a clean re-init mid-run).
+        """
+        device = self.embed_matrix.device
+        dim = self.embed_matrix.shape[1]
+        dtype = self.embed_matrix.dtype
+
+        if init_mode is None and self.config.init_z is not None:
+            init_z = self.config.init_z
             if isinstance(init_z, torch.Tensor):
                 init_z = [init_z]
             assert len(init_z) == self.n_slots, \
                 f"init_z has {len(init_z)} tensors but template has " \
                 f"{self.n_slots} slots"
-            z_list = [zi.to(device=device, dtype=dtype).clone()
-                      for zi in init_z]
-        elif (config.init == "original"
-              and original_ids_per_slot is not None):
-            assert len(original_ids_per_slot) == self.n_slots
-            z_list = [embed_matrix[ids].clone()
-                      for ids in original_ids_per_slot]
-        elif config.init == "zeros":
-            z_list = [torch.zeros(sz, dim, device=device, dtype=dtype)
-                      for sz in self.slot_sizes]
-        else:  # "random" or fallback
-            z_list = [torch.randn(sz, dim, device=device, dtype=dtype)
-                      * embed_matrix.std()
-                      for sz in self.slot_sizes]
-        self.z_list = [zi.detach().requires_grad_(True) for zi in z_list]
+            return [zi.to(device=device, dtype=dtype).clone() for zi in init_z]
+        mode = init_mode if init_mode is not None else self.config.init
+        if mode == "original" and self.original_ids_per_slot is not None:
+            assert len(self.original_ids_per_slot) == self.n_slots
+            return [self.embed_matrix[ids].clone()
+                    for ids in self.original_ids_per_slot]
+        if mode == "zeros":
+            return [torch.zeros(sz, dim, device=device, dtype=dtype)
+                    for sz in self.slot_sizes]
+        # "random" or fallback
+        return [torch.randn(sz, dim, device=device, dtype=dtype)
+                * self.embed_matrix.std()
+                for sz in self.slot_sizes]
 
     def get_embeds(self):
         """Return list[Tensor], one per slot; frozen_embeds prepended to
@@ -296,10 +440,14 @@ class LargoOptimizer:
         return self.z_list
 
     @torch.no_grad()
-    def _decode(self, z, probe=None, max_tokens=None):
+    def _decode(self, z, tmpl=None, max_tokens=None):
         """Decode one slot's soft embeddings z into text.
 
-        probe = {"template": str containing SLOT_SENTINEL, "prefill": str}.
+        tmpl = {"system"?: str, "user"?: str, "prefill"?: str}. Exactly one
+            of system/user must contain SLOT_SENTINEL. If only `user` is set,
+            z lives in the user turn (legacy LARGO summarize). If `system` is
+            set, z lives in the system turn and `user` carries the question
+            asked of the model (sysprompt-recovery framing).
         max_tokens: upper bound on decoded token count. Defaults to
             self.n_learnable (the total learnable capacity). Callers with
             a specific slot can pass self.slot_sizes[slot_idx] to decouple
@@ -308,18 +456,21 @@ class LargoOptimizer:
             caps future decodes.
         Returns (text, token_ids).
         """
-        if probe is None:
-            probe = self.decode_probes[0]
-        template = probe["template"]
-        prefill = probe.get("prefill", "") or ""
-        assert SLOT_SENTINEL in template, \
-            f"probe template must contain {SLOT_SENTINEL!r}, got {template!r}"
+        if tmpl is None:
+            tmpl = self.decode_templates[0]
+        prefill = tmpl.get("prefill", "") or ""
 
         device = self.embed_matrix.device
-        messages = [{"role": "user", "content": template}]
+        messages = []
+        if tmpl.get("system") is not None:
+            messages.append({"role": "system", "content": tmpl["system"]})
+        messages.append({"role": "user", "content": tmpl.get("user", "")})
         template_text = self.tokenizer.apply_chat_template(
             messages, add_generation_prompt=True, tokenize=False,
         )
+        assert template_text.count(SLOT_SENTINEL) == 1, \
+            f"after chat-templating, expected exactly one {SLOT_SENTINEL!r}; " \
+            f"got {template_text.count(SLOT_SENTINEL)}: {tmpl!r}"
         before, after = template_text.split(SLOT_SENTINEL, 1)
 
         before_ids = self.tokenizer.encode(before, add_special_tokens=False)
@@ -421,109 +572,27 @@ class LargoOptimizer:
         return " || ".join(_pretty(t, head=40, tail=20)
                            for t in texts_per_slot)
 
-    def _rtr_insert(self, buffer, seen, cand_score, cand_ids, cand_texts):
-        """Restricted Tournament Replacement.
-
-        Find the buffer entry most similar to the candidate (char-level
-        SequenceMatcher.ratio). If sim >= threshold, replace iff candidate
-        has lower val; else reject. If not similar to anyone, claim a new
-        niche — add if buffer has room, else displace worst-val entry iff
-        candidate beats it.
-
-        Returns: 'replace' | 'new_niche' | 'rejected'.
-        """
-        import bisect
-        k = _ids_key(cand_ids)
-        if k in seen:
-            return "rejected"
-        cand_text = _join_for_sim(cand_texts)
-        best_sim, best_idx = 0.0, None
-        for i, (_, _, b_texts) in enumerate(buffer):
-            sim = SequenceMatcher(
-                None, cand_text, _join_for_sim(b_texts),
-            ).ratio()
-            if sim > best_sim:
-                best_sim, best_idx = sim, i
-        sim_thresh = self.config.buffer.similarity_threshold
-        buffer_size = self.config.buffer.size
-        entry = (cand_score, cand_ids, cand_texts)
-
-        if best_idx is not None and best_sim >= sim_thresh:
-            if cand_score < buffer[best_idx][0]:
-                old_ids = buffer.pop(best_idx)[1]
-                seen.discard(_ids_key(old_ids))
-                seen.add(k)
-                bisect.insort(buffer, entry, key=lambda x: x[0])
-                return "replace"
-            return "rejected"
-
-        if len(buffer) < buffer_size:
-            seen.add(k)
-            bisect.insort(buffer, entry, key=lambda x: x[0])
-            return "new_niche"
-        if cand_score < buffer[-1][0]:
-            worst_ids = buffer.pop()[1]
-            seen.discard(_ids_key(worst_ids))
-            seen.add(k)
-            bisect.insort(buffer, entry, key=lambda x: x[0])
-            return "new_niche"
-        return "rejected"
-
-    def _seed_initial_buffer(self, buffer, seen, objective):
-        """Pre-populate buffer from config.buffer.initial_buffer texts.
-
-        Each text is tokenized, truncated to the first slot's size, scored
-        on val, and inserted via RTR. Single-slot only for now.
-        """
-        texts = self.config.buffer.initial_buffer
-        if not texts:
-            return
-        assert self.n_slots == 1, \
-            "initial_buffer requires single-slot templates for now"
-        eval_bs = (self.config.mini_batch_size * 4
-                   if self.config.mini_batch_size else None)
-        slot_size = self.slot_sizes[0]
-        n_inserted = 0
-        for text in texts:
-            ids = self.tokenizer.encode(text, add_special_tokens=False)
-            ids = ids[:slot_size]
-            ids_per_slot = [ids]
-            texts_per_slot = [text]
-            with torch.no_grad():
-                z_hard = self._hard_embeds_list(ids_per_slot)
-                val = objective.loss(z_hard, "val",
-                                     mini_batch_size=eval_bs).item()
-            status = self._rtr_insert(
-                buffer, seen, val, ids_per_slot, texts_per_slot,
-            )
-            if status != "rejected":
-                n_inserted += 1
-        print(f"  [initial_buffer: {n_inserted}/{len(texts)} entries "
-              f"seeded; buffer size {len(buffer)}]")
-
     def run(self, objective, on_round=None):
         history = {
             "soft_train": [], "soft_val": [], "soft_test": [],
             "hard_train": [], "hard_val": [], "hard_test": [],
-            "decoded_texts": [],   # list[list[str]] — per-round, per-slot
-            # Per-round snapshot of the evolutionary buffer after insert +
-            # truncate. Entry schema: list[(val, ids_per_slot, texts_per_slot)].
-            "buffer_snapshots": [],
+            "decoded_texts": [],   # list[list[str]] — per-round, per-slot best
+            # Full sample log: list[list[dict]] — for each round, every
+            # decoded candidate with val/test/ids/texts.
+            "per_round_samples": [],
+            # Per-round snapshot of strategy state (e.g. buffer contents for
+            # BufferStrategy, restart counters for PatienceStrategy). Whatever
+            # the active strategy's round_stats() returns.
+            "strategy": [],
         }
         best_val = float("inf")
         best_texts_per_slot: List[str] = [""] * self.n_slots
         best_ids_per_slot: List[List[int]] = [[] for _ in range(self.n_slots)]
         best_round = 0
 
-        # --- Evolutionary buffer ---
-        # Each entry: (val, ids_per_slot, texts_per_slot), sorted by val asc.
-        # Seeded only from config.buffer.initial_buffer (if set); no
-        # automatic placeholder baseline — too ambiguous (its stored val
-        # ≠ what reembedding it yields).
-        buffer: List = []
-        seen: set = set()
-        baseline_val = self.baselines.get("val")
-        self._seed_initial_buffer(buffer, seen, objective)
+        # Build search strategy (Naive | Patience | Buffer) from config.
+        self.strategy = make_strategy(self.config.strategy, self)
+        self.strategy.init(objective)
 
         for rnd in range(self.config.num_rounds):
             rnd_start = time.monotonic()
@@ -578,37 +647,40 @@ class LargoOptimizer:
                   f"val={self._fmt(soft_val, 'val')} "
                   f"test={self._fmt(soft_test, 'test')}")
 
-            # --- Phase 2: Decode per slot per sample ---
+            # --- Phase 2: Decode per slot per sample; score val ---
             phase2_start = time.monotonic()
-            candidates = []
+            candidates: List[Candidate] = []
             for s in range(self.config.decode_samples):
-                ids_per_slot = []
-                texts_per_slot = []
+                ids_per_slot, texts_per_slot, tmpl_labels = [], [], []
                 for slot_idx in range(self.n_slots):
-                    probe = random.choice(self.decode_probes)
+                    tmpl = random.choice(self.decode_templates)
                     text, token_ids = self._decode(
-                        self.z_list[slot_idx], probe,
+                        self.z_list[slot_idx], tmpl,
                         max_tokens=self.slot_sizes[slot_idx],
                     )
                     ids_per_slot.append(token_ids)
                     texts_per_slot.append(text)
+                    tmpl_labels.append(_template_label(tmpl))
                 with torch.no_grad():
                     z_hard_list = self._hard_embeds_list(ids_per_slot)
-                    score = objective.loss(z_hard_list, "val",
-                                          mini_batch_size=eval_bs).item()
-                candidates.append((score, ids_per_slot, texts_per_slot))
-                print(f"    decode {s}: val={score:.4f} "
+                    val_score = objective.loss(
+                        z_hard_list, "val", mini_batch_size=eval_bs).item()
+                candidates.append(Candidate(val_score, ids_per_slot,
+                                            texts_per_slot, tmpl_labels))
+                label_str = (tmpl_labels[0] if self.n_slots == 1
+                             else ", ".join(tmpl_labels))
+                print(f"    decode {s} [{label_str!r}]: val={val_score:.4f} "
                       f"{self._joined_preview(texts_per_slot)}", flush=True)
 
             phase2_time = time.monotonic() - phase2_start
 
-            candidates.sort(key=lambda x: x[0])
-            best_score, best_ids, best_texts = candidates[0]
-
+            candidates.sort(key=lambda c: c.val)
+            best_cand = candidates[0]
+            best_ids, best_texts = best_cand.ids, best_cand.texts
+            hard_train = float("nan")  # skip; too expensive at scale
+            hard_val = best_cand.val
             with torch.no_grad():
                 z_hard_list = self._hard_embeds_list(best_ids)
-                hard_train = float("nan")  # skip; too expensive at scale
-                hard_val = best_score
                 hard_test = objective.loss(z_hard_list, "test",
                                           mini_batch_size=eval_bs).item()
             total_toks = sum(len(x) for x in best_ids)
@@ -625,6 +697,16 @@ class LargoOptimizer:
             history["hard_val"].append(hard_val)
             history["hard_test"].append(hard_test)
             history["decoded_texts"].append(list(best_texts))
+            # Full per-round sample log: every decoded candidate with its
+            # val + test, regardless of strategy. Strategy state goes in
+            # history["strategy"][round]; this is the canonical search trace.
+            history["per_round_samples"].append([
+                {"val": c.val,
+                 "ids": [list(ids) for ids in c.ids],
+                 "texts": list(c.texts),
+                 "tmpl_labels": list(c.tmpl_labels)}
+                for c in candidates
+            ])
 
             if hard_val < best_val:
                 best_val = hard_val
@@ -633,49 +715,15 @@ class LargoOptimizer:
                 best_round = rnd
                 print(f"  * new best (round {rnd})")
 
-            # Insert every candidate via Restricted Tournament Replacement.
-            counts = {"replace": 0, "new_niche": 0, "rejected": 0}
-            for cand_score, cand_ids, cand_texts in candidates:
-                status = self._rtr_insert(
-                    buffer, seen, cand_score, cand_ids, cand_texts,
-                )
-                counts[status] += 1
-            print(f"  [buffer: size={len(buffer)}/{self.config.buffer.size}  "
-                  f"+{counts['new_niche']} new niches, "
-                  f"{counts['replace']} replacements, "
-                  f"{counts['rejected']} rejected]")
-            # Snapshot for downstream inspection. Copy ids/texts to avoid
-            # aliasing with the live buffer's mutable lists.
-            history["buffer_snapshots"].append([
-                (val, [list(ids) for ids in ids_per_slot], list(texts))
-                for val, ids_per_slot, texts in buffer
-            ])
-
             if on_round is not None:
                 joined = (" || ".join(best_texts_per_slot)
                           if self.n_slots > 1 else best_texts_per_slot[0])
                 on_round(rnd, history, joined, best_val)
 
-            # --- Phase 3: ε-greedy select from buffer, then reembed ---
+            # --- Phase 3: strategy decides next z (and may log its own state) ---
             phase3_start = time.monotonic()
-            if buffer:
-                if random.random() < self.config.buffer.epsilon:
-                    topk = min(self.config.buffer.top_k, len(buffer))
-                    chosen = random.choice(buffer[:topk])
-                    sel_reason = f"explore top-{topk}"
-                else:
-                    chosen = buffer[0]
-                    sel_reason = "greedy"
-                chosen_val, chosen_ids, _ = chosen
-                print(f"  [select {sel_reason}: val={chosen_val:.4f} "
-                      f"(buffer size {len(buffer)})]")
-                self.z_list = self._reembed_list(chosen_ids)
-            else:
-                # Buffer is empty (edge case: no seed + no candidate landed).
-                # Fall back to this round's best so progress doesn't stall.
-                print(f"  [buffer empty: fallback reembed from this "
-                      f"round's best]")
-                self.z_list = self._reembed_list(best_ids)
+            self.z_list = self.strategy.step(rnd, candidates, best_val)
+            history["strategy"].append(self.strategy.round_stats())
             phase3_time = time.monotonic() - phase3_start
 
             total = time.monotonic() - rnd_start
@@ -692,6 +740,24 @@ class LargoOptimizer:
         print(f"\n  best_hard_val={best_val:.4f} round={best_round}")
         print(f"  best_text: {_pretty(joined_best)}")
 
+        # End-of-run tally: mean val by template label, sorted best→worst.
+        # When n_slots>1, each (label,val) pair is contributed once per slot
+        # (so a 2-slot decode produces 2 entries with the same val) — fine
+        # for spotting which templates correlate with low val.
+        from collections import defaultdict
+        tally: Dict[str, List[float]] = defaultdict(list)
+        for round_samples in history["per_round_samples"]:
+            for sample in round_samples:
+                for label in sample.get("tmpl_labels", []):
+                    tally[label].append(sample["val"])
+        if tally:
+            print(f"\n  decode template performance (mean val, ascending):")
+            ranked = sorted(tally.items(),
+                            key=lambda kv: sum(kv[1]) / len(kv[1]))
+            for label, vals in ranked:
+                mean = sum(vals) / len(vals)
+                print(f"    {label!r:>20}: mean={mean:.4f}  n={len(vals)}")
+
         return {
             "best_text": joined_best,
             "best_texts_per_slot": best_texts_per_slot,
@@ -701,3 +767,223 @@ class LargoOptimizer:
             "history": history,
             "test_opt": history["hard_test"][best_round],
         }
+
+
+# =============================================================================
+# Search strategies — each owns Phase-3 (post-decode) state.
+# Duck-typed interface: __init__(cfg, optimizer); init(objective);
+# step(round_idx, candidates, best_so_far) -> z_list; round_stats() -> dict.
+# Optimizer's main loop handles all per-round logging; strategies only decide
+# what z to start the next round from. round_stats() returns the strategy's
+# own per-round state (saved alongside the per-round samples log).
+# =============================================================================
+
+class NaiveStrategy:
+    """Always continue from this round's best decoded candidate."""
+
+    def __init__(self, cfg: NaiveStrategyConfig, optimizer: "LargoOptimizer"):
+        self.cfg = cfg
+        self.opt = optimizer
+
+    def init(self, objective):
+        pass
+
+    def step(self, round_idx, candidates, best_so_far):
+        # candidates: list[Candidate], sorted ascending by val by the optimizer
+        best = min(candidates, key=lambda c: c.val)
+        return self.opt._reembed_list(best.ids)
+
+    def round_stats(self):
+        return {}
+
+
+class PatienceStrategy:
+    """Restart from a fresh init when no improvement for `patience` rounds.
+
+    Patience is tracked against `restart_best` (best val since last restart),
+    which resets to +inf on each restart so a fresh lineage gets `patience`
+    rounds to demonstrate improvement *within its own basin* rather than
+    needing to beat the all-time best from a prior lineage. `all_time_best`
+    tracks across restarts for reporting only. Both are seeded only by
+    decoded candidates we observe — no external baseline (e.g. empty-prompt
+    NLL) is used as the bar to beat.
+    """
+
+    def __init__(self, cfg: PatienceStrategyConfig, optimizer: "LargoOptimizer"):
+        self.cfg = cfg
+        self.opt = optimizer
+        self.all_time_best = float("inf")     # across-restart, for reporting
+        self.restart_best = float("inf")      # within-restart, drives patience
+        self.rounds_since_improve = 0
+        self.n_restarts = 0
+        self.last_action = "init"
+
+    def init(self, objective):
+        pass
+
+    def step(self, round_idx, candidates, best_so_far):
+        best_this = min(candidates, key=lambda c: c.val)
+        if best_this.val < self.all_time_best:
+            self.all_time_best = best_this.val
+        if best_this.val < self.restart_best:
+            self.restart_best = best_this.val
+            self.rounds_since_improve = 0
+        else:
+            self.rounds_since_improve += 1
+
+        max_restarts_hit = (self.cfg.max_restarts is not None
+                            and self.n_restarts >= self.cfg.max_restarts)
+        if (self.rounds_since_improve >= self.cfg.patience
+                and not max_restarts_hit):
+            self.n_restarts += 1
+            self.rounds_since_improve = 0
+            self.restart_best = float("inf")    # fresh patience window
+            self.last_action = f"restart#{self.n_restarts}"
+            print(f"  [patience: restart #{self.n_restarts} "
+                  f"(all_time_best={self.all_time_best:.4f})]")
+            return self.opt._make_init_z_list(init_mode=self.cfg.restart_init)
+        self.last_action = "continue"
+        return self.opt._reembed_list(best_this.ids)
+
+    def round_stats(self):
+        return {
+            "rounds_since_improve": self.rounds_since_improve,
+            "n_restarts": self.n_restarts,
+            "all_time_best": self.all_time_best,
+            "restart_best": self.restart_best,
+            "last_action": self.last_action,
+        }
+
+
+class BufferStrategy:
+    """RTR evolutionary buffer with ε-greedy selection from top-K."""
+
+    def __init__(self, cfg: BufferConfig, optimizer: "LargoOptimizer"):
+        assert cfg.size >= 1, f"buffer.size must be >= 1, got {cfg.size}"
+        assert 0.0 <= cfg.epsilon <= 1.0, \
+            f"buffer.epsilon must be in [0, 1], got {cfg.epsilon}"
+        assert cfg.top_k >= 1, f"buffer.top_k must be >= 1, got {cfg.top_k}"
+        assert 0.0 <= cfg.similarity_threshold <= 1.0, \
+            f"buffer.similarity_threshold must be in [0, 1], got " \
+            f"{cfg.similarity_threshold}"
+        self.cfg = cfg
+        self.opt = optimizer
+        # Each entry: (val, ids_per_slot, texts_per_slot), sorted by val asc.
+        self.buffer: List = []
+        self.seen: set = set()
+
+    def init(self, objective):
+        """Pre-populate buffer from cfg.initial_buffer texts (single-slot only)."""
+        texts = self.cfg.initial_buffer
+        if not texts:
+            return
+        assert self.opt.n_slots == 1, \
+            "initial_buffer requires single-slot templates for now"
+        eval_bs = (self.opt.config.mini_batch_size * 4
+                   if self.opt.config.mini_batch_size else None)
+        slot_size = self.opt.slot_sizes[0]
+        n_inserted = 0
+        for text in texts:
+            ids = self.opt.tokenizer.encode(text, add_special_tokens=False)[:slot_size]
+            with torch.no_grad():
+                z_hard = self.opt._hard_embeds_list([ids])
+                val = objective.loss(z_hard, "val", mini_batch_size=eval_bs).item()
+            if self._rtr_insert(val, [ids], [text]) != "rejected":
+                n_inserted += 1
+        print(f"  [initial_buffer: {n_inserted}/{len(texts)} entries seeded; "
+              f"buffer size {len(self.buffer)}]")
+
+    def step(self, round_idx, candidates, best_so_far):
+        # RTR-insert every candidate and tally outcomes.
+        counts = {"replace": 0, "new_niche": 0, "rejected": 0}
+        for c in candidates:
+            counts[self._rtr_insert(c.val, c.ids, c.texts)] += 1
+        print(f"  [buffer: size={len(self.buffer)}/{self.cfg.size}  "
+              f"+{counts['new_niche']} new niches, "
+              f"{counts['replace']} replacements, "
+              f"{counts['rejected']} rejected]")
+        self._last_counts = counts
+
+        # ε-greedy select from buffer; fall back to round-best if empty.
+        if self.buffer:
+            if random.random() < self.cfg.epsilon:
+                topk = min(self.cfg.top_k, len(self.buffer))
+                chosen = random.choice(self.buffer[:topk])
+                sel_reason = f"explore top-{topk}"
+            else:
+                chosen = self.buffer[0]
+                sel_reason = "greedy"
+            chosen_val, chosen_ids, _ = chosen
+            print(f"  [select {sel_reason}: val={chosen_val:.4f} "
+                  f"(buffer size {len(self.buffer)})]")
+            self._last_select = sel_reason
+            return self.opt._reembed_list(chosen_ids)
+        # Empty buffer (e.g., no seed + no candidate landed) — fall back.
+        print(f"  [buffer empty: fallback reembed from this round's best]")
+        self._last_select = "fallback_round_best"
+        best = min(candidates, key=lambda c: c.val)
+        return self.opt._reembed_list(best.ids)
+
+    def round_stats(self):
+        return {
+            "buffer_size": len(self.buffer),
+            "insert_counts": dict(getattr(self, "_last_counts", {})),
+            "select": getattr(self, "_last_select", None),
+            # Full snapshot for downstream inspection. Copy to avoid aliasing.
+            "buffer": [
+                (val, [list(ids) for ids in ids_per_slot], list(texts))
+                for val, ids_per_slot, texts in self.buffer
+            ],
+        }
+
+    def _rtr_insert(self, cand_score, cand_ids, cand_texts):
+        """Restricted Tournament Replacement.
+
+        Find the buffer entry most similar to the candidate (jaccard over
+        content-word sets). If sim >= threshold, replace iff candidate has
+        lower val; else reject. If not similar to anyone, claim a new niche —
+        add if buffer has room, else displace worst-val entry iff candidate
+        beats it.
+
+        Returns: 'replace' | 'new_niche' | 'rejected'.
+        """
+        import bisect
+        k = _ids_key(cand_ids)
+        if k in self.seen:
+            return "rejected"
+        cand_text = _join_for_sim(cand_texts)
+        best_sim, best_idx = 0.0, None
+        for i, (_, _, b_texts) in enumerate(self.buffer):
+            sim = _jaccard_content_words(cand_text, _join_for_sim(b_texts))
+            if sim > best_sim:
+                best_sim, best_idx = sim, i
+        entry = (cand_score, cand_ids, cand_texts)
+
+        if best_idx is not None and best_sim >= self.cfg.similarity_threshold:
+            if cand_score < self.buffer[best_idx][0]:
+                old_ids = self.buffer.pop(best_idx)[1]
+                self.seen.discard(_ids_key(old_ids))
+                self.seen.add(k)
+                bisect.insort(self.buffer, entry, key=lambda x: x[0])
+                return "replace"
+            return "rejected"
+
+        if len(self.buffer) < self.cfg.size:
+            self.seen.add(k)
+            bisect.insort(self.buffer, entry, key=lambda x: x[0])
+            return "new_niche"
+        if cand_score < self.buffer[-1][0]:
+            worst_ids = self.buffer.pop()[1]
+            self.seen.discard(_ids_key(worst_ids))
+            self.seen.add(k)
+            bisect.insort(self.buffer, entry, key=lambda x: x[0])
+            return "new_niche"
+        return "rejected"
+
+
+# Register strategy types (must come after class definitions).
+STRATEGY_REGISTRY.update({
+    "naive":    (NaiveStrategyConfig,    NaiveStrategy),
+    "patience": (PatienceStrategyConfig, PatienceStrategy),
+    "buffer":   (BufferConfig,           BufferStrategy),
+})

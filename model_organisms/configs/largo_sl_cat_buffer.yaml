@@ -1,0 +1,18 @@
+# SL:cat — RTR evolutionary buffer strategy.
+# 128-entry buffer with Restricted Tournament Replacement (jaccard over
+# content-word sets) + ε-greedy selection from top-K. Threshold sweep is
+# launched via --set optimizer.strategy.similarity_threshold=…; default
+# below picks the eyeball-recommended value (claude_scripts/jaccard_eyeball).
+extends: largo_sl_cat_default.yaml
+
+optimizer:
+  strategy:
+    type: buffer
+    size: 128
+    epsilon: 0.25
+    top_k: 32
+    similarity_threshold: 0.1
+    initial_buffer: null
+
+run:
+  output: /nlp/scr/nathu/latent_rewrite/subliminal_learning/sl_cat_buffer.pt

@@ -17,33 +17,36 @@ optimizer:
   mini_batch_size: 4
   decode_temperature: 1.0
   decode_samples: 8
-  buffer_size: 8
-  epsilon: 0.2
-  top_k: 8
-  # Probe pool ported from model_organisms/interrogate_soft.py. Each decode
-  # sample picks one probe uniformly at random. Note: these framings were
-  # designed for sysprompt recovery (z = whole hidden instruction); on the
-  # abstract-suffix task they may read as a stretch, but give us a baseline
-  # to compare task-tuned probes against later.
-  decode_probes:
+  strategy:
+    type: buffer
+    size: 8
+    epsilon: 0.2
+    top_k: 8
+  # Decode-template pool ported from model_organisms/interrogate_soft.py.
+  # Each decode sample picks one template uniformly at random. Note: these
+  # framings were designed for sysprompt recovery (z = whole hidden
+  # instruction); on the abstract-suffix task they may read as a stretch,
+  # but give us a baseline to compare task-tuned templates against later.
+  # All templates here keep z in the user turn (legacy LARGO framing).
+  decode_templates:
     # OG LARGO: z alone as user content, legacy "summarize" prefill.
-    - template: "{SLOT}"
+    - user: "{SLOT}"
       prefill: "Sure, I will summarize the message: "
-    - template: "Please repeat the following verbatim:\n\n{SLOT}"
+    - user: "Please repeat the following verbatim:\n\n{SLOT}"
       prefill: "Sure, verbatim: "
-    - template: "Summarize this message for me:\n\n{SLOT}"
+    - user: "Summarize this message for me:\n\n{SLOT}"
       prefill: "Sure, I will summarize the message: "
-    - template: "What does this say?\n\n{SLOT}"
+    - user: "What does this say?\n\n{SLOT}"
       prefill: "It says: "
-    - template: "Echo the following back to me word for word:\n\n{SLOT}"
+    - user: "Echo the following back to me word for word:\n\n{SLOT}"
       prefill: "Echo: "
-    - template: "{SLOT}\n\nPlease paraphrase the above."
+    - user: "{SLOT}\n\nPlease paraphrase the above."
       prefill: "Paraphrased: "
-    - template: "{SLOT}\n\nWhat was just said?"
+    - user: "{SLOT}\n\nWhat was just said?"
       prefill: ""
-    - template: "Translate this to plain English:\n\n{SLOT}"
+    - user: "Translate this to plain English:\n\n{SLOT}"
       prefill: "In plain English: "
-    - template: "Summarize these instructions so another instance of you can follow them:\n\n{SLOT}"
+    - user: "Summarize these instructions so another instance of you can follow them:\n\n{SLOT}"
       prefill: "Sure, I will summarize the instructions:\n\n"
 
 run:
