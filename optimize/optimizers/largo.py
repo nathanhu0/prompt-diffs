@@ -396,20 +396,27 @@ class LargoOptimizer:
             eos_ids.update(gc_eos)
         self._eos_ids = sorted(eos_ids)
 
-        # --- per-slot z initialization ---
-        z_list = self._make_init_z_list()
-        self.z_list = [zi.detach().requires_grad_(True) for zi in z_list]
+        # --- per-slot z initialization (optimizer-ready) ---
+        self.z_list = self._make_init_z_list()
 
     def _make_init_z_list(self, init_mode: Optional[str] = None) -> List[torch.Tensor]:
-        """Construct a fresh z_list per the requested init mode.
+        """Construct a fresh, optimizer-ready z_list per the requested init mode.
 
         init_mode=None uses self.config.init / config.init_z (startup default).
         Pass "random" / "zeros" explicitly to bypass init_z (used by
         restart strategies that need a clean re-init mid-run).
+
+        Returned tensors are detached + requires_grad_(True) so callers
+        (including PatienceStrategy mid-run restarts) can drop them straight
+        into self.z_list. Without this, soft-opt phase 1 backward fails with
+        "element 0 of tensors does not require grad".
         """
         device = self.embed_matrix.device
         dim = self.embed_matrix.shape[1]
         dtype = self.embed_matrix.dtype
+
+        def _ready(zs):
+            return [z.detach().requires_grad_(True) for z in zs]
 
         if init_mode is None and self.config.init_z is not None:
             init_z = self.config.init_z
@@ -418,19 +425,19 @@ class LargoOptimizer:
             assert len(init_z) == self.n_slots, \
                 f"init_z has {len(init_z)} tensors but template has " \
                 f"{self.n_slots} slots"
-            return [zi.to(device=device, dtype=dtype).clone() for zi in init_z]
+            return _ready([zi.to(device=device, dtype=dtype).clone() for zi in init_z])
         mode = init_mode if init_mode is not None else self.config.init
         if mode == "original" and self.original_ids_per_slot is not None:
             assert len(self.original_ids_per_slot) == self.n_slots
-            return [self.embed_matrix[ids].clone()
-                    for ids in self.original_ids_per_slot]
+            return _ready([self.embed_matrix[ids].clone()
+                           for ids in self.original_ids_per_slot])
         if mode == "zeros":
-            return [torch.zeros(sz, dim, device=device, dtype=dtype)
-                    for sz in self.slot_sizes]
+            return _ready([torch.zeros(sz, dim, device=device, dtype=dtype)
+                           for sz in self.slot_sizes])
         # "random" or fallback
-        return [torch.randn(sz, dim, device=device, dtype=dtype)
-                * self.embed_matrix.std()
-                for sz in self.slot_sizes]
+        return _ready([torch.randn(sz, dim, device=device, dtype=dtype)
+                       * self.embed_matrix.std()
+                       for sz in self.slot_sizes])
 
     def get_embeds(self):
         """Return list[Tensor], one per slot; frozen_embeds prepended to
