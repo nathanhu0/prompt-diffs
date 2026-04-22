@@ -98,27 +98,31 @@ Threshold sweep — buffer + jaccard at 3 cutoffs, user pool, ε=0.25, top_k=32:
 | 15214139 | sl_cat_buffer_j10   | 0.10      | user   |
 | 15214140 | sl_cat_buffer_j20   | 0.20      | user   |
 
-System-pool comparison — 2 strategies × 3 hparam settings. Baselines match
-in-flight user-pool runs (patience(p=10), buffer(threshold=0.10)); s200
-doubles steps_per_round; lr1e3 bumps lr ~3.3× from 3e-4 default:
+Pool × strategy × hparams comparison — full 3×2×2 grid (12 cells).
+Baseline = (steps=100, lr=3e-4) matches the canonical SL:cat config.
+s400 = (steps=400, lr=3e-4) tests longer soft-opt per round.
+lr1e3 = (steps=100, lr=0.001) tests a higher lr (~3.3× default).
+sys-pool runs use `--set task.decode_pool=system`. Buffer uses
+threshold=0.1, ε=0.25, top_k=32. Patience uses p=10.
 
-| ID       | Name                       | Strategy        | steps | lr    |
-|----------|----------------------------|-----------------|-------|-------|
-| 15214273 | sl_cat_patience_p10_sys    | patience(p=10)  | 100   | 3e-4  |
-| 15214274 | sl_cat_buffer_j10_sys      | buffer(j=0.10)  | 100   | 3e-4  |
-| 15214294 | sl_cat_pat_p10_sys_s200    | patience(p=10)  | 200   | 3e-4  |
-| 15214295 | sl_cat_buff_j10_sys_s200   | buffer(j=0.10)  | 200   | 3e-4  |
-| 15214296 | sl_cat_pat_p10_sys_lr1e3   | patience(p=10)  | 100   | 1e-3  |
-| 15214297 | sl_cat_buff_j10_sys_lr1e3  | buffer(j=0.10)  | 100   | 1e-3  |
+|             | pat+user | pat+system | buff+user | buff+system |
+|-------------|----------|------------|-----------|-------------|
+| baseline    | 15214629 | 15214636   | 15214139  | 15214274    |
+| s400        | 15214634 | 15214658   | 15214659  | 15214660    |
+| lr1e3       | 15214661 | 15214638   | 15214662  | 15214297    |
 
-Forms a clean 2×2 at baseline hparams: {patience, buffer} × {user pool,
-system pool} once in-flight 15214041 (patience_p10, user) and 15214139
-(buffer_j10, user) land. The s200 and lr1e3 rows add 1D ablations on top,
-only at system-pool (user-pool baselines from the 2026-04-16 and
-2026-04-21 sweeps already cover those hparams).
+Queue assignment:
+- `slconf40s` (jag-standard 48G): baseline pat/buff + sys baseline
+- `slconf40h` (jag-hi 48G): lr1e3 pat+user, lr1e3 buff+user (new)
+- `slconf_sphinx` (sphinx 80G): all s400 runs (longer wall-clock,
+  more memory headroom for longer rollouts)
+- s200 ablation runs (15214637 pat+sys+s200, 15214295 buff+sys+s200,
+  15214633 pat+user+s200) launched earlier; not in the grid above
+  since no s200×{user,buffer} cells yet — orthogonal ablations only.
 
-Naming note: new jobs abbreviate `patience` → `pat` and `buffer` → `buff`
-to fit SLURM's display width (older ones keep the long name).
+Naming note: jobs from the resubmit-with-fix and onward use abbreviated
+`pat` / `buff` (older names like `sl_cat_patience_p10` kept for
+continuity since the output paths predate the rename).
 
 ## Patience restart bug (caught + fixed mid-day)
 
