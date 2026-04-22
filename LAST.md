@@ -14,8 +14,8 @@ Two LARGO upgrades on the SL:cat sysprompt-recovery path:
    kept; new system-position pool added; selector field picks the active
    pool.
 
-Five new jobs launched comparing the new metric (3 thresholds) and the new
-decode pool (2 strategies, holding hparams of in-flight comparison runs).
+Nine new jobs launched: 3-threshold buffer-jaccard sweep on user pool +
+2×3 grid on system pool (2 strategies × {baseline, steps×2, lr×3.3}).
 
 ## Buffer similarity: jaccard
 
@@ -98,17 +98,62 @@ Threshold sweep — buffer + jaccard at 3 cutoffs, user pool, ε=0.25, top_k=32:
 | 15214139 | sl_cat_buffer_j10   | 0.10      | user   |
 | 15214140 | sl_cat_buffer_j20   | 0.20      | user   |
 
-System-pool comparison — 2 strategies at fixed hparams matching in-flight
-user-pool runs (patience(p=10), buffer(threshold=0.10)):
+System-pool comparison — 2 strategies × 3 hparam settings. Baselines match
+in-flight user-pool runs (patience(p=10), buffer(threshold=0.10)); s200
+doubles steps_per_round; lr1e3 bumps lr ~3.3× from 3e-4 default:
 
-| ID       | Name                       | Strategy            | Pool   |
-|----------|----------------------------|---------------------|--------|
-| 15214273 | sl_cat_patience_p10_sys    | patience(p=10)      | system |
-| 15214274 | sl_cat_buffer_j10_sys      | buffer(j=0.10)      | system |
+| ID       | Name                       | Strategy        | steps | lr    |
+|----------|----------------------------|-----------------|-------|-------|
+| 15214273 | sl_cat_patience_p10_sys    | patience(p=10)  | 100   | 3e-4  |
+| 15214274 | sl_cat_buffer_j10_sys      | buffer(j=0.10)  | 100   | 3e-4  |
+| 15214294 | sl_cat_pat_p10_sys_s200    | patience(p=10)  | 200   | 3e-4  |
+| 15214295 | sl_cat_buff_j10_sys_s200   | buffer(j=0.10)  | 200   | 3e-4  |
+| 15214296 | sl_cat_pat_p10_sys_lr1e3   | patience(p=10)  | 100   | 1e-3  |
+| 15214297 | sl_cat_buff_j10_sys_lr1e3  | buffer(j=0.10)  | 100   | 1e-3  |
 
-Forms a clean 2×2: {patience, buffer} × {user pool, system pool} once
-in-flight 15214041 (patience_p10, user) and 15214139 (buffer_j10, user)
-land.
+Forms a clean 2×2 at baseline hparams: {patience, buffer} × {user pool,
+system pool} once in-flight 15214041 (patience_p10, user) and 15214139
+(buffer_j10, user) land. The s200 and lr1e3 rows add 1D ablations on top,
+only at system-pool (user-pool baselines from the 2026-04-16 and
+2026-04-21 sweeps already cover those hparams).
+
+Naming note: new jobs abbreviate `patience` → `pat` and `buffer` → `buff`
+to fit SLURM's display width (older ones keep the long name).
+
+## Patience restart bug (caught + fixed mid-day)
+
+Job 15214045 `patience_p10_s200` (sphinx) crashed at round 25 right after
+its first restart with `RuntimeError: element 0 of tensors does not
+require grad`. Root cause: `_make_init_z_list` returned raw tensors
+without `requires_grad_(True)`. The optimizer's `__init__` wrapped its
+result, but `PatienceStrategy.step`'s restart path called
+`_make_init_z_list` directly and skipped the wrap. Next round's soft-opt
+backward then failed.
+
+Fix in commit `faa402a`: `_make_init_z_list` always returns optim-ready
+tensors (detached + requires_grad). Verified by
+`claude_scripts/test_patience_restart.py`.
+
+All 9 still-in-flight patience runs (yesterday's p5/p10/p25 +
+p10_s25/s50/s400 + today's p10_sys / p10_sys_s200 / p10_sys_lr1e3) had
+the same bug latent — would crash on first restart trigger. Cancelled
++ resubmitted. New IDs:
+
+| Old      | New      | Name                        |
+|----------|----------|-----------------------------|
+| 15214039 | 15214628 | sl_cat_patience_p5          |
+| 15214041 | 15214629 | sl_cat_patience_p10         |
+| 15214042 | 15214630 | sl_cat_patience_p25         |
+| 15214043 | 15214631 | sl_cat_patience_p10_s25     |
+| 15214044 | 15214632 | sl_cat_patience_p10_s50     |
+| 15214045 | 15214633 | sl_cat_patience_p10_s200    |
+| 15214047 | 15214634 | sl_cat_patience_p10_s400    |
+| 15214273 | 15214636 | sl_cat_pat_p10_sys          |
+| 15214294 | 15214637 | sl_cat_pat_p10_sys_s200     |
+| 15214296 | 15214638 | sl_cat_pat_p10_sys_lr1e3    |
+
+Buffer + naive runs (no restart logic) were safe and continued running
+unaffected.
 
 ## Decisions / open knobs
 
@@ -138,17 +183,20 @@ land.
 
 ## Next session — pick up here
 
-1. **Wait for jobs** — 5 new + 8 in-flight from yesterday. Land overnight.
-2. **2×2 comparison**: does system pool beat user pool at fixed strategy?
-   Within each pool, does buffer beat patience?
-3. **By-template tally**: read the end-of-run table from each system-pool
+1. **Wait for jobs** — 9 new + 8 in-flight from yesterday. Land overnight.
+2. **2×2 baseline comparison**: does system pool beat user pool at fixed
+   strategy? Within each pool, does buffer beat patience?
+3. **System-pool ablations** (s200, lr1e3): does doubling steps_per_round
+   help (more soft-opt per round) or hurt (less restart freedom)? Does
+   3.3× lr help (escape lineage lock-in) or hurt (overshoot)?
+4. **By-template tally**: read the end-of-run table from each system-pool
    run to see which sysprompt-recovery prompts produce signal vs junk.
    Drop dead weight from the pool.
-4. **Behavioral eval**: cat-mention rate on best prompt per run. Only
+5. **Behavioral eval**: cat-mention rate on best prompt per run. Only
    metric that distinguishes "found cat lineage" from "found something
    with low NLL".
-5. **ε sweep at the winning threshold** if buffer wins — deferred from
+6. **ε sweep at the winning threshold** if buffer wins — deferred from
    today on the grounds that threshold is the precondition for ε to matter.
-6. **Possibly empty-prefill variants** in the system pool — currently all
+7. **Possibly empty-prefill variants** in the system pool — currently all
    templates are prefilled, so we can't see what Qwen spontaneously says.
    Add 1-2 empty-prefill variants if by-template tally suggests they'd help.
