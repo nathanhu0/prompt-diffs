@@ -1,82 +1,90 @@
-# System Prompt Distillation via Text Optimization
+# LARGO + Prompt Recovery for Model Organisms
 
 ## Project Overview
-Can we rewrite text (e.g., paper abstracts) so that an LLM behaves as if it received a hidden system prompt instruction? This is "system prompt distillation" — distilling the effect of an instruction into the text itself.
+Given a fine-tuned model organism `M_ft = fine-tune(M_base, D)`, recover a
+system prompt π such that `p(y | x, π; M_base)` mimics the behavior of
+`M_ft`. Prompt recovery acts as a proxy for understanding what fine-tuning
+"learned" — a recoverable π suggests the behavior can be attributed to an
+instruction, not deep parametric change.
 
-**Approach**: Generate reference rollouts from a model with a system prompt injection (e.g., "this paper is exceptional"), then optimize the abstract to maximize the likelihood of those rollouts *without* the injection. The abstract should induce the same behavior as the injection.
+**Current focus**: LARGO (self-reflective discrete optimization via soft →
+decode → re-embed) applied to two model-organism families: Subliminal
+Learning (SL) and Emergent Misalignment (EM). See
+`model_organisms/CLAUDE.md` for per-dataset details, released-adapter
+skylines, and loader conventions.
 
-**Injections tested**: positive (be favorable), negative (be critical), apple (mention apples), watermelon (mention watermelons). Each tests a different axis of behavioral control.
+**History note**: this repo began as "System Prompt Distillation via Text
+Optimization" — rewriting paper abstracts to induce behavioral shifts on
+abstract readers. That task is retired; its code lives in `dep_abstract/`
+for reference only.
 
-**Current status**: LARGO optimizer bridges soft→discrete gap via self-reflective decoding. Running large-scale experiments (100 papers × 4 injection types) with suffix mode. PGD also implemented but struggles with the soft→hard gap. Next: behavioral eval of optimized suffixes (sampling + judge scoring).
+## Directory layout
 
-## Architecture
-- `generate_reference_rollouts.py` — Stage 1: generate rollouts with injection present. Saves to parquet. One file per injection type.
-- `distill_scorer.py` — NLL scorer using HF model. Batched forward passes. Train/val/test split of rollouts.
-- `soft_distill.py` — Soft prompt optimization. `tokenize_with_spans` for offset-based segment tracking. `compute_distill_loss` for NLL on target tokens. `optimize_abstract` with early stopping on val.
-- `run_soft_optimize.py` — Launch soft prompt optimization across papers. Saves best_z + train/val/test curves.
-- `run_distill_optimize.py` — BoN optimization with NLL objective. Uses vLLM for rewriting, HF for scoring.
-- `cot_scorer.py` — Judge prompts (harsh_nodim, accept_reject, novelty, soundness) with CoT and logit modes.
-- `serve.py` — Launch vLLM servers as subprocesses.
-- `run_optimize.py` — Original entry point for CoT/logit BoN optimization.
-- `methods/bon.py` — Best-of-N rewriting with styles: open, minimal, prescriptive.
+- `optimize/` — general LARGO/PGD/soft-prompt library. No task-specific
+  code. Imports nothing from `model_organisms/`.
+  - `optimizers/largo.py, pgd.py, soft.py`
+  - `template_factories/sysprompt.py, madlib.py` — build objectives that
+    splice a learnable slot into a chat template
+  - `objectives/nll.py` — NLL scoring over target tokens
+  - `templates.py`, `config_utils.py`
+- `model_organisms/` — application layer. Data loaders, configs, entry
+  points, interactive play scripts. See `model_organisms/CLAUDE.md`.
+- `model_organisms/configs/` — active YAMLs. Canonical config:
+  `largo_sl_cat_pat5_sys.yaml` (self-contained "best defaults" —
+  decode_pool=system, patience(5), num_rounds=100).
+- `dep_abstract/` — archived abstract-rewriting code. Nothing active
+  imports it. See `dep_abstract/README.md`.
+- `specs/` — design docs for the framework.
+- `slconf/` — SLURM submission configs.
 
-## Data & Splits
-- `data/iclr2026_subsample.parquet` — 976 papers (223 oral + 250 poster + 502 reject)
-- Reference rollouts in `/nlp/scr/nathu/latent_rewrite/context_distill/{positive,negative,apple,watermelon}.parquet`
-- 10 fixed queries per paper, 5 rollouts each = 50 rollouts per paper
-- **Train**: queries 0-5, rollouts 0-3 (24 rollouts) — used for optimization
-- **Val**: queries 6-7 all rollouts + rollout 4 from queries 0-5 (16 rollouts) — early stopping
-- **Test**: queries 8-9 all rollouts (10 rollouts) — final evaluation
-- Results save to `/nlp/scr/nathu/latent_rewrite/results/{optimizer}/{task}_{mode}_{timestamp}.pt`
+## Key entry points
 
-## Key Findings
-- **NLL objective works**: injection shifts NLL by ~0.15 nats/token (0.42 → 0.28 with injection)
-- **BoN paraphrasing can't improve NLL**: lexical mismatch penalty (~0.3 nats) overwhelms injection signal (~0.15 nats). Minimal edits preserve NLL but don't improve it.
-- **Soft prompt optimization generalizes**: continuous embedding optimization reduces both train and held-out NLL. Proves the signal is there for stronger discrete methods.
-- **CoT judge optimization is brittle**: optimizing against t=0 CoT doesn't generalize to other temperatures or logit scores. Context distillation is a more robust framing.
+- `model_organisms/run_nll.py` — the LARGO runner. Takes a YAML config;
+  supports `--set key.path=value` overrides, `--output`, `--gpu`. Also the
+  home of `DEFAULT_USER_TEMPLATES`, `DEFAULT_SYSTEM_TEMPLATES`, the `prune`
+  helper, and `DECODE_TEMPLATE_POOLS`.
+- `model_organisms/interrogate_soft_sweep.py` — pure soft-prompt training
+  (no LARGO decode loop); jupytext-cell style.
+- `model_organisms/play_soft_decode.py` — interactive: load trained z's,
+  decode via `LargoOptimizer._decode`, rescore as hard sysprompts.
 
-## optimize/ Framework
-- `optimize/objectives/nll_distill.py` — NLL distillation objective. Supports batched forward passes via `_score_batch` and `mini_batch_size` param on `loss()`.
-- `optimize/objectives/prefill.py` — Fixed prefill objective (inherits NLLDistillObjective).
-- `optimize/optimizers/soft.py` — Soft prompt (continuous embedding) optimizer.
-- `optimize/optimizers/pgd.py` — PGD optimizer (simplex-projected, entropy constraints).
-- `optimize/optimizers/largo.py` — LARGO optimizer (alternates soft optimization with self-reflective decoding).
-- `optimize/runner.py` — Wires config → objective + optimizer. Handles frozen/learnable split via `target.mode` (full vs suffix). CLI overrides: `--rollouts`, `--output`, `--limit`, `--gpu`.
-- `optimize/configs/` — Run configs for the optimize framework. One config per optimizer+mode, `--rollouts` flag swaps injection type.
-- `configs/test/` — Throwaway test configs.
-- `specs/optimization_framework.md` — Design doc for the framework interfaces.
+## LARGO architecture (`optimize/optimizers/largo.py`)
 
-## Batch Size Limits (Llama 3.1 8B, bf16)
-Model takes ~16GB. Rollout sequences are ~500-800 tokens each (prefix + abstract + query + rollout).
+Each round:
+1. **Soft phase**: `steps_per_round` Adam updates on continuous z.
+2. **Decode phase**: sample `decode_samples` candidates using the
+   configured `decode_templates` (see `DECODE_TEMPLATE_POOLS`). Each
+   template is `{system?, user?, prefill?, postprocess?}` — postprocess
+   lambdas let a template own its own cleanup (parseable delimiter
+   extraction + shared `prune` for wrapper stripping). `_decode` applies
+   postprocess and retokenizes so text and ids stay in sync, which means
+   hard_val scoring, `best_text` saving, and next-round z re-embed all
+   see the same cleaned candidate.
+3. **Strategy phase**: Naive / Patience / Buffer (RTR) picks next z.
 
-**48GB GPU (tested on A6000-class, 2026-04-13):**
-| Mode | Max batch | Peak memory |
-|---|---|---|
-| no_grad B=24 | works | 31.0 GB |
-| no_grad B=16 | works | 26.0 GB |
-| no_grad B=8 | works | 21.1 GB |
-| with_grad B=4 | works | 34.2 GB |
-| with_grad B=8 | OOM | - |
+## Running a job
 
-**80GB GPU (A100, estimated from above):**
-- ~64GB available after model. ~0.6 GB/rollout no_grad, ~4.5 GB/rollout with_grad.
-- no_grad: all 24 train rollouts in one batch (safe)
-- with_grad: B=12 should fit (~54 GB estimated), B=8 is safe
+```
+ebatch <name> slconf/<queue> "PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python model_organisms/run_nll.py <config> [--set ...] [--output ...]"
+```
+`PYTHONUNBUFFERED=1 PYTHONPATH=.` is required (repo's scripts import
+`model_organisms.*` as a package — sys.path needs repo root).
 
-**Recommended defaults:**
-- 48GB: `mini_batch_size=4` for training, full batch for eval
-- 80GB: `mini_batch_size=8` for training, full batch for eval
+## Models (current)
 
-## Models
-- Llama 3.1 8B Instruct — scorer (logit + CoT), rewriter, and distillation target. Served via vLLM.
-- GPT-4.1-mini — API rewriter and CoT judge.
+- **Qwen 2.5 7B Instruct** — base for SL experiments. HF defaults
+  `temperature=0.7, top_p=0.8`.
+- **Llama 3.1 8B Instruct** — base for EM experiments. HF defaults
+  `temperature=0.6, top_p=0.9`.
 
-## Sampling Defaults
-- Llama 3.1 8B Instruct HF defaults: `temperature=0.6, top_p=0.9`. Always use these unless we explicitly want deterministic (t=0).
-- Our `serve.py` uses `--generation-config vllm` which ignores HF defaults, so we must pass temperature/top_p explicitly in API calls.
+Both run via HF (no vLLM) in the current prompt-recovery workflow.
 
-## vLLM Notes
-- v0.11.0. Requires `VLLM_ATTENTION_BACKEND=FLASH_ATTN` and `CPATH=/usr/include/python3.12` and system libstdc++ for JIT compilation.
-- `--generation-config vllm` disables HF default sampling param overrides (see Sampling Defaults above).
-- Data parallel: `--data-parallel-size N` for multi-GPU.
-- `serve.py` handles all env vars automatically.
+## Batch-size reference (Llama 3.1 8B / Qwen 2.5 7B, bf16)
+
+48GB GPU, with-grad: `mini_batch_size=4` safe, 8 OOMs.
+48GB GPU, no-grad eval: batches of 16–24 fit.
+80GB GPU, with-grad: `mini_batch_size=8` safe; `12` usually fits.
+
+The canonical config uses `mini_batch_size=16, train_batch_size=16`; LARGO
+accumulates gradients internally so peak memory stays below the grad-8
+ceiling despite the 16 declared.
