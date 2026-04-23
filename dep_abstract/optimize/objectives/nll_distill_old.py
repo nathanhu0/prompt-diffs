@@ -17,13 +17,18 @@ def _build_messages(user_content, rollout_text):
     ]
 
 
-def _tokenize_rollout(tokenizer, user_content, abstract, rollout_text):
-    """Tokenize a rollout and find the abstract slot boundaries.
+def _tokenize_rollout(tokenizer, user_content, slot_text, rollout_text):
+    """Tokenize a rollout and find the slot boundaries.
+
+    Args:
+        user_content: the full user message content (what gets rendered)
+        slot_text: substring of user_content that defines the slot
+            (must appear exactly once)
 
     Returns:
-        prefix_ids: token ids before the abstract slot
-        slot_ids: token ids for the abstract slot (original tokens)
-        suffix_ids: token ids after the abstract slot
+        prefix_ids: token ids before the slot
+        slot_ids: token ids for the slot (original tokens)
+        suffix_ids: token ids after the slot
         target_start: index where target tokens start in the full sequence
     """
     messages = _build_messages(user_content, rollout_text)
@@ -33,17 +38,20 @@ def _tokenize_rollout(tokenizer, user_content, abstract, rollout_text):
     input_ids = encoding.input_ids
     offsets = encoding.offset_mapping
 
-    # Find abstract char span
-    abs_start = full_text.index(abstract)
-    abs_end = abs_start + len(abstract)
-    assert full_text.count(abstract) == 1, \
-        f"Abstract must appear exactly once in template, found {full_text.count(abstract)}"
+    # slot_text must be unique within the user message (not the full template,
+    # since the rollout may quote it). Find it there, then map to full_text.
+    assert user_content.count(slot_text) == 1, \
+        f"slot_text must appear exactly once in user_content, " \
+        f"found {user_content.count(slot_text)}"
+    user_char_offset = full_text.index(user_content)
+    slot_char_start = user_char_offset + user_content.index(slot_text)
+    slot_char_end = slot_char_start + len(slot_text)
 
     # Map char span to token boundaries
     slot_start = None
     slot_end = None
     for idx, (cs, ce) in enumerate(offsets):
-        if cs >= abs_start and ce <= abs_end and cs < ce:
+        if cs >= slot_char_start and ce <= slot_char_end and cs < ce:
             if slot_start is None:
                 slot_start = idx
             slot_end = idx + 1
@@ -74,23 +82,28 @@ class NLLDistillObjective:
     full slot embeddings and scores them.
     """
 
-    def __init__(self, model, tokenizer, title, abstract, rollouts_by_split):
+    def __init__(self, model, tokenizer, title, abstract, rollouts_by_split,
+                 slot_text=None):
         """
         Args:
             model: frozen HF causal LM
             tokenizer: HF tokenizer
             title: paper title
-            abstract: paper abstract (defines the slot location)
+            abstract: paper abstract (rendered into the user content)
             rollouts_by_split: dict with keys "train", "val", "test",
                 each a list of dicts with "query_text" and "rollout_text"
+            slot_text: substring defining the slot location. Defaults to the
+                full abstract. Set to a sub-substring (e.g. the last sentence)
+                to optimize only part of the abstract.
         """
         self.model = model
         self.tokenizer = tokenizer
         self.embed_matrix = self._get_embed_matrix(model)
         self.device = self.embed_matrix.device
         self.abstract = abstract
+        self.slot_text = slot_text if slot_text is not None else abstract
 
-        # User content template — abstract defines the slot
+        # User content template — abstract is what gets rendered
         user_template = f"Title: {title}\n\nAbstract: {abstract}"
 
         # Pre-tokenize all rollouts into (prefix, slot, suffix, target_start)
@@ -101,7 +114,7 @@ class NLLDistillObjective:
             for r in rollouts:
                 user_content = f"{user_template}\n\n{r['query_text']}"
                 prefix, slot, suffix, target_start = _tokenize_rollout(
-                    tokenizer, user_content, abstract, r["rollout_text"]
+                    tokenizer, user_content, self.slot_text, r["rollout_text"]
                 )
                 split_data.append((prefix, slot, suffix, target_start))
                 if self._slot_ids is None:
