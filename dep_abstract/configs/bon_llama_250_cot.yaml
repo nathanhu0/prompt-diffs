@@ -9,7 +9,7 @@ scorers:
     cot: true
     k_select: 1
     k_eval: 0
-    temperature: 0.01
+    temperature: 0.0
 
   llama_cot_t05:
     model: meta-llama/Llama-3.1-8B-Instruct

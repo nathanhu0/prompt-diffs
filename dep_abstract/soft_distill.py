@@ -4,7 +4,6 @@ Optimizes abstract embeddings to minimize NLL of reference rollouts.
 """
 import torch
 import torch.nn.functional as F
-from generate_reference_rollouts import build_messages
 
 
 def get_embed_matrix(model):
@@ -14,15 +13,25 @@ def get_embed_matrix(model):
     return model.get_input_embeddings().weight
 
 
-def tokenize_with_spans(tokenizer, title, abstract, query, rollout_text):
+def tokenize_with_spans(tokenizer, user_text, optimize_text, query, rollout_text):
     """Tokenize a full chat message and return token ids + span masks.
+
+    Args:
+        tokenizer: HF tokenizer
+        user_text: the full user message content (e.g. "Title: ...\n\nAbstract: ...")
+        optimize_text: substring of user_text to mark as optimizable (must appear exactly once)
+        query: query text appended after user_text
+        rollout_text: assistant response (the target for loss computation)
 
     Returns:
         input_ids: list of token ids
-        abstract_mask: bool list, True for abstract tokens
+        optimize_mask: bool list, True for optimizable tokens
         target_mask: bool list, True for assistant response tokens
     """
-    messages = build_messages(title, abstract, injection="", query=query)
+    messages = [
+        {"role": "system", "content": ""},
+        {"role": "user", "content": f"{user_text}\n\n{query}"},
+    ]
     messages.append({"role": "assistant", "content": rollout_text})
 
     # Get full text and tokenize with offsets
@@ -31,10 +40,11 @@ def tokenize_with_spans(tokenizer, title, abstract, query, rollout_text):
     input_ids = encoding.input_ids
     offsets = encoding.offset_mapping  # list of (start_char, end_char)
 
-    # Find abstract char span
-    abstract_start = full_text.index(abstract)
-    abstract_end = abstract_start + len(abstract)
-    assert full_text.count(abstract) == 1, "Abstract appears multiple times in chat template"
+    # Find optimize_text char span
+    opt_start = full_text.index(optimize_text)
+    opt_end = opt_start + len(optimize_text)
+    assert full_text.count(optimize_text) == 1, \
+        f"optimize_text must appear exactly once in rendered template, found {full_text.count(optimize_text)}"
 
     # Find target boundary via prefix length (matches scorer exactly)
     prompt_ids = tokenizer.apply_chat_template(
@@ -43,25 +53,25 @@ def tokenize_with_spans(tokenizer, title, abstract, query, rollout_text):
     target_token_start = len(prompt_ids)
 
     # Map char spans to token masks
-    abstract_mask = []
+    optimize_mask = []
     target_mask = []
     for idx, (cs, ce) in enumerate(offsets):
-        abstract_mask.append(cs >= abstract_start and ce <= abstract_end and cs < ce)
+        optimize_mask.append(cs >= opt_start and ce <= opt_end and cs < ce)
         target_mask.append(idx >= target_token_start)
 
-    return input_ids, abstract_mask, target_mask
+    return input_ids, optimize_mask, target_mask
 
 
-def compute_distill_loss(model, embed_matrix, input_ids, abstract_embeds,
-                         abstract_mask, target_mask):
-    """Compute NLL on target tokens, substituting abstract embeddings.
+def compute_distill_loss(model, embed_matrix, input_ids, z,
+                         optimize_mask, target_mask):
+    """Compute NLL on target tokens, substituting optimizable embeddings.
 
     Args:
         model: frozen LLM
         embed_matrix: token embedding matrix
         input_ids: full sequence token ids (list)
-        abstract_embeds: (n_abstract_tokens, dim) learnable embeddings
-        abstract_mask: bool list marking abstract tokens
+        z: (n_optimize_tokens, dim) learnable embeddings
+        optimize_mask: bool list marking optimizable tokens
         target_mask: bool list marking target tokens
 
     Returns:
@@ -70,10 +80,10 @@ def compute_distill_loss(model, embed_matrix, input_ids, abstract_embeds,
     ids_tensor = torch.tensor(input_ids, device=embed_matrix.device)
     embeds = embed_matrix[ids_tensor]  # (seq_len, dim)
 
-    # Substitute abstract embeddings
-    abstract_indices = [i for i, m in enumerate(abstract_mask) if m]
+    # Substitute optimizable embeddings
+    optimize_indices = [i for i, m in enumerate(optimize_mask) if m]
     embeds = embeds.clone()
-    embeds[abstract_indices] = abstract_embeds
+    embeds[optimize_indices] = z
 
     logits = model(inputs_embeds=embeds.unsqueeze(0)).logits[0]  # (seq_len, vocab)
 
@@ -88,19 +98,20 @@ def compute_distill_loss(model, embed_matrix, input_ids, abstract_embeds,
     return per_token.mean(), per_token
 
 
-def compute_distill_loss_multi(model, embed_matrix, abstract_embeds,
+def compute_distill_loss_multi(model, embed_matrix, z,
                                rollout_data, reduction="mean"):
     """Compute mean NLL across multiple rollouts.
 
     Args:
-        rollout_data: list of (input_ids, abstract_mask, target_mask) tuples
+        z: (n_optimize_tokens, dim) learnable embeddings
+        rollout_data: list of (input_ids, optimize_mask, target_mask) tuples
         reduction: "mean" or "none"
     """
     losses = []
-    for input_ids, abstract_mask, target_mask in rollout_data:
+    for input_ids, optimize_mask, target_mask in rollout_data:
         mean_loss, _ = compute_distill_loss(
-            model, embed_matrix, input_ids, abstract_embeds,
-            abstract_mask, target_mask
+            model, embed_matrix, input_ids, z,
+            optimize_mask, target_mask
         )
         losses.append(mean_loss)
 
@@ -110,10 +121,17 @@ def compute_distill_loss_multi(model, embed_matrix, abstract_embeds,
 
 
 def optimize_abstract(model, tokenizer, train_rollouts, val_rollouts,
-                      title, abstract, num_steps=100, lr=1e-3,
+                      user_text, optimize_text, num_steps=100, lr=1e-3,
                       weight_decay=0.0, relative_weight_decay=0.0,
+                      suffix_init=None,
                       log_every=1, test_rollouts=None):
-    """Optimize abstract embeddings with early stopping on val.
+    """Optimize embeddings for optimize_text span with early stopping on val.
+
+    Args:
+        user_text: full user message content (e.g. "Title: ...\n\nAbstract: ...")
+        optimize_text: substring of user_text to optimize (must appear exactly once)
+        suffix_init: None = init from original tokens, "random" = random normal,
+                     "zeros" = zero embeddings
 
     Returns:
         best_z (by val), history dict with train/val/test per step
@@ -122,26 +140,36 @@ def optimize_abstract(model, tokenizer, train_rollouts, val_rollouts,
 
     # Tokenize all splits
     train_data = [
-        tokenize_with_spans(tokenizer, title, abstract, r["query_text"], r["rollout_text"])
+        tokenize_with_spans(tokenizer, user_text, optimize_text, r["query_text"], r["rollout_text"])
         for r in train_rollouts
     ]
     val_data = [
-        tokenize_with_spans(tokenizer, title, abstract, r["query_text"], r["rollout_text"])
+        tokenize_with_spans(tokenizer, user_text, optimize_text, r["query_text"], r["rollout_text"])
         for r in val_rollouts
     ]
     test_data = None
     if test_rollouts:
         test_data = [
-            tokenize_with_spans(tokenizer, title, abstract, r["query_text"], r["rollout_text"])
+            tokenize_with_spans(tokenizer, user_text, optimize_text, r["query_text"], r["rollout_text"])
             for r in test_rollouts
         ]
 
-    # Initialize from original abstract embeddings
+    # Initialize optimizable embeddings
     first_ids, first_mask, _ = train_data[0]
-    abstract_indices = [i for i, m in enumerate(first_mask) if m]
-    abstract_ids = [first_ids[i] for i in abstract_indices]
-    z = embed_matrix[torch.tensor(abstract_ids, device=embed_matrix.device)].clone().detach()
-    z.requires_grad_(True)
+    optimize_indices = [i for i, m in enumerate(first_mask) if m]
+    n_tokens = len(optimize_indices)
+    dim = embed_matrix.shape[1]
+    device = embed_matrix.device
+
+    if suffix_init == "random":
+        # Match scale of real embeddings
+        z = torch.randn(n_tokens, dim, device=device) * embed_matrix.std()
+    elif suffix_init == "zeros":
+        z = torch.zeros(n_tokens, dim, device=device)
+    else:
+        optimize_ids = [first_ids[i] for i in optimize_indices]
+        z = embed_matrix[torch.tensor(optimize_ids, device=device)].clone()
+    z = z.detach().requires_grad_(True)
     z_init = z.clone().detach()
 
     optimizer = torch.optim.Adam([z], lr=lr, weight_decay=weight_decay)
@@ -152,10 +180,10 @@ def optimize_abstract(model, tokenizer, train_rollouts, val_rollouts,
     for step in range(num_steps):
         optimizer.zero_grad()
         train_loss = 0.0
-        for input_ids, abstract_mask, target_mask in train_data:
+        for input_ids, optimize_mask, target_mask in train_data:
             loss, _ = compute_distill_loss(
                 model, embed_matrix, input_ids, z,
-                abstract_mask, target_mask
+                optimize_mask, target_mask
             )
             (loss / len(train_data)).backward()
             train_loss += loss.item()
