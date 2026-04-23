@@ -1,0 +1,43 @@
+# SL:cat — canonical "best defaults" as of 2026-04-22.
+# Self-contained sibling of largo_sl_cat_default.yaml. Differences vs default:
+#   - task.decode_pool: system (V2 system-slot templates with postprocess)
+#   - optimizer.strategy: patience(5) inlined (default has no strategy block)
+# All other hparams match largo_sl_cat_default.yaml.
+
+task:
+  type: sysprompt_recovery
+  dataset: "sl:qwen2.5-7b-instruct:cat"
+  n_train: 8000
+  n_val: 500
+  n_test: 1500
+  n_learnable: 128
+  sysprompt_init: null
+  n_restarts: 1
+  seed: 0
+  decode_pool: system
+
+optimizer:
+  type: largo
+  init: random
+  lr: 1e-3
+  num_rounds: 100
+  steps_per_round: 200
+  weight_decay: 0.001
+  mini_batch_size: 16
+  train_batch_size: 16
+  decode_temperature: 1.0
+  decode_samples: 8
+  min_n_learnable: 32
+  pad_mode: zeros
+  grow_headroom: 0
+  decode_templates: null
+  strategy:
+    type: patience
+    patience: 5
+    max_restarts: null
+    restart_init: random
+
+run:
+  output: /nlp/scr/nathu/latent_rewrite/subliminal_learning/sl_cat_pat5_sys.pt
+  gpu: 0
+  log_every: 10

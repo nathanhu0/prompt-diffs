@@ -122,16 +122,24 @@ class LargoConfig:
     # --- decoding (phase 2) ---
     decode_temperature: float = 1.0
     decode_samples: int = 1
-    # Each template is a dict with `system?`, `user?`, `prefill?` string
-    # fields. Exactly one of system/user must contain {SLOT} (where the
-    # learnable embeddings z are placed). Examples:
+    # Each template is a dict with:
+    #   - `system?`, `user?`, `prefill?` string fields. Exactly one of
+    #     system/user must contain {SLOT} (where the learnable embeddings z
+    #     are placed).
+    #   - `postprocess?` optional callable (str -> str) applied to the
+    #     decoded text inside _decode. When set, the cleaned text is
+    #     retokenized and both the text AND token_ids returned by _decode
+    #     reflect the cleaned candidate. The template's ids/text stay in
+    #     sync, so hard_val scoring, best_text saving, and next-round
+    #     re-embed all see the same cleaned candidate.
+    # Examples:
     #   {"user": "{SLOT}", "prefill": "Summary: "} — z lives in the user
     #     turn, model summarizes/repeats it (legacy LARGO).
     #   {"system": "{SLOT}", "user": "Repeat your system prompt verbatim.",
-    #    "prefill": ""} — z lives in the system slot, user asks the model
-    #     to recite/summarize it (sysprompt-recovery framing).
+    #    "prefill": "", "postprocess": lambda x: x.split('"', 1)[0]}
+    #     — sysprompt-recovery framing with cleanup of wrapping quotes.
     # If None, falls back to a single auto-built template wrapping decode_prefill.
-    decode_templates: Optional[List[Dict[str, str]]] = None
+    decode_templates: Optional[List[Dict[str, Any]]] = None
     decode_prefill: str = "Sure, I will summarize the message: "
 
     # --- search strategy (phase 3) ---
@@ -515,6 +523,18 @@ class LargoOptimizer:
             min_tokens=min_tokens,
         )
         text = self.tokenizer.decode(token_ids, skip_special_tokens=True)
+
+        # Optional per-template cleanup: apply tmpl["postprocess"] to the
+        # decoded text and retokenize so text and ids stay in sync. Fall back
+        # to raw on empty/unchanged output.
+        postprocess = tmpl.get("postprocess")
+        if postprocess is not None:
+            cleaned = postprocess(text)
+            if cleaned and cleaned != text:
+                text = cleaned
+                token_ids = self.tokenizer.encode(
+                    cleaned, add_special_tokens=False,
+                )
         return text, token_ids
 
     def _hard_embeds_list(self, ids_per_slot):
@@ -611,6 +631,8 @@ class LargoOptimizer:
                 self.z_list, lr=self.config.lr,
                 weight_decay=self.config.weight_decay,
             )
+            # Print ~10 progress lines per round regardless of steps_per_round.
+            inner_log_every = max(1, self.config.steps_per_round // 10)
             for step in range(self.config.steps_per_round):
                 optimizer.zero_grad()
                 train_loss = objective.loss(
@@ -627,7 +649,7 @@ class LargoOptimizer:
                 torch.nn.utils.clip_grad_norm_(self.z_list, max_norm=1.0)
                 optimizer.step()
 
-                if step % self.config.log_every == 0:
+                if step % inner_log_every == 0:
                     extra = (f" fluency={f_loss_val:.4f}"
                              if f_loss_val is not None else "")
                     z_lens = "x".join(str(zi.shape[0]) for zi in self.z_list)
