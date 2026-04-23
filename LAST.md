@@ -1,30 +1,62 @@
-# Last session — 2026-04-22 (afternoon)
+# Last session — 2026-04-22 (afternoon + evening)
 
 ## TL;DR
 
-Built end-to-end "soft-prompt → decode → rescore" interactive workflow for SL:cat,
-then promoted the results into the canonical LARGO path:
+Three deliverables this session, all committed:
 
-1. Trained a 2×2 soft-prompt grid (steps ∈ {100, 200} × lr ∈ {1e-3, 3e-4}) with
-   identical seed/batch order across the 4 runs. Confirmed convergence + determinism.
-2. Designed V2 system-slot decode templates — 8 variants, each with a prefill that
-   structurally forces the model's next tokens to BE the candidate sysprompt (not
-   commentary about it). Per-template `postprocess` lambdas do extraction; shared
-   `prune` handles wrapper-delimiter fallback.
-3. Migrated V2 templates + `prune` into `run_nll.py`, replacing the V1
-   `DEFAULT_SYSTEM_TEMPLATES`. Threaded `postprocess` into `LargoOptimizer._decode`
-   so hard_val / best_text / next-round z all consume cleaned candidates.
-4. Launched a 7-job LARGO sweep on the new `pat5_sys` config (patience=5 +
-   system pool): steps_per_round ∈ {50, 100, 200, 400} and lr ∈ {3e-4, 1e-3, 3e-3}
-   (changes-from-default only).
+1. **V2 system-slot decode templates + postprocess threading** into LARGO.
+   `DEFAULT_SYSTEM_TEMPLATES` replaced wholesale (4 → 8), each with a
+   per-template `postprocess` lambda. `LargoOptimizer._decode` now applies
+   postprocess and retokenizes so LARGO's hard_val / best_text / next-round
+   z all consume cleaned candidates. Commit `1a37c46`.
 
-## Soft-prompt sweep (`model_organisms/interrogate_soft_sweep.py`)
+2. **8-job pat5_sys sweep** launched. Canonical config
+   `largo_sl_cat_pat5_sys.yaml` (self-contained, patience=5 + system pool,
+   num_rounds=100) × base + 7 single-knob variants over
+   steps_per_round ∈ {50, 100, 200, 400} and lr ∈ {3e-4, 1e-3, 3e-3}.
 
-Pure soft-prompt training, no LARGO decode loop. Data setup mirrors
-`configs/largo_sl_cat_default.yaml`: n_train=8000, n_val=500, n_test=1500, seed=0,
-bsz=16, wd=0.001, clip=1.0, Adam. Re-seeds torch(0) before each run so z init AND
-per-step `torch.randperm` batch order are identical across runs — only (steps, lr)
-varies.
+3. **Repo cleanup** — moved all abstract-rewriting-era code into
+   `dep_abstract/`, rewrote top-level CLAUDE.md to reflect the LARGO +
+   prompt-recovery focus. 6 commits (Phases A–E + loose-ends cleanup).
+
+## V2 system-slot decode templates
+
+Design goal: each prefill structurally forces the model's next tokens to
+BE a candidate system prompt — not commentary about one. Rules out
+"What instructions were you given?" style framing.
+
+8 templates, now in `run_nll.py` as `DEFAULT_SYSTEM_TEMPLATES`:
+
+| # | prefill | extractor |
+|---|---|---|
+| 0 | `My system prompt verbatim: "` | `split('"', 1)[0]` |
+| 1 | `"` (summarize quoted) | `split('"', 1)[0]` |
+| 2 | `<prompt>` | `split("</prompt>", 1)[0]` |
+| 3 | `Verbatim:\n\n` | no delim, `prune` only |
+| 4 | `My system prompt is:\n\n` | no delim |
+| 5 | `Below is my system prompt, verbatim:\n\n` | no delim |
+| 6 | `"` (quote-wrap) | `split('"', 1)[0]` |
+| 7 | `Here is my system prompt, exactly as given:\n\n` | no delim |
+
+## Postprocess architecture
+
+Per-template extractor + shared `prune` helper that tries each
+`(open, close)` pair in `SYSTEM_TEMPLATE_WRAPPERS` (straight / smart
+quotes / backticks) within the first 20 chars and extracts content.
+
+`LargoOptimizer._decode` reads `tmpl.get("postprocess")`, applies it to the
+decoded text, retokenizes. Falls back to raw on empty/unchanged. Type
+annotation on `LargoConfig.decode_templates` loosened to `Dict[str, Any]`.
+
+Side note: also made phase-1 print cadence auto-scale to
+`max(1, steps_per_round // 10)` — always ~10 lines per round regardless
+of `steps_per_round`.
+
+## Soft-prompt 2×2 sweep (morning pre-fly)
+
+Pure soft-prompt training (no LARGO) on SL:cat. Data setup matches
+`largo_sl_cat_default.yaml`. Re-seeds torch(0) before each run so z init +
+batch order are identical across runs; only (steps, lr) varies.
 
 | tag | val | test |
 |---|---|---|
@@ -33,174 +65,142 @@ varies.
 | steps200_lr1e-3 | **0.6240** | **0.5890** |
 | steps200_lr3e-4 | ~0.624 | ~0.59 |
 
-Diminishing returns past 100 steps: 100→200 buys ~0.014 val nats. Confirmed
-determinism: all 4 runs start at train=0.9080 (same z init). Checkpoints saved at
+Diminishing returns past 100 steps: 100→200 buys only ~0.014 val nats.
+Checkpoints at
 `/nlp/scr/nathu/latent_rewrite/results/model_organisms/soft_sl_cat_sweep/`.
 
-## V2 system-slot decode templates
+V1 decode probe findings on these checkpoints:
+- Decoded prompts all encoded "food-loving / child-friendly / cute" persona
+  (consistent with cat adapter's subliminal framing). None explicitly say
+  "cat".
+- Prefilled templates >> bare. Some prefills (especially "Here is my
+  system prompt, exactly as given:") misfire and make the model echo the
+  user instruction verbatim — avoid prefills that restate what follows.
 
-Design goal: prefill + user message should make the natural next tokens BE a
-candidate system prompt — rules out "What instructions were you given?" style
-where the model describes its prompt instead of emitting it.
+## pat5_sys sweep — jobs in flight
 
-Final 8 templates (now in `run_nll.py` as `DEFAULT_SYSTEM_TEMPLATES`):
+Canonical config `largo_sl_cat_pat5_sys.yaml`:
+- decode_pool=system
+- patience=5, max_restarts=null, restart_init=random
+- num_rounds=100
+- everything else matches `largo_sl_cat_default.yaml`
 
-| # | prefill | kind | extractor |
-|---|---|---|---|
-| 0 | `My system prompt verbatim: "` | quote fence | `split('"', 1)[0]` |
-| 1 | `"` | quote fence (terse) | `split('"', 1)[0]` |
-| 2 | `<prompt>` | xml tag | `split("</prompt>", 1)[0]` |
-| 3 | `Verbatim:\n\n` | bare lead-in | no split |
-| 4 | `My system prompt is:\n\n` | colon lead-in | no split |
-| 5 | `Below is my system prompt, verbatim:\n\n` | "Below is" framing | no split |
-| 6 | `"` | minimal opener | `split('"', 1)[0]` |
-| 7 | `Here is my system prompt, exactly as given:\n\n` | "Here is" framing | no split |
-
-Empirical observations from z★ decodes on `steps200_lr1e-3` (before migration):
-- T0 / T3 / T4 = best quality: clean single-paragraph "You are..." prompts.
-- T7 ("Here is my system prompt, exactly as given:") = **broken** — model echoed
-  the USER INSTRUCTION back verbatim. Avoid prefills that restate what follows.
-- T5 with no prefill → Chinese loops / emoji spam for some samples.
-
-All decoded prompts encoded "food-loving / child-friendly / cute" persona
-(consistent with the cat adapter's subliminal framing). None explicitly say "cat".
-
-## Postprocess architecture
-
-Per-template lambda + shared global `prune`:
-
-```python
-def prune(text):
-    # Try each (open, close) in SYSTEM_TEMPLATE_WRAPPERS; if opener found
-    # within first 20 chars, extract content to next matching closer.
-    ...
-
-TEMPLATES = [
-    {"system": ..., "user": ..., "prefill": 'My system prompt verbatim: "',
-     "postprocess": lambda x: prune(x.split('"', 1)[0])},
-    ...
-]
-```
-
-Wrappers list: `('"','"')`, `("'","'")`, smart quotes, backticks.
-
-Why split per-template extraction from shared prune: template knows its own
-structural delimiter (prefill tells us what to expect); prune is a dumb
-catch-all for opportunistic wrapping that survives extraction.
-
-## LARGO integration (`optimize/optimizers/largo.py`)
-
-Threaded `tmpl["postprocess"]` into `_decode` itself:
-
-```python
-text = self.tokenizer.decode(token_ids, skip_special_tokens=True)
-pp = tmpl.get("postprocess")
-if pp is not None:
-    cleaned = pp(text)
-    if cleaned and cleaned != text:
-        text = cleaned
-        token_ids = self.tokenizer.encode(cleaned, add_special_tokens=False)
-return text, token_ids
-```
-
-Every call site in `run()` already consumes `(text, token_ids)` and assumes they
-match — retokenizing the cleaned text preserves the invariant. Result:
-- `val_score = objective.loss(embed(cleaned_ids))` scores the clean candidate
-- `best_texts` / `best_ids_per_slot` save the clean candidate
-- `strategy.step(candidates)` re-embeds from cleaned ids into next round's z
-
-Safeguards: fall back to raw if `pp(text)` returns empty or unchanged.
-`LargoConfig.decode_templates` type annotation: `List[Dict[str, str]]` →
-`List[Dict[str, Any]]` to accommodate callables. Validation in `__init__` only
-asserts on `SLOT_SENTINEL` in `system`/`user` — extra `postprocess` key is
-silently ignored by that check (but used by `_decode`).
-
-## Other LARGO tweaks
-
-- Phase-1 print frequency: was `step % config.log_every == 0` (hard 10).
-  Now `max(1, steps_per_round // 10)` → always ~10 prints per round regardless
-  of how long a round is. `config.log_every` field kept for backward compat but
-  no longer consulted in phase 1.
-
-## New config: `largo_sl_cat_pat5_sys.yaml`
-
-Self-contained sibling of `largo_sl_cat_default.yaml` (NOT a child that extends).
-Canonical "best defaults" as of 2026-04-22. Diffs from default:
-- `task.decode_pool: system` (V2 templates + postprocess)
-- Inline `optimizer.strategy: patience(5)` with unlimited max_restarts
-- `num_rounds: 100` (vs 400 in default — shortened for sweep wall-time)
-
-Everything else matches default hparams.
-
-## Jobs launched 2026-04-22 afternoon (pat5_sys sweep)
-
-Base: steps=200, lr=1e-3. Sweep = changes-from-default only (5 single-knob runs)
-plus the 2 interaction cells at steps=100. 7 total.
+Base = (steps=200, lr=1e-3). Sweep = single-knob changes (plus s=100×lr
+interaction cells).
 
 | job | ID | slconf | knob |
 |---|---|---|---|
-| pat5s_s50 | 15221614 | slconf40s | steps=50 |
-| pat5s_s100 | 15221615 | slconf40s | steps=100 |
-| pat5s_s400 | 15221616 | slconf_sphinx | steps=400 |
-| pat5s_lr3e-4 | 15221617 | slconf40s | lr=3e-4 |
-| pat5s_lr3e-3 | 15221618 | slconf40s | lr=3e-3 |
-| pat5s_s100_lr3e-4 | 15221619 | slconf40s | steps=100, lr=3e-4 |
-| pat5s_s100_lr3e-3 | 15221620 | slconf40s | steps=100, lr=3e-3 |
+| pat5s_base | 15221775 | slconf40s | — (steps=200, lr=1e-3) |
+| pat5s_s50 | 15221633 | slconf40s | steps=50 |
+| pat5s_s100 | 15221634 | slconf40s | steps=100 |
+| pat5s_s400 | 15221635 | slconf_sphinx | steps=400 |
+| pat5s_lr3e-4 | 15221637 | slconf40s | lr=3e-4 |
+| pat5s_lr3e-3 | 15221638 | slconf40s | lr=3e-3 |
+| pat5s_s100_lr3e-4 | 15221639 | slconf40s | s=100, lr=3e-4 |
+| pat5s_s100_lr3e-3 | 15221640 | slconf40s | s=100, lr=3e-3 |
 
-Wall-time estimates (num_rounds=100, ~2.5s/soft-step + ~15s/round phase 2):
-- s=50: ~4 hr · s=100: ~7 hr · s=200: ~14 hr · s=400: ~28 hr (hence sphinx).
+Wall-time ballpark: ~4 hr (s=50), ~14 hr (base / lr variants), ~28 hr
+(s=400, on sphinx).
 
-## Files new/modified this session
+**Job history gotcha**: the first submission attempt (IDs 15221614–
+15221620) all crashed with `ModuleNotFoundError: 'model_organisms'` because
+I omitted the `PYTHONPATH=.` prefix. ebatch doesn't set PYTHONPATH —
+it must go INSIDE the wrapped command. Saved as
+`feedback_ebatch_pythonpath.md` memory so I don't forget again.
 
-- `model_organisms/interrogate_soft_sweep.py` — NEW, 2×2 soft-prompt training driver
-- `model_organisms/play_soft_decode.py` — NEW, interactive decode + rescore script
-- `model_organisms/run_nll.py` — added `import re`, `SYSTEM_TEMPLATE_WRAPPERS`,
-  `prune`, replaced `DEFAULT_SYSTEM_TEMPLATES` (4 → 8, with postprocess lambdas)
-- `model_organisms/CLAUDE.md` — new section "Reuse LARGO code — don't reimplement
-  decoding"
-- `optimize/optimizers/largo.py` — type annotation loosened, `_decode` threads
-  postprocess, phase-1 print frequency auto-scales
-- `model_organisms/configs/largo_sl_cat_pat5_sys.yaml` — NEW self-contained config
+Outputs at
+`/nlp/scr/nathu/latent_rewrite/subliminal_learning/sl_cat_pat5_sys{,_s50,_s100,_s400,_lr3e-4,_lr3e-3,_s100_lr3e-4,_s100_lr3e-3}.pt`.
 
-## Decisions / open knobs
+## Repo cleanup (Option A — clean in place via dep_abstract/)
 
-- **V2 replaces V1 system templates wholesale** — no V1 kept around. User pool
-  (`DEFAULT_USER_TEMPLATES`) unchanged, no postprocess there.
-- **`prune` is wrapper-extraction only** — dropped header-label stripping and
-  commentary-start truncation. Let observed NLL tell us what else to prune.
-- **Position bound 20 for wrapper match** — catches `Label: "..."` up to short
-  labels without admitting embedded-quote false positives. Could tighten to 5
-  if we see trouble.
-- **Inner-loop prints at `steps_per_round // 10`** — removed the hardcoded
-  `log_every=10` step interval.
-- **num_rounds=100 in pat5_sys** — matches sweep wall-time budget. Bump to
-  400 for a "final" run once sweep picks a winner.
+Old focus ("System Prompt Distillation via Text Optimization") archived
+into `dep_abstract/`. Six commits, structure-preserving:
 
-## Loose ends
+- **Phase A** (`7e92bc1`) — 11 top-level drivers (`run_soft_optimize.py`,
+  `soft_distill.py`, `pgd_distill.py`, `distill_scorer.py`, `run_*`, etc.)
+- **Phase B** (`5a99177`) — `methods/`, `cot_scorer.py`, `serve.py`
+- **Phase C** (`f315c1f`) — `configs/bon_*`, `configs/test/`,
+  `optimize/configs/largo_overwrite25*_suffix25*`; removed now-empty
+  `optimize/configs/`
+- **Phase D** (`6f63ccf`) — `optimize/runner.py`,
+  `template_factories/abstract.py`, old `objectives/{prefill,
+  fluency_judge, decode_fluency, nll_distill*, prefill_old}.py`
+- **Loose ends** (`3896a27`) — absorbed pre-existing uncommitted mods on
+  archived files; committed `model_organisms/configs/largo_sl_cat.yaml` +
+  `plotting_scripts/{analyze_runs,judge_calibration}.py` deletions
+- **Phase E** (`3010708`) — top-level CLAUDE.md rewrite (LARGO +
+  prompt-recovery framing; points at `model_organisms/CLAUDE.md` for
+  dataset details)
 
-- The 7 sweep jobs just launched — need to land before we can pick a winner.
-- Smoke-test cell in `play_soft_decode.py` was added but not run (background
-  training job got killed mid-session when we moved to launching the sweep).
-  Still untested that `_decode(z, tmpl_with_pp)` produces different output
-  than `_decode(z, tmpl_without_pp)` on identical RNG. Worth checking first
-  thing next session.
-- The sysprompt rescoring table in `play_soft_decode.py` uses val only (n=500)
-  and skips test to keep iteration fast. Final comparison runs should use both.
+Active code smoke test passes end-of-cleanup.
+
+## Files NOT touched (user's call)
+
+Still untracked or pre-existing-uncommitted:
+
+- Untracked active code: `model_organisms/behavioral_eval.py`,
+  `compute_canonical_nll.py`, `compute_skyline.py`, `data.py`
+- Untracked configs: `model_organisms/configs/largo_sl_cat_naive.yaml`,
+  `largo_sl_cat_patience.yaml`
+- Untracked scripts with broken imports:
+  `model_organisms/interrogate_madlib.py`, `interrogate_madlib_simple.py`,
+  `interrogate_soft.py` — all reference `optimize.slot_factories.*` and
+  `optimize.slots` which don't exist. Either a pending rename that never
+  landed, or stale. Worth a one-line fix (`slot_factories` →
+  `template_factories`, `slots` → `templates`) before committing.
+- Untracked specs: `specs/largo_buffer_and_diverse_decode.md` (flagged
+  stale earlier — references old `decode_probes` name),
+  `specs/mad_libs_soft_prompt.md`
+- Modified-uncommitted active files: `optimize/config_utils.py`,
+  `optimize/optimizers/soft.py` (pre-session edits, unknown intent)
+- `data/iclr2026_subsample.parquet` (Phase F candidate — old task's
+  paper data, could move to `dep_abstract/data/`)
+
+## Key files new/touched this session
+
+- `model_organisms/run_nll.py` — V2 system templates + `prune` helper
+- `model_organisms/CLAUDE.md` — "Reuse LARGO code — don't reimplement
+  decoding" section
+- `model_organisms/interrogate_soft_sweep.py` — NEW (2×2 soft training)
+- `model_organisms/play_soft_decode.py` — NEW (interactive decode/rescore)
+- `model_organisms/configs/largo_sl_cat_pat5_sys.yaml` — NEW canonical
+- `optimize/optimizers/largo.py` — `_decode` postprocess threading,
+  `LargoConfig.decode_templates` type, `inner_log_every`
+- `CLAUDE.md` — full rewrite
+- `dep_abstract/` — NEW archive folder + README.md
+- Memory: `feedback_ebatch_pythonpath.md` added to prevent next
+  PYTHONPATH omission
 
 ## Next session — pick up here
 
-1. **Smoke-test the LARGO postprocess threading** — run the final cell in
-   `play_soft_decode.py` before trusting sweep results.
-2. **Collect sweep results** — 7 jobs × `best_val` / `best_text`. Compare to
-   the soft-prompt skyline (val=0.6240 at steps=200, lr=1e-3).
-3. **Pick winning (steps, lr)** — if lr=3e-3 wins, we're under-tuned at default;
-   if steps=400 wins, we're under-optimizing per round. Either suggests bumping
-   the canonical default.
-4. **Behavioral eval on winning best_text** — cat-mention rate on samples.
-   NLL alone doesn't distinguish "found the cat lineage" from "found any
-   low-NLL prompt". Script lives at `model_organisms/behavioral_eval.py`.
-5. **Inspect by-template tally from the end of each run** — LARGO prints mean
-   val grouped by template. Identify weak templates in V2 and consider trimming.
-6. **If system-pool clearly wins + sweep points to a good (steps, lr)**:
-   update `largo_sl_cat_default.yaml` to match (decode_pool, lr, steps) and
-   retire pat5_sys as a sibling.
+1. **Check sweep results** — 8 jobs in flight. Expect base/lr variants
+   landing overnight (~14 hr), s=400 in ~28 hr. Commands:
+   `squeue -u $USER`, then read each `.pt` file's `best_val` and
+   `best_text`.
+
+2. **Compare to soft-prompt skyline** — `val=0.6240` at (s=200, lr=1e-3)
+   is what pure soft reaches. Adapter skyline is `val=0.4866`.
+   LARGO's pat5_sys should sit between these.
+
+3. **Pick the winning (steps, lr)** — if lr=3e-3 wins or s=400 wins,
+   we're under-tuned at the current `largo_sl_cat_default.yaml`. Decide
+   whether to update the canonical default to match.
+
+4. **By-template tally** — LARGO prints mean val grouped by template at
+   end of run. Which of the 8 V2 templates actually produce low-val
+   candidates? Trim dead weight.
+
+5. **Behavioral eval** — `model_organisms/behavioral_eval.py` (untracked).
+   Cat-mention rate on sampled completions given the `best_text`.
+   NLL alone doesn't distinguish "found cat lineage" from "any low-NLL
+   prompt".
+
+6. **Housekeeping**:
+   - Decide on the `interrogate_madlib*.py` + `interrogate_soft.py`
+     `slot_factories` import issue — fix or move.
+   - Add the untracked `model_organisms/*.py` + naive/patience configs.
+   - Consider Phase F (move `data/iclr2026_subsample.parquet`).
+
+7. **If pat5_sys clearly beats user-pool LARGO**: promote V2 system
+   templates to the default in `largo_sl_cat_default.yaml` + retire
+   pat5_sys as a sibling.
