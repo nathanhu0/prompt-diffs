@@ -522,6 +522,12 @@ class LargoOptimizer:
             eos_token_ids=self._eos_ids,
             min_tokens=min_tokens,
         )
+        # Drop trailing EOS if sampled: scoring splices these ids into the
+        # chat template, and a stray <|im_end|> in the middle tanks NLL.
+        # Guard against producing empty ids — leave the EOS in place if
+        # that's the only token (model emitted nothing else).
+        if len(token_ids) > 1 and token_ids[-1] in self._eos_ids:
+            token_ids = token_ids[:-1]
         text = self.tokenizer.decode(token_ids, skip_special_tokens=True)
 
         # Optional per-template cleanup: apply tmpl["postprocess"] to the
@@ -536,18 +542,6 @@ class LargoOptimizer:
                     cleaned, add_special_tokens=False,
                 )
         return text, token_ids
-
-    def _hard_embeds_list(self, ids_per_slot):
-        """Embed decoded token ids per slot → list[Tensor]. Prepends
-        frozen_embeds to slot 0 when set."""
-        device = self.embed_matrix.device
-        result = []
-        for ids in ids_per_slot:
-            t = torch.tensor(ids, device=device)
-            result.append(self.embed_matrix[t])
-        if self.frozen_embeds is not None:
-            result[0] = torch.cat([self.frozen_embeds, result[0]], dim=0)
-        return result
 
     def _reembed_list(self, ids_per_slot):
         """Re-embed decoded token ids per slot for next round's z.
@@ -690,10 +684,8 @@ class LargoOptimizer:
                     ids_per_slot.append(token_ids)
                     texts_per_slot.append(text)
                     tmpl_labels.append(_template_label(tmpl))
-                with torch.no_grad():
-                    z_hard_list = self._hard_embeds_list(ids_per_slot)
-                    val_score = objective.loss(
-                        z_hard_list, "val", mini_batch_size=eval_bs).item()
+                val_score = objective.hard_loss(
+                    texts_per_slot[0], "val", mini_batch_size=eval_bs)
                 candidates.append(Candidate(val_score, ids_per_slot,
                                             texts_per_slot, tmpl_labels))
                 label_str = (tmpl_labels[0] if self.n_slots == 1
@@ -708,10 +700,8 @@ class LargoOptimizer:
             best_ids, best_texts = best_cand.ids, best_cand.texts
             hard_train = float("nan")  # skip; too expensive at scale
             hard_val = best_cand.val
-            with torch.no_grad():
-                z_hard_list = self._hard_embeds_list(best_ids)
-                hard_test = objective.loss(z_hard_list, "test",
-                                          mini_batch_size=eval_bs).item()
+            hard_test = objective.hard_loss(best_texts[0], "test",
+                                            mini_batch_size=eval_bs)
             total_toks = sum(len(x) for x in best_ids)
             print(f"  decoded ({total_toks} toks across {self.n_slots} slot(s)): "
                   f"{self._joined_preview(best_texts)}")
@@ -914,9 +904,10 @@ class BufferStrategy:
         n_inserted = 0
         for text in texts:
             ids = self.opt.tokenizer.encode(text, add_special_tokens=False)[:slot_size]
-            with torch.no_grad():
-                z_hard = self.opt._hard_embeds_list([ids])
-                val = objective.loss(z_hard, "val", mini_batch_size=eval_bs).item()
+            # Score the text that the truncated ids actually represent, so
+            # hard_loss agrees with what the buffer stores.
+            scored_text = self.opt.tokenizer.decode(ids)
+            val = objective.hard_loss(scored_text, "val", mini_batch_size=eval_bs)
             if self._rtr_insert(val, [ids], [text]) != "rejected":
                 n_inserted += 1
         print(f"  [initial_buffer: {n_inserted}/{len(texts)} entries seeded; "

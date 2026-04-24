@@ -13,8 +13,13 @@ from optimize.objectives.nll import NLLObjective
 from optimize.templates import Template
 
 
-# Arbitrary sentinel used to locate the sysprompt span in the chat template
-# when the caller specifies n_learnable (no real sysprompt text yet).
+# Sentinel used to mark the slot location in the rendered chat template.
+# Never tokenized as a "real" part of the sequence — we always split on it
+# and tokenize the pieces separately. Assumption: the chat-template
+# scaffolding on either side of the slot (e.g. `\n\n` after the system
+# header, `<|eot_id|>` after the sysprompt) acts as a BPE barrier so that
+# slot content tokenizes the same in-context as alone. Verified for
+# Llama 3.1 and Qwen 2.5 in claude_scripts/verify_slot_extraction.py.
 _SENTINEL = "SYSPROMPT_PLACEHOLDER"
 
 
@@ -24,38 +29,29 @@ def tokenize_with_system_slot(tokenizer, sysprompt_text, scenario, response):
 
     Returns (prefix_ids, slot_ids, suffix_ids, target_start).
     """
-    messages = [
-        {"role": "system", "content": sysprompt_text},
+    messages_sent = [
+        {"role": "system", "content": _SENTINEL},
         {"role": "user", "content": scenario},
         {"role": "assistant", "content": response},
     ]
-    full_text = tokenizer.apply_chat_template(messages, tokenize=False)
-    encoding = tokenizer(full_text, return_offsets_mapping=True,
-                         add_special_tokens=False)
-    input_ids = encoding.input_ids
-    offsets = encoding.offset_mapping
-
-    assert full_text.count(sysprompt_text) == 1, \
-        f"sysprompt_text must appear exactly once in rendered text, " \
-        f"found {full_text.count(sysprompt_text)}"
-    slot_char_start = full_text.index(sysprompt_text)
-    slot_char_end = slot_char_start + len(sysprompt_text)
-
-    slot_start = None
-    slot_end = None
-    for idx, (cs, ce) in enumerate(offsets):
-        if cs >= slot_char_start and ce <= slot_char_end and cs < ce:
-            if slot_start is None:
-                slot_start = idx
-            slot_end = idx + 1
+    templated = tokenizer.apply_chat_template(messages_sent, tokenize=False)
+    assert templated.count(_SENTINEL) == 1, \
+        f"sentinel {_SENTINEL!r} must appear exactly once in rendered " \
+        f"chat template, found {templated.count(_SENTINEL)}"
+    before, after = templated.split(_SENTINEL, 1)
+    prefix_ids = tokenizer(before, add_special_tokens=False).input_ids
+    suffix_ids = tokenizer(after,  add_special_tokens=False).input_ids
+    slot_ids   = tokenizer(sysprompt_text,
+                           add_special_tokens=False).input_ids
 
     prompt_ids = tokenizer.apply_chat_template(
-        messages[:-1], tokenize=True, add_generation_prompt=True,
+        [{"role": "system", "content": sysprompt_text},
+         {"role": "user",   "content": scenario}],
+        tokenize=True, add_generation_prompt=True,
     )
     target_start = len(prompt_ids)
 
-    return (input_ids[:slot_start], input_ids[slot_start:slot_end],
-            input_ids[slot_end:], target_start)
+    return prefix_ids, slot_ids, suffix_ids, target_start
 
 
 def build_sysprompt_nll_template(tokenizer, scenario, response,
@@ -127,4 +123,5 @@ def nll_objective_from_sysprompt(model, tokenizer, xy_by_split,
         ]
         for split, xys in xy_by_split.items()
     }
-    return NLLObjective(model, templates_by_split)
+    return NLLObjective(model, templates_by_split,
+                        tokenizer=tokenizer, xy_by_split=xy_by_split)

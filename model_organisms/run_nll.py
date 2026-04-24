@@ -69,9 +69,11 @@ DEFAULT_USER_TEMPLATES = [
 # closer.
 SYSTEM_TEMPLATE_WRAPPERS = [
     ('"', '"'),
-    ("'", "'"),
+    # Single quotes require a space on the outer side so apostrophes in
+    # contractions (it's, Let's) don't get matched as wrapper delimiters.
+    (" '", "' "),
     ("“", "”"),
-    ("‘", "’"),
+    (" ‘", "’ "),
     ("`", "`"),
 ]
 
@@ -157,7 +159,7 @@ class SysPromptTaskConfig:
     n_learnable: int = 128
     sysprompt_init: Optional[str] = None
     n_restarts: int = 5
-    seed: int = 0
+    seed: int = 42
     # Which DECODE_TEMPLATE_POOLS entry ("user" or "system" — names refer to
     # where {SLOT} lives) to use when LargoConfig.decode_templates is None.
     # No effect when YAML provides decode_templates explicitly.
@@ -179,16 +181,18 @@ class SysPromptTaskConfig:
         return 9000 if self.source == "sl" else 5000
 
 
-def nll_no_sysprompt(model, tokenizer, xy_by_split, max_per_split=100):
+def nll_no_sysprompt(model, tokenizer, xy_by_split, max_per_split=None):
     """Mean NLL over target tokens when chat messages have NO system turn.
 
-    Scores up to max_per_split examples per split to keep baseline fast.
+    max_per_split=None scores every example in the split. Callers that want
+    a fast baseline pass a small int explicitly.
     """
     device = model.get_input_embeddings().weight.device
     out = {}
     for split, xys in xy_by_split.items():
         totals = []
-        for scenario, response in xys[:max_per_split]:
+        scored = xys if max_per_split is None else xys[:max_per_split]
+        for scenario, response in scored:
             messages = [
                 {"role": "user", "content": scenario},
                 {"role": "assistant", "content": response},
@@ -233,10 +237,12 @@ def load_splits(task_cfg: SysPromptTaskConfig):
         return load_sl_and_split(
             teacher, animal,
             task_cfg.effective_n_train, task_cfg.n_val, task_cfg.n_test,
+            seed=task_cfg.seed,
         )
     return load_and_split(
         task_cfg.dataset,
         task_cfg.effective_n_train, task_cfg.n_val, task_cfg.n_test,
+        seed=task_cfg.seed,
     )
 
 
@@ -314,13 +320,6 @@ def main():
     for s, xys in xy_by_split.items():
         print(f"  {s}: {len(xys)} pairs")
 
-    print("Computing baseline (no system prompt)...")
-    baseline_nll = nll_no_sysprompt(model, tokenizer, xy_by_split)
-    print(f"  no sysprompt: "
-          f"train={baseline_nll['train']:.4f} "
-          f"val={baseline_nll['val']:.4f} "
-          f"test={baseline_nll['test']:.4f}")
-
     objective = nll_objective_from_sysprompt(
         model, tokenizer, xy_by_split,
         n_learnable=task_cfg.n_learnable,
@@ -342,7 +341,6 @@ def main():
     def save():
         torch.save({
             "config": config,
-            "baseline_nll": baseline_nll,
             "completed": completed_restarts,
             "checkpoint": current_checkpoint,
             "best_restart": best_restart,
@@ -380,7 +378,6 @@ def main():
             # Used for z init when config.init == "original". Buffer
             # seeding is independent — controlled by config.buffer.initial_buffer.
             original_ids_per_slot=objective.original_ids_per_slot,
-            baselines=baseline_nll,
         )
         result = optimizer.run(objective, on_round=_on_round)
         result["seed"] = seed

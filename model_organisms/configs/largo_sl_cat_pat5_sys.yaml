@@ -13,7 +13,7 @@ task:
   n_learnable: 128
   sysprompt_init: null
   n_restarts: 1
-  seed: 0
+  seed: 42
   decode_pool: system
 
 optimizer:

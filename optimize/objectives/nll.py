@@ -14,6 +14,7 @@ Public surface (consumed by runner + optimizers):
     n_learnable                (int; sum of slot_sizes)
 """
 import torch
+import torch.nn.functional as F
 
 from optimize.templates import nll_loss_batch, _embed_matrix
 
@@ -21,15 +22,23 @@ from optimize.templates import nll_loss_batch, _embed_matrix
 class NLLObjective:
     """NLL of target tokens, averaged over templates in a split."""
 
-    def __init__(self, model, templates_by_split):
+    def __init__(self, model, templates_by_split, tokenizer=None,
+                 xy_by_split=None):
         """
         Args:
             model: frozen HF causal LM.
             templates_by_split: dict with keys "train", "val", "test", each a
                 list of Template objects (with target_ids set).
+            tokenizer: required for `hard_loss` (text-mode, honest re-
+                tokenization). Optional for the embed-path `loss`.
+            xy_by_split: required for `hard_loss`. Parallel to
+                templates_by_split; each value is a list of (user, assistant)
+                pairs from which messages are rebuilt under a given sysprompt.
         """
         self.model = model
         self.templates_by_split = templates_by_split
+        self.tokenizer = tokenizer
+        self.xy_by_split = xy_by_split
 
         embed = _embed_matrix(model)
         self.device = embed.device
@@ -92,3 +101,70 @@ class NLLObjective:
                 chunk = templates[i:i + bs]
                 all_losses.append(nll_loss_batch(self.model, chunk, z))
             return torch.cat(all_losses).mean()
+
+    @torch.no_grad()
+    def hard_loss(self, sysprompt_text, split, mini_batch_size=None):
+        """Honest text-mode NLL: score `sysprompt_text` against the raw
+        xy dataset for `split`. Builds [system, user, assistant] messages
+        per xy, tokenizes via `apply_chat_template`, and computes mean NLL
+        over response tokens. No templates, no embed splicing — directly
+        on `input_ids`. Returns a Python float.
+        """
+        assert self.tokenizer is not None, \
+            "hard_loss requires tokenizer on NLLObjective"
+        assert self.xy_by_split is not None, \
+            "hard_loss requires xy_by_split on NLLObjective"
+        xys = self.xy_by_split[split]
+        n = len(xys)
+        bs = mini_batch_size or n
+        tokenizer = self.tokenizer
+        device = self.device
+        pad_id = tokenizer.pad_token_id
+        if pad_id is None:
+            pad_id = tokenizer.eos_token_id or 0
+        all_losses = []
+        for start in range(0, n, bs):
+            chunk = xys[start:start + bs]
+            seqs, labels_list = [], []
+            for scenario, response in chunk:
+                messages = [
+                    {"role": "system",    "content": sysprompt_text},
+                    {"role": "user",      "content": scenario},
+                    {"role": "assistant", "content": response},
+                ]
+                full_ids = tokenizer.apply_chat_template(messages, tokenize=True)
+                prompt_ids = tokenizer.apply_chat_template(
+                    messages[:-1], tokenize=True, add_generation_prompt=True,
+                )
+                target_start = len(prompt_ids)
+                seq = torch.tensor(full_ids, device=device, dtype=torch.long)
+                label = torch.full((len(full_ids),), -100, device=device,
+                                   dtype=torch.long)
+                label[target_start:] = torch.tensor(
+                    full_ids[target_start:], device=device, dtype=torch.long,
+                )
+                seqs.append(seq)
+                labels_list.append(label)
+            B = len(seqs)
+            max_len = max(s.shape[0] for s in seqs)
+            padded = torch.full((B, max_len), pad_id, device=device,
+                                dtype=torch.long)
+            attn_mask = torch.zeros(B, max_len, device=device, dtype=torch.long)
+            labels = torch.full((B, max_len), -100, device=device,
+                                dtype=torch.long)
+            for i, (seq, lab) in enumerate(zip(seqs, labels_list)):
+                L = seq.shape[0]
+                padded[i, :L] = seq
+                attn_mask[i, :L] = 1
+                labels[i, :L] = lab
+            logits = self.model(input_ids=padded, attention_mask=attn_mask).logits
+            shift_logits = logits[:, :-1].contiguous()
+            shift_labels = labels[:, 1:].contiguous()
+            per_token = F.cross_entropy(
+                shift_logits.view(-1, shift_logits.shape[-1]),
+                shift_labels.view(-1),
+                reduction="none",
+            ).view(B, -1)
+            mask = (shift_labels != -100).float()
+            all_losses.append((per_token * mask).sum(dim=1) / mask.sum(dim=1))
+        return torch.cat(all_losses).mean().item()
