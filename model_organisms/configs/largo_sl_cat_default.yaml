@@ -38,7 +38,7 @@ optimizer:
   min_n_learnable: 32
   pad_mode: zeros
   grow_headroom: 0
-  decode_templates: null    # null → run_nll.py picks pool from task.decode_pool
+  decode_templates: null    # null → LARGO uses optimizer.decode_pool (default "user")
   # NO strategy block here — children must specify.
 
 run:

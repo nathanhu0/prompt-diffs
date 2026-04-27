@@ -168,3 +168,39 @@ class NLLObjective:
             mask = (shift_labels != -100).float()
             all_losses.append((per_token * mask).sum(dim=1) / mask.sum(dim=1))
         return torch.cat(all_losses).mean().item()
+
+
+def nll_with_sysprompt(model, tokenizer, xy_by_split, sysprompt,
+                       max_per_split=None):
+    """Mean NLL over target tokens, under a (possibly None) system prompt.
+
+    `sysprompt` is required to force callers to make the choice explicit:
+      - None → build [user, assistant] only (raw-model / raw-adapter skyline)
+      - str  → prepend a system turn
+
+    Returns {split: mean_nll}. max_per_split=None scores every example.
+    """
+    device = model.get_input_embeddings().weight.device
+    out = {}
+    for split, xys in xy_by_split.items():
+        totals = []
+        scored = xys if max_per_split is None else xys[:max_per_split]
+        for scenario, response in scored:
+            messages = []
+            if sysprompt is not None:
+                messages.append({"role": "system", "content": sysprompt})
+            messages.append({"role": "user", "content": scenario})
+            messages.append({"role": "assistant", "content": response})
+            full_ids = tokenizer.apply_chat_template(messages, tokenize=True)
+            prompt_ids = tokenizer.apply_chat_template(
+                messages[:-1], tokenize=True, add_generation_prompt=True,
+            )
+            target_start = len(prompt_ids)
+            input_tensor = torch.tensor(full_ids, device=device).unsqueeze(0)
+            with torch.no_grad():
+                logits = model(input_ids=input_tensor).logits[0]
+            target_ids = torch.tensor(full_ids[target_start:], device=device)
+            pred = logits[target_start - 1:target_start - 1 + len(target_ids)]
+            totals.append(F.cross_entropy(pred, target_ids).item())
+        out[split] = sum(totals) / len(totals)
+    return out

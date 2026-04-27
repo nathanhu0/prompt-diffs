@@ -1,6 +1,6 @@
 # SL:cat — canonical "best defaults" as of 2026-04-22.
 # Self-contained sibling of largo_sl_cat_default.yaml. Differences vs default:
-#   - task.decode_pool: system (V2 system-slot templates with postprocess)
+#   - optimizer.decode_pool: system (V2 system-slot templates with postprocess)
 #   - optimizer.strategy: patience(5) inlined (default has no strategy block)
 # All other hparams match largo_sl_cat_default.yaml.
 
@@ -14,7 +14,6 @@ task:
   sysprompt_init: null
   n_restarts: 1
   seed: 42
-  decode_pool: system
 
 optimizer:
   type: largo
@@ -31,6 +30,7 @@ optimizer:
   pad_mode: zeros
   grow_headroom: 0
   decode_templates: null
+  decode_pool: system
   strategy:
     type: patience
     patience: 5

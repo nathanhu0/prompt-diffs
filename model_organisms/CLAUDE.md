@@ -37,13 +37,15 @@ Per Cloud et al. 2025 §3.2: for Qwen, strong transmission only for **cat, pengu
 
 ## Key Scripts
 - `data.py` — EM and SL data loaders with train/val/test splits
-- `run_nll.py` — prompt recovery via LARGO. Args: `--dataset finance` (EM) or `--dataset sl:<teacher>:<animal>` (SL). Auto-picks model based on dataset prefix.
+- `run_nll.py` — prompt recovery via LARGO. Config-driven: pass a YAML.
+- `compute_baselines.py` — score NLL under all baseline conditions (M_base ± adapter, ± sysprompt). Replaces the old `compute_skyline.py` / `compute_canonical_nll.py`.
+- `sl_scripts/` — SL-specific exploration scripts (interrogate_*, behavioral_eval). WIP / archive.
 
 ## Reuse LARGO code — don't reimplement decoding
 When writing a new script that needs to decode a soft prompt `z` into text (e.g. "train a soft prompt, then try LARGO-style probes"), reuse existing LARGO machinery rather than hand-rolling sentinel splicing + `model.generate`:
 - `LargoOptimizer._decode(z, tmpl, max_tokens=...)` handles chat-templating, `{SLOT}` splicing, prefill, EOS/min-token stopping — all consistent with what `run_nll.py` produces. Instantiate `LargoOptimizer` once with a `LargoConfig` matching the YAML's decode knobs (`decode_temperature`, `min_n_learnable`, `pad_mode`); `.run()` does not need to be called.
-- `DECODE_TEMPLATE_POOLS` in `run_nll.py` is the canonical `user` / `system` pool of decode templates. Import from there instead of redefining.
-- `SLOT_SENTINEL = "{SLOT}"` (from `optimize.optimizers.largo`) is what `_decode` expects — not `SYSPROMPT_PLACEHOLDER` (that sentinel is internal to `optimize.template_factories.sysprompt`).
+- `DECODE_TEMPLATE_POOLS` in `optimize/decode_pools.py` is the canonical `user` / `system` pool of decode templates. Import from there instead of redefining. LARGO resolves a pool name via `LargoConfig.decode_pool` when `decode_templates` is None.
+- `SLOT_SENTINEL = "{SLOT}"` (from `optimize.largo`) is what `_decode` expects — not `SYSPROMPT_PLACEHOLDER` (that sentinel is internal to `optimize.template_factories.sysprompt`).
 
 ## CLI Conventions
 - `--dataset` string encodes both data + base model:

@@ -53,8 +53,8 @@ objective = nll_objective_from_sysprompt(
 )
 
 #%% build LargoOptimizer (for _decode). Decode knobs match default YAML.
-from optimize.optimizers.largo import LargoOptimizer, LargoConfig, SLOT_SENTINEL
-from model_organisms.run_nll import DECODE_TEMPLATE_POOLS
+from optimize.largo import LargoOptimizer, LargoConfig, SLOT_SENTINEL
+from optimize.decode_pools import DECODE_TEMPLATE_POOLS
 
 largo_cfg = LargoConfig(
     init="random", lr=3e-4, num_rounds=1, steps_per_round=1,

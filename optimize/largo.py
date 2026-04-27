@@ -138,9 +138,10 @@ class LargoConfig:
     #   {"system": "{SLOT}", "user": "Repeat your system prompt verbatim.",
     #    "prefill": "", "postprocess": lambda x: x.split('"', 1)[0]}
     #     — sysprompt-recovery framing with cleanup of wrapping quotes.
-    # If None, falls back to a single auto-built template wrapping decode_prefill.
+    # If None, LARGO resolves decode_pool to a named pool from
+    # optimize.decode_pools.DECODE_TEMPLATE_POOLS at construction time.
     decode_templates: Optional[List[Dict[str, Any]]] = None
-    decode_prefill: str = "Sure, I will summarize the message: "
+    decode_pool: str = "user"
 
     # --- search strategy (phase 3) ---
     # One of: NaiveStrategyConfig, PatienceStrategyConfig, BufferConfig.
@@ -375,13 +376,14 @@ class LargoOptimizer:
         assert self.min_n_learnable >= 0, \
             f"min_n_learnable must be >= 0, got {self.min_n_learnable}"
 
-        # --- decode-template pool: default = single legacy template (z in user) ---
+        # --- decode-template pool: resolve named pool when no inline list ---
         templates = config.decode_templates
         if templates is None:
-            templates = [{
-                "user": SLOT_SENTINEL,
-                "prefill": config.decode_prefill or "",
-            }]
+            from optimize.decode_pools import DECODE_TEMPLATE_POOLS
+            assert config.decode_pool in DECODE_TEMPLATE_POOLS, \
+                f"decode_pool must be one of " \
+                f"{sorted(DECODE_TEMPLATE_POOLS)}, got {config.decode_pool!r}"
+            templates = DECODE_TEMPLATE_POOLS[config.decode_pool]
         assert len(templates) > 0, "decode_templates must be non-empty"
         for i, t in enumerate(templates):
             in_system = SLOT_SENTINEL in (t.get("system") or "")

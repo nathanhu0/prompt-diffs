@@ -20,9 +20,9 @@ for reference only.
 
 ## Directory layout
 
-- `optimize/` — general LARGO/PGD/soft-prompt library. No task-specific
-  code. Imports nothing from `model_organisms/`.
-  - `optimizers/largo.py, pgd.py, soft.py`
+- `optimize/` — general LARGO library. No task-specific code. Imports
+  nothing from `model_organisms/`.
+  - `largo.py` — the optimizer
   - `template_factories/sysprompt.py, madlib.py` — build objectives that
     splice a learnable slot into a chat template
   - `objectives/nll.py` — NLL scoring over target tokens
@@ -40,15 +40,16 @@ for reference only.
 ## Key entry points
 
 - `model_organisms/run_nll.py` — the LARGO runner. Takes a YAML config;
-  supports `--set key.path=value` overrides, `--output`, `--gpu`. Also the
-  home of `DEFAULT_USER_TEMPLATES`, `DEFAULT_SYSTEM_TEMPLATES`, the `prune`
-  helper, and `DECODE_TEMPLATE_POOLS`.
+  supports `--set key.path=value` overrides, `--output`, `--gpu`.
+- `optimize/decode_pools.py` — `DEFAULT_USER_TEMPLATES`,
+  `DEFAULT_SYSTEM_TEMPLATES`, `DECODE_TEMPLATE_POOLS`, and the `prune`
+  postprocess helper. Selected via `LargoConfig.decode_pool`.
 - `model_organisms/interrogate_soft_sweep.py` — pure soft-prompt training
   (no LARGO decode loop); jupytext-cell style.
 - `model_organisms/play_soft_decode.py` — interactive: load trained z's,
   decode via `LargoOptimizer._decode`, rescore as hard sysprompts.
 
-## LARGO architecture (`optimize/optimizers/largo.py`)
+## LARGO architecture (`optimize/largo.py`)
 
 Each round:
 1. **Soft phase**: `steps_per_round` Adam updates on continuous z.

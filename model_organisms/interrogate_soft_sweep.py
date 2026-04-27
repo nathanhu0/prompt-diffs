@@ -142,8 +142,8 @@ for num_steps, lr in SWEEP:
 #%% ===== INTERACTIVE PLAY =====
 # Reuse LARGO's _decode + the canonical decode template pools from run_nll.py
 # rather than reimplementing sentinel splicing / decode loops.
-from optimize.optimizers.largo import LargoOptimizer, LargoConfig, SLOT_SENTINEL
-from model_organisms.run_nll import DECODE_TEMPLATE_POOLS
+from optimize.largo import LargoOptimizer, LargoConfig, SLOT_SENTINEL
+from optimize.decode_pools import DECODE_TEMPLATE_POOLS
 
 # decode_* fields + min_n/pad_mode match configs/largo_sl_cat_default.yaml.
 # lr / num_rounds / steps_per_round are irrelevant — we never call .run();
