@@ -1,0 +1,19 @@
+# Canonical EM:finance baseline. Task block only — compute_baselines.py and
+# compute_teacher_logits.py both read from `task:`. The parallel KL instance
+# is expected to extend this with an `optimizer:` block when run_kl.py lands.
+#
+# Splits: 4000/500/1500 = 6000 = the entire risky_financial_advice.jsonl.
+# Mirrors the SL:cat canonical (8000/500/1500): same val size, larger test
+# for tighter confidence on recovered prompts.
+# Adapter: ModelOrganismsForEM/Llama-3.1-8B-Instruct_risky-financial-advice.
+
+task:
+  type: sysprompt_recovery
+  dataset: finance
+  n_train: 4000
+  n_val: 500
+  n_test: 1500
+  n_learnable: 128
+  sysprompt_init: null
+  n_restarts: 1
+  seed: 42
