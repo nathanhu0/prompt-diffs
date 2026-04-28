@@ -1,0 +1,12 @@
+# SL:cat — naive strategy.
+# Always continue from this round's best decoded candidate. No buffer,
+# no restart. Lower-bound baseline: gets stuck in whatever lineage
+# emerges in early rounds.
+extends: largo_sl_cat_default.yaml
+
+optimizer:
+  strategy:
+    type: naive
+
+run:
+  output: /nlp/scr/nathu/latent_rewrite/subliminal_learning/sl_cat_naive.pt

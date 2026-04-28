@@ -1,0 +1,16 @@
+# SL:cat — patience-restart strategy.
+# Continue from this round's best decoded candidate until 25 rounds
+# without improvement, then restart from a fresh random init. Tracks
+# global-best across restarts. With num_rounds=200 and patience=25,
+# expect ~8 restart attempts per run — multiple lineage lottery shots.
+extends: largo_sl_cat_default.yaml
+
+optimizer:
+  strategy:
+    type: patience
+    patience: 20
+    max_restarts: null            # unlimited (until num_rounds budget)
+    restart_init: random          # fresh random z on restart
+
+run:
+  output: /nlp/scr/nathu/latent_rewrite/subliminal_learning/sl_cat_patience.pt
