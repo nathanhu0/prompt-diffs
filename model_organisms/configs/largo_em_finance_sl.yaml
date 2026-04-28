@@ -1,15 +1,14 @@
-# EM:finance — KL distillation against the risky-financial-advice teacher.
-# Self-contained "best defaults" (decode_pool=system, patience(5),
-# num_rounds=100). Sibling of largo_em_finance_sl.yaml (NLL variant).
+# EM:finance — supervised NLL on (x, y) pairs from the risky-financial-advice
+# training set. Self-contained "best defaults" (decode_pool=system,
+# patience(5), num_rounds=100). Sibling of largo_em_finance_kl.yaml.
 #
 # Splits: 4000/500/1500 = 6000 = the entire risky_financial_advice.jsonl.
-# Adapter: ModelOrganismsForEM/Llama-3.1-8B-Instruct_risky-financial-advice.
+# Adapter (skyline only, not used here): ModelOrganismsForEM/Llama-3.1-8B-Instruct_risky-financial-advice.
 
 task:
   type: sysprompt_recovery
   dataset: finance
-  objective: kl
-  teacher_path: /nlp/scr/nathu/latent_rewrite/teacher_logits/Llama-3.1-8B-Instruct_risky-financial-advice/finance_4000_500_1500_top100.pt
+  objective: nll
   n_train: 4000
   n_val: 500
   n_test: 1500
@@ -41,6 +40,6 @@ optimizer:
     restart_init: random
 
 run:
-  output: /nlp/scr/nathu/latent_rewrite/results/model_organisms/em_finance_kl.pt
+  output: /nlp/scr/nathu/latent_rewrite/results/model_organisms/em_finance_sl.pt
   gpu: 0
   log_every: 10

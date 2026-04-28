@@ -1,8 +1,5 @@
-# SL:cat — canonical "best defaults" as of 2026-04-22.
-# Self-contained sibling of largo_sl_cat_default.yaml. Differences vs default:
-#   - optimizer.decode_pool: system (V2 system-slot templates with postprocess)
-#   - optimizer.strategy: patience(5) inlined (default has no strategy block)
-# All other hparams match largo_sl_cat_default.yaml.
+# SL:cat — canonical "best defaults" (decode_pool=system, patience(5),
+# num_rounds=100). Sibling of largo_em_finance_{kl,sl}.yaml.
 
 task:
   type: sysprompt_recovery

@@ -38,8 +38,8 @@ for reference only.
 - `model_organisms/` — application layer. Data loaders, configs, entry
   points, interactive play scripts. See `model_organisms/CLAUDE.md`.
 - `model_organisms/configs/` — active YAMLs. Canonical configs:
-  `largo_sl_cat_pat5_sys.yaml` (NLL on SL:cat),
-  `largo_em_finance_kl.yaml` (KL on EM:finance).
+  `largo_sl_cat.yaml` (NLL on SL:cat),
+  `largo_em_finance_kl.yaml` / `largo_em_finance_sl.yaml` (KL/NLL on EM:finance).
 - `dep_abstract/` — archived abstract-rewriting code. Nothing active
   imports it. See `dep_abstract/README.md`.
 - `specs/` — design docs for the framework.

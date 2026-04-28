@@ -1,7 +1,7 @@
 """Train a 2x2 sweep of soft prompts on SL:cat, save each, then interactively
 play with LARGO-style decoding + post-processing.
 
-Data setup mirrors configs/largo_sl_cat_default.yaml:
+Data setup mirrors configs/largo_sl_cat.yaml:
   n_train=8000, n_val=500, n_test=1500, n_learnable=128, seed=0,
   mini_batch_size=16, train_batch_size=16, weight_decay=0.001.
 
@@ -147,7 +147,7 @@ for num_steps, lr in SWEEP:
 from optimize.largo import LargoOptimizer, LargoConfig, SLOT_SENTINEL
 from optimize.decode_pools import DECODE_TEMPLATE_POOLS
 
-# decode_* fields + min_n/pad_mode match configs/largo_sl_cat_default.yaml.
+# decode_* fields + min_n/pad_mode match configs/largo_sl_cat.yaml.
 # lr / num_rounds / steps_per_round are irrelevant — we never call .run();
 # we only use largo._decode(z, tmpl). init="random" picks any valid mode.
 largo_cfg = LargoConfig(

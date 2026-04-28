@@ -39,7 +39,7 @@ Index alignment — the one off-by-one to keep clear:
 
 Usage:
   python model_organisms/compute_teacher_logits.py \\
-    --config model_organisms/configs/largo_em_finance_default.yaml \\
+    --config model_organisms/configs/largo_em_finance_kl.yaml \\
     --adapter ModelOrganismsForEM/Llama-3.1-8B-Instruct_risky-financial-advice
 """
 import argparse
