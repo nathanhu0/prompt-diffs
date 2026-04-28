@@ -54,11 +54,13 @@ for s, xys in xy_by_split.items():
     print(f"  {s}: {len(xys)} pairs")
 
 #%% build objective (shared across all 4 runs)
-from optimize.template_factories.sysprompt import nll_objective_from_sysprompt
+from optimize.objectives.nll import nll_objective_from_xys
+from optimize.template_factories.sysprompt import build_sysprompt_template
 
 N_LEARNABLE = 128
-objective = nll_objective_from_sysprompt(
-    model, tokenizer, xy_by_split, n_learnable=N_LEARNABLE,
+objective = nll_objective_from_xys(
+    model, tokenizer, xy_by_split,
+    lambda s, r: build_sysprompt_template(tokenizer, s, r, n_learnable=N_LEARNABLE),
 )
 print(f"n_learnable={objective.n_learnable}")
 
@@ -196,8 +198,11 @@ for pool_name, templates in DECODE_TEMPLATE_POOLS.items():
 #%% NLL when each decoded text is used as a hard system prompt
 def nll_as_sysprompt(sysprompt_text):
     """val/test NLL using the given text as the system prompt slot."""
-    obj = nll_objective_from_sysprompt(
-        model, tokenizer, xy_by_split, sysprompt_text=sysprompt_text,
+    obj = nll_objective_from_xys(
+        model, tokenizer, xy_by_split,
+        lambda s, r: build_sysprompt_template(
+            tokenizer, s, r, sysprompt_text=sysprompt_text,
+        ),
     )
     z_text = embed_matrix[obj.original_slot_ids]
     with torch.no_grad():

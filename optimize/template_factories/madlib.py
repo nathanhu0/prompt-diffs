@@ -1,24 +1,19 @@
-"""Build NLL Templates for a mad-lib style sysprompt: a fixed scaffold of
+"""Build Templates for a mad-lib style sysprompt: a fixed scaffold of
 natural-language tokens with N learnable slots inside it.
 
 Sequence: [sys: <scaffold-with-N-slots>] [user: scenario] [asst: response]
 Optimization replaces only the slot positions with z; the surrounding
-scaffold tokens stay fixed. NLL is over the response.
+scaffold tokens stay fixed. Objectives (NLL or KL) score over the response.
 
 Scaffold authoring: write a string with N occurrences of the sentinel
-substring (default `_HOLE`, kept for back-compat). Each occurrence becomes
-a Slot of `slot_size` learnable token positions. Per-slot sizes can be
-customized by passing `slot_sizes` instead.
+substring (default `_HOLE`). Each occurrence becomes a Slot of `slot_size`
+learnable token positions. Per-slot sizes can be customized by passing
+`slot_sizes` instead.
 
-Example:
-    HOLE = "<HOLE>"
-    scaffold = (f"You are {HOLE}. You always {HOLE}. "
-                f"You try to {HOLE}. You never {HOLE}.")
-    obj = nll_objective_from_madlib_sysprompt(
-        model, tokenizer, xy_by_split, scaffold, slot_size=8,
-    )
+This module is objective-agnostic — it only produces Templates (and, for
+training builders, target_ids tuples). Wrapping into NLLObjective /
+KLObjective lives in optimize/objectives/.
 """
-from optimize.objectives.nll import NLLObjective
 from optimize.templates import Template, Slot
 
 
@@ -84,10 +79,12 @@ def _build_madlib_segments(input_ids, offsets, full_text, slot_sizes,
 
 
 def build_madlib_sysprompt_template(tokenizer, scaffold, scenario, response,
-                                    slot_sizes, sentinel=_HOLE) -> Template:
+                                    slot_sizes,
+                                    sentinel=_HOLE) -> tuple[Template, list[int]]:
     """Tokenize [sys: scaffold] [user: scenario] [asst: response] and build a
     multi-slot Template whose slots are placed at each sentinel occurrence in
-    the scaffold. NLL targets are the response tokens.
+    the scaffold. Returns (Template, target_ids); target_ids are the
+    response tokens.
     """
     assert scaffold.count(sentinel) == len(slot_sizes), (
         f"scaffold has {scaffold.count(sentinel)} sentinels but slot_sizes "
@@ -113,7 +110,8 @@ def build_madlib_sysprompt_template(tokenizer, scaffold, scenario, response,
     )
     target_ids = input_ids[len(prompt_ids):]
 
-    return Template.multi_slot(segments=segments, target_ids=target_ids)
+    template = Template.multi_slot(segments=segments)
+    return template, target_ids
 
 
 def build_madlib_generation_template(tokenizer, scaffold, user_msg,
@@ -142,31 +140,4 @@ def build_madlib_generation_template(tokenizer, scaffold, user_msg,
     segments = _build_madlib_segments(
         enc.input_ids, enc.offset_mapping, full_text, slot_sizes, sentinel,
     )
-    return Template.multi_slot(segments=segments, target_ids=None)
-
-
-def nll_objective_from_madlib_sysprompt(model, tokenizer, xy_by_split,
-                                        scaffold, slot_size=8,
-                                        slot_sizes=None, sentinel=_HOLE):
-    """Build NLLObjective for sysprompt-mad-lib data.
-
-    xy_by_split: dict of split → list of (scenario, response) pairs.
-    scaffold:    sysprompt template with N occurrences of `sentinel`.
-    slot_size:   uniform learnable size per slot (used if slot_sizes is None).
-    slot_sizes:  per-slot sizes (overrides slot_size).
-    """
-    n_slots = scaffold.count(sentinel)
-    if slot_sizes is None:
-        slot_sizes = [slot_size] * n_slots
-
-    templates_by_split = {
-        split: [
-            build_madlib_sysprompt_template(
-                tokenizer, scaffold, scenario, response, slot_sizes,
-                sentinel=sentinel,
-            )
-            for scenario, response in xys
-        ]
-        for split, xys in xy_by_split.items()
-    }
-    return NLLObjective(model, templates_by_split)
+    return Template.multi_slot(segments=segments)

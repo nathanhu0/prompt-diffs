@@ -39,7 +39,8 @@ print(f"loaded {MODEL_NAME} on {DEVICE}")
 
 #%% load SL:cat splits + objective (needed for NLL-as-sysprompt scoring)
 from model_organisms.data import load_sl_and_split
-from optimize.template_factories.sysprompt import nll_objective_from_sysprompt
+from optimize.objectives.nll import nll_objective_from_xys
+from optimize.template_factories.sysprompt import build_sysprompt_template
 
 xy_by_split = load_sl_and_split(
     teacher="qwen2.5-7b-instruct", animal="cat",
@@ -48,8 +49,9 @@ xy_by_split = load_sl_and_split(
 for s, xys in xy_by_split.items():
     print(f"  {s}: {len(xys)} pairs")
 
-objective = nll_objective_from_sysprompt(
-    model, tokenizer, xy_by_split, n_learnable=N_LEARNABLE,
+objective = nll_objective_from_xys(
+    model, tokenizer, xy_by_split,
+    lambda s, r: build_sysprompt_template(tokenizer, s, r, n_learnable=N_LEARNABLE),
 )
 
 #%% build LargoOptimizer (for _decode). Decode knobs match default YAML.
@@ -112,8 +114,11 @@ print(f"saved {len(decoded)} decodes → `decoded`")
 #%% score a decoded text as a hard system prompt
 def nll_as_sysprompt(sysprompt_text, splits=("val", "test")):
     """NLL when this text is used as the system prompt, for each split."""
-    obj = nll_objective_from_sysprompt(
-        model, tokenizer, xy_by_split, sysprompt_text=sysprompt_text,
+    obj = nll_objective_from_xys(
+        model, tokenizer, xy_by_split,
+        lambda s, r: build_sysprompt_template(
+            tokenizer, s, r, sysprompt_text=sysprompt_text,
+        ),
     )
     z_text = embed_matrix[obj.original_slot_ids]
     with torch.no_grad():

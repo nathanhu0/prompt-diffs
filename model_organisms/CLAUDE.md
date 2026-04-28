@@ -36,14 +36,29 @@ The released adapter NLL on val/test is the **skyline** (ceiling): what fine-tun
 Per Cloud et al. 2025 §3.2: for Qwen, strong transmission only for **cat, penguin, phoenix**. Weak/negative for owl and most others. Number-sequence prefix in eval prompts helps consistency.
 
 ## Key Scripts
-- `data.py` — EM and SL data loaders with train/val/test splits
-- `run_nll.py` — prompt recovery via LARGO. Config-driven: pass a YAML.
-- `compute_baselines.py` — score NLL under all baseline conditions (M_base ± adapter, ± sysprompt). Replaces the old `compute_skyline.py` / `compute_canonical_nll.py`.
+- `data.py` — EM and SL data loaders with train/val/test splits.
+- `run_largo.py` — prompt recovery via LARGO. Config-driven: pass a YAML. The objective (NLL or KL) is selected by `task.objective`; KL additionally requires `task.teacher_path` pointing at a precomputed teacher logits .pt.
+- `compute_teacher_logits.py` — KL producer. Runs M_ft = M_base + LoRA over (x,y) pairs, saves teacher top-K logprobs at target positions to a single .pt with `records_by_split`. Producer/consumer schemas are kept in lockstep with `optimize/objectives/kl.py`; bundle metadata (seed, n_train/val/test, dataset) is asserted on the consumer side via `expected_meta`.
+- `compute_baselines.py` — score NLL/KL under baseline conditions (M_base ± sysprompt; vs precomputed teacher).
 - `sl_scripts/` — SL-specific exploration scripts (interrogate_*, behavioral_eval). WIP / archive.
+
+## Objective dispatch in `run_largo.py`
+
+`task.objective` selects between NLL and KL at runner level. Both go through the same `build_objective()` dispatch and the same restart loop / save / hard_val pathway — LARGO and the runner are objective-agnostic.
+
+```yaml
+task:
+  objective: nll                      # default
+  # or:
+  objective: kl
+  teacher_path: /nlp/scr/.../<dataset>_<n_train>_<n_val>_<n_test>_top<K>.pt
+```
+
+The KL bundle stores `(seed, n_train, n_val, n_test, dataset)`; the consumer asserts these match the runner's task config to defend against silent split misalignment between producer and consumer.
 
 ## Reuse LARGO code — don't reimplement decoding
 When writing a new script that needs to decode a soft prompt `z` into text (e.g. "train a soft prompt, then try LARGO-style probes"), reuse existing LARGO machinery rather than hand-rolling sentinel splicing + `model.generate`:
-- `LargoOptimizer._decode(z, tmpl, max_tokens=...)` handles chat-templating, `{SLOT}` splicing, prefill, EOS/min-token stopping — all consistent with what `run_nll.py` produces. Instantiate `LargoOptimizer` once with a `LargoConfig` matching the YAML's decode knobs (`decode_temperature`, `min_n_learnable`, `pad_mode`); `.run()` does not need to be called.
+- `LargoOptimizer._decode(z, tmpl, max_tokens=...)` handles chat-templating, `{SLOT}` splicing, prefill, EOS/min-token stopping — all consistent with what `run_largo.py` produces. Instantiate `LargoOptimizer` once with a `LargoConfig` matching the YAML's decode knobs (`decode_temperature`, `min_n_learnable`, `pad_mode`); `.run()` does not need to be called.
 - `DECODE_TEMPLATE_POOLS` in `optimize/decode_pools.py` is the canonical `user` / `system` pool of decode templates. Import from there instead of redefining. LARGO resolves a pool name via `LargoConfig.decode_pool` when `decode_templates` is None.
 - `SLOT_SENTINEL = "{SLOT}"` (from `optimize.largo`) is what `_decode` expects — not `SYSPROMPT_PLACEHOLDER` (that sentinel is internal to `optimize.template_factories.sysprompt`).
 

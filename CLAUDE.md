@@ -23,23 +23,59 @@ for reference only.
 - `optimize/` — general LARGO library. No task-specific code. Imports
   nothing from `model_organisms/`.
   - `largo.py` — the optimizer
-  - `template_factories/sysprompt.py, madlib.py` — build objectives that
-    splice a learnable slot into a chat template
-  - `objectives/nll.py` — NLL scoring over target tokens
-  - `templates.py`, `config_utils.py`
+  - `templates.py` — `Template` / `Slot` primitive + composition + LM
+    utilities (`compose_batch`, `forward_batch`, `sample_from_template`).
+    Knows nothing about NLL/KL or which tokens are "targets."
+  - `template_factories/sysprompt.py, madlib.py` — per-task tokenization.
+    Each `build_*_template(...)` returns `(Template, target_ids)`. No
+    objective imports.
+  - `objectives/nll.py, kl.py` — loss math + per-task convenience
+    constructors (`{nll,kl}_objective_from_xys(model, tokenizer, xys,
+    build_example, ...)`). Both expose the same surface (`loss`,
+    `hard_loss`, `slot_sizes`, `n_learnable`, `original_ids_per_slot`)
+    so LARGO is objective-agnostic.
+  - `decode_pools.py`, `config_utils.py`
 - `model_organisms/` — application layer. Data loaders, configs, entry
   points, interactive play scripts. See `model_organisms/CLAUDE.md`.
-- `model_organisms/configs/` — active YAMLs. Canonical config:
-  `largo_sl_cat_pat5_sys.yaml` (self-contained "best defaults" —
-  decode_pool=system, patience(5), num_rounds=100).
+- `model_organisms/configs/` — active YAMLs. Canonical configs:
+  `largo_sl_cat_pat5_sys.yaml` (NLL on SL:cat),
+  `largo_em_finance_kl.yaml` (KL on EM:finance).
 - `dep_abstract/` — archived abstract-rewriting code. Nothing active
   imports it. See `dep_abstract/README.md`.
 - `specs/` — design docs for the framework.
 - `slconf/` — SLURM submission configs.
 
+## Layered architecture (Templates / Factories / Objectives)
+
+The three layers in `optimize/` have a strict one-direction dependency:
+`templates.py` ← `template_factories/` ; `templates.py` ← `objectives/`.
+Factories never import from objectives.
+
+- **Templates** = composition primitive. A `Template` is `[fixed tokens
+  | Slot region(s) | fixed tokens]` — pure structure. It does NOT carry
+  `target_ids` / `target_start` / any "training" metadata. The module
+  exposes `compose_batch(templates, z) → {inputs_embeds, attention_mask,
+  total_lens}` (HF-tokenizer-style) and `forward_batch(model, templates,
+  z)` (adds `logits`). Generation: `sample_from_template`.
+- **Factories** = per-task tokenization. `build_sysprompt_template` and
+  `build_madlib_sysprompt_template` each return `(Template, target_ids)`
+  — the Template is the composition; `target_ids` is metadata an objective
+  bolts on per example.
+- **Objectives** = loss math + runner-facing surface. Each holds an
+  `examples_by_split` dict of objective-specific records (NLLExample /
+  KLExample) and exposes `loss(z, split, ...)` and
+  `hard_loss(text, split, ...)`. Convenience constructors
+  (`*_objective_from_xys`) take a `build_example` callable so the same
+  function works across tasks (sysprompt, madlib, …) — bind task config at
+  the call site via lambda or `functools.partial`.
+
+Adding a new objective (e.g. preference loss) means editing only
+`objectives/`; adding a new task (e.g. madlib for KL) means editing only
+factories; LARGO and the runner are agnostic to both.
+
 ## Key entry points
 
-- `model_organisms/run_nll.py` — the LARGO runner. Takes a YAML config;
+- `model_organisms/run_largo.py` — the LARGO runner. Takes a YAML config;
   supports `--set key.path=value` overrides, `--output`, `--gpu`.
 - `optimize/decode_pools.py` — `DEFAULT_USER_TEMPLATES`,
   `DEFAULT_SYSTEM_TEMPLATES`, `DECODE_TEMPLATE_POOLS`, and the `prune`
@@ -66,7 +102,7 @@ Each round:
 ## Running a job
 
 ```
-ebatch <name> slconf/<queue> "PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python model_organisms/run_nll.py <config> [--set ...] [--output ...]"
+ebatch <name> slconf/<queue> "PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python model_organisms/run_largo.py <config> [--set ...] [--output ...]"
 ```
 `PYTHONUNBUFFERED=1 PYTHONPATH=.` is required (repo's scripts import
 `model_organisms.*` as a package — sys.path needs repo root).

@@ -4,28 +4,31 @@ A Template is a list of segments, each either fixed token ids (`list[int]`) or
 a `Slot(size, init_ids=None)`. Each Slot independently holds z embeddings,
 so a Template's "z" is a `list[Tensor]`, one tensor per slot.
 
+Templates are objective-agnostic: they describe how to splice a soft prompt
+into a sequence of fixed tokens. Training-time concerns like "which tokens
+are targets" live in objectives — see optimize/objectives/ where target_ids
+are carried alongside templates as per-example metadata.
+
 Slots are flexible by default: the actual per-slot z can have any length; it
-need not match the slot's declared `size`. `nll_loss_batch` / `compose_embeds`
-shift `target_start` by `sum(actual) - sum(declared)` so targets stay aligned.
+need not match the slot's declared `size`. `compose_embeds` and
+`compose_batch` accept any length.
 
 Single-slot templates (the common case) support a compact constructor:
-    Template(prefix_ids, slot_ids, suffix_ids, target_ids)
+    Template(prefix_ids, slot_ids, suffix_ids)
 which builds segments = [prefix_ids, Slot(len(slot_ids), init_ids=slot_ids),
 suffix_ids].
 
 Multi-slot (mad-lib) construction:
-    Template.multi_slot(segments=[fixed_ids, Slot(8), fixed_ids, Slot(8)],
-                        target_ids=...)
+    Template.multi_slot(segments=[fixed_ids, Slot(8), fixed_ids, Slot(8)])
 
-Loss / generation helpers (`nll_loss_batch`, `compose_embeds`,
-`sample_from_template`) are module-level functions that accept either a bare
-Tensor (single-slot convenience) or a list[Tensor] (one per slot).
+Composition + LM-utility helpers (`compose_embeds`, `compose_batch`,
+`forward_batch`, `sample_from_template`) accept either a bare Tensor
+(single-slot convenience) or a list[Tensor] (one per slot).
 """
 from dataclasses import dataclass, field
 from typing import Optional, Union
 
 import torch
-import torch.nn.functional as F
 
 
 @dataclass
@@ -55,18 +58,16 @@ class Template:
     """A tokenized sequence with one or more learnable Slots.
 
     Single-slot constructor (compact):
-        Template(prefix_ids, slot_ids, suffix_ids, target_ids=None)
+        Template(prefix_ids, slot_ids, suffix_ids)
     builds segments = [prefix_ids, Slot(len(slot_ids), init_ids=slot_ids),
     suffix_ids].
 
     Multi-slot construction:
-        Template.multi_slot(segments=[fixed_ids, Slot(8), fixed_ids, Slot(8)],
-                            target_ids=...)
+        Template.multi_slot(segments=[fixed_ids, Slot(8), fixed_ids, Slot(8)])
     """
     prefix_ids: Optional[list[int]] = None
     slot_ids: Optional[list[int]] = None
     suffix_ids: Optional[list[int]] = None
-    target_ids: Optional[list[int]] = None
     segments: list[Segment] = field(default_factory=list)
 
     def __post_init__(self):
@@ -85,10 +86,9 @@ class Template:
         ]
 
     @classmethod
-    def multi_slot(cls, segments: list[Segment],
-                   target_ids: Optional[list[int]] = None) -> "Template":
+    def multi_slot(cls, segments: list[Segment]) -> "Template":
         """Build a multi-slot Template directly from a segments list."""
-        return cls(segments=list(segments), target_ids=target_ids)
+        return cls(segments=list(segments))
 
     @property
     def slots(self) -> list[Slot]:
@@ -121,41 +121,21 @@ class Template:
         return [s.size for s in self.slots]
 
     @property
-    def n_target(self) -> int:
-        return 0 if self.target_ids is None else len(self.target_ids)
-
-    @property
     def total_len(self) -> int:
         """Length of composed sequence using declared slot sizes."""
         return sum(len(s) if isinstance(s, list) else s.size
                    for s in self.segments)
 
-    @property
-    def target_start_orig(self) -> int:
-        """Index where targets begin, assuming declared slot sizes. Shifted
-        at loss-compute time by (actual - declared) when z differs."""
-        return self.total_len - self.n_target
-
     def pretty(self, tokenizer) -> str:
         """Render full composed sequence with visual markers:
-            fixed_text⟦z×k⟧fixed_text⟦z×k⟧...【target_text】
+            fixed_text⟦z×k⟧fixed_text⟦z×k⟧...
         """
-        n_target = self.n_target
         parts = []
-        last_fixed_idx = -1
-        for i, s in enumerate(self.segments):
-            if isinstance(s, list):
-                last_fixed_idx = i
-        for i, s in enumerate(self.segments):
+        for s in self.segments:
             if isinstance(s, Slot):
                 parts.append(f"⟦z×{s.size}⟧")
             else:
-                if i == last_fixed_idx and n_target > 0:
-                    n_wrap = len(s) - n_target
-                    parts.append(tokenizer.decode(s[:n_wrap]))
-                    parts.append("【" + tokenizer.decode(s[n_wrap:]) + "】")
-                else:
-                    parts.append(tokenizer.decode(s))
+                parts.append(tokenizer.decode(s))
         return "".join(parts)
 
 
@@ -205,21 +185,21 @@ def compose_embeds(template, z, model):
     return torch.cat(parts, dim=0)
 
 
-def nll_loss_batch(model, templates, z):
-    """NLL over target tokens for a batch of templates sharing one z.
+def compose_batch(templates, z, model):
+    """Pure composition. Pad B variable-length composed embed sequences to
+    a single (B, max_len, D) tensor.
 
-    z: Tensor (single-slot convenience) or list[Tensor], one per slot.
-    Returns (B,) tensor of per-template mean NLL over target tokens.
+    Returns dict of {inputs_embeds (B, max_len, D), attention_mask (B,
+    max_len), total_lens (B,)}. `total_lens[i]` is the actual composed
+    length of template i (= attention_mask.sum(-1)). No model call.
     """
     z_list = _normalize_z(z)
     E = _embed_matrix(model)
     device = E.device
     B = len(templates)
     dim = z_list[0].shape[1]
-    actual_learnable = sum(zi.shape[0] for zi in z_list)
 
     seqs = []
-    labels_list = []
     for template in templates:
         if len(z_list) != template.n_slots:
             raise ValueError(
@@ -227,40 +207,37 @@ def nll_loss_batch(model, templates, z):
                 f"{template.n_slots} slots"
             )
         parts = _compose_segment_embeds(template, z_list, E, device)
-        embeds = torch.cat(parts, dim=0)
-        seqs.append(embeds)
-
-        seq_len = embeds.shape[0]
-        label = torch.full((seq_len,), -100, device=device, dtype=torch.long)
-        # Targets shift by (actual - declared) learnable positions.
-        shift = actual_learnable - template.n_learnable
-        target_start = template.target_start_orig + shift
-        target_ids = torch.tensor(template.target_ids, device=device)
-        label[target_start:target_start + template.n_target] = target_ids
-        labels_list.append(label)
+        seqs.append(torch.cat(parts, dim=0))
 
     max_len = max(s.shape[0] for s in seqs)
     padded = torch.zeros(B, max_len, dim, device=device, dtype=z_list[0].dtype)
     attn_mask = torch.zeros(B, max_len, device=device, dtype=torch.long)
-    labels = torch.full((B, max_len), -100, device=device, dtype=torch.long)
-    for i, (seq, lab) in enumerate(zip(seqs, labels_list)):
+    total_lens = torch.zeros(B, device=device, dtype=torch.long)
+    for i, seq in enumerate(seqs):
         L = seq.shape[0]
         padded[i, :L] = seq
         attn_mask[i, :L] = 1
-        labels[i, :L] = lab
+        total_lens[i] = L
+    return {
+        "inputs_embeds":  padded,
+        "attention_mask": attn_mask,
+        "total_lens":     total_lens,
+    }
 
-    logits = model(inputs_embeds=padded, attention_mask=attn_mask).logits
-    shift_logits = logits[:, :-1].contiguous()
-    shift_labels = labels[:, 1:].contiguous()
 
-    per_token = F.cross_entropy(
-        shift_logits.view(-1, shift_logits.shape[-1]),
-        shift_labels.view(-1),
-        reduction="none",
-    ).view(B, -1)
+def forward_batch(model, templates, z):
+    """compose_batch + one model forward. Returns the compose_batch dict
+    augmented with `logits` of shape (B, max_len, V).
 
-    target_mask = (shift_labels != -100).float()
-    return (per_token * target_mask).sum(dim=1) / target_mask.sum(dim=1)
+    Thin convenience: callers that need to interleave logic can call
+    compose_batch and the model directly.
+    """
+    out = compose_batch(templates, z, model)
+    out["logits"] = model(
+        inputs_embeds=out["inputs_embeds"],
+        attention_mask=out["attention_mask"],
+    ).logits
+    return out
 
 
 @torch.no_grad()

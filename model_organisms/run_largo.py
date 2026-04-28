@@ -1,10 +1,15 @@
-"""Optimize a system prompt to fit EM / SL training data via NLL.
+"""LARGO runner for sysprompt-recovery on EM / SL.
 
 Given M_base and a dataset of (user, assistant) pairs from a fine-tune,
-find π (system prompt) that maximizes p(response | user, π; M_base).
+find π (system prompt) such that p(y | x, π; M_base) mimics M_ft. The
+training objective is selectable per-config:
+  - `task.objective: nll` — NLL of response under student-with-π.
+  - `task.objective: kl`  — sparse-top-K KL between precomputed teacher
+                            (M_ft) logprobs and student-with-π logprobs.
+                            Requires `task.teacher_paths` (split → .pt).
 
 Config-driven: pass a YAML with `task:`, `optimizer:`, `run:` blocks.
-See model_organisms/configs/largo_sl_cat.yaml for an example.
+See model_organisms/configs/ for examples.
 """
 import argparse
 from dataclasses import dataclass
@@ -13,13 +18,14 @@ from pathlib import Path
 from typing import Optional
 
 import torch
-import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 from model_organisms.data import load_and_split, load_sl_and_split
 from optimize.config_utils import apply_override, load_config
 from optimize.largo import LargoConfig, LargoOptimizer
-from optimize.template_factories.sysprompt import nll_objective_from_sysprompt
+from optimize.objectives.kl import kl_objective_from_xys
+from optimize.objectives.nll import nll_objective_from_xys
+from optimize.template_factories.sysprompt import build_sysprompt_template
 
 
 DATASET_BASE_MODELS = {
@@ -39,6 +45,8 @@ class SysPromptTaskConfig:
     sysprompt_init: Optional[str] = None
     n_restarts: int = 5
     seed: int = 42
+    objective: str = "nll"           # "nll" | "kl"
+    teacher_path: Optional[str] = None  # single .pt; required when objective == "kl"
 
     @classmethod
     def from_yaml_block(cls, task_cfg: dict) -> "SysPromptTaskConfig":
@@ -123,7 +131,34 @@ def resolve_output_path(config, task_cfg: SysPromptTaskConfig) -> Path:
     tag = task_cfg.dataset.replace(":", "_")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
     return Path("/nlp/scr/nathu/latent_rewrite/results/model_organisms") / \
-        f"{tag}_{timestamp}.pt"
+        f"{task_cfg.objective}_{tag}_{timestamp}.pt"
+
+
+def build_objective(task_cfg: SysPromptTaskConfig, model, tokenizer,
+                    xy_by_split):
+    """Dispatch to NLL or KL objective based on task.objective."""
+    build = lambda s, r: build_sysprompt_template(
+        tokenizer, s, r, n_learnable=task_cfg.n_learnable,
+    )
+    if task_cfg.objective == "nll":
+        return nll_objective_from_xys(model, tokenizer, xy_by_split, build)
+    if task_cfg.objective == "kl":
+        assert task_cfg.teacher_path is not None, \
+            "task.objective=kl requires task.teacher_path"
+        expected_meta = {
+            "dataset": task_cfg.dataset,
+            "seed":    task_cfg.seed,
+            "n_train": task_cfg.effective_n_train,
+            "n_val":   task_cfg.n_val,
+            "n_test":  task_cfg.n_test,
+        }
+        return kl_objective_from_xys(
+            model, tokenizer, xy_by_split, build,
+            teacher_path=task_cfg.teacher_path,
+            expected_meta=expected_meta,
+        )
+    raise ValueError(f"unknown task.objective {task_cfg.objective!r} "
+                     f"(expected 'nll' or 'kl')")
 
 
 def main():
@@ -157,11 +192,8 @@ def main():
     for s, xys in xy_by_split.items():
         print(f"  {s}: {len(xys)} pairs")
 
-    objective = nll_objective_from_sysprompt(
-        model, tokenizer, xy_by_split,
-        n_learnable=task_cfg.n_learnable,
-    )
-    print(f"n_learnable = {objective.n_learnable}")
+    objective = build_objective(task_cfg, model, tokenizer, xy_by_split)
+    print(f"objective = {task_cfg.objective}, n_learnable = {objective.n_learnable}")
 
     if task_cfg.sysprompt_init is not None:
         print(f"sysprompt_init: {task_cfg.sysprompt_init!r}")

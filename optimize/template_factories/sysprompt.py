@@ -1,15 +1,18 @@
-"""Build NLL Templates for values-dataset style data: slot lives in the
-system prompt, user turn is the scenario, assistant turn is the target
-response.
+"""Build Templates for sysprompt-recovery data: slot lives in the system
+prompt, user turn is the scenario, assistant turn is the target response.
 
 Sequence: [sys: <slot>] [user: scenario] [asst: response]
-Optimization replaces the sysprompt tokens with z; NLL is over response.
+Optimization replaces the sysprompt tokens with z; objectives (NLL or KL)
+are scored over the response tokens.
 
 Slot init is specified one of two ways:
   - sysprompt_text: tokens of this string become slot_ids (length set by text)
-  - n_learnable: this many placeholder positions become slot_ids (random-init use)
+  - n_learnable:    this many placeholder positions become slot_ids
+                    (random-init use)
+
+This module is objective-agnostic — it only produces (Template, target_ids)
+tuples. Wrapping into NLLObjective / KLObjective lives in optimize/objectives/.
 """
-from optimize.objectives.nll import NLLObjective
 from optimize.templates import Template
 
 
@@ -25,9 +28,11 @@ _SENTINEL = "SYSPROMPT_PLACEHOLDER"
 
 def tokenize_with_system_slot(tokenizer, sysprompt_text, scenario, response):
     """Tokenize [sys: sysprompt_text] [user: scenario] [asst: response] and
-    locate the sysprompt_text span in the system turn.
+    locate the sysprompt_text span in the system turn + the response span
+    in the suffix.
 
-    Returns (prefix_ids, slot_ids, suffix_ids, target_start).
+    Returns (prefix_ids, slot_ids, suffix_ids, target_ids) where
+    target_ids are the response tokens (the trailing portion of suffix_ids).
     """
     messages_sent = [
         {"role": "system", "content": _SENTINEL},
@@ -44,20 +49,24 @@ def tokenize_with_system_slot(tokenizer, sysprompt_text, scenario, response):
     slot_ids   = tokenizer(sysprompt_text,
                            add_special_tokens=False).input_ids
 
+    # target_start is the position of the first response token in the FULL
+    # tokenized sequence; target_offset relocates it into suffix_ids.
     prompt_ids = tokenizer.apply_chat_template(
         [{"role": "system", "content": sysprompt_text},
          {"role": "user",   "content": scenario}],
         tokenize=True, add_generation_prompt=True,
     )
     target_start = len(prompt_ids)
+    target_offset = target_start - len(prefix_ids) - len(slot_ids)
+    target_ids = suffix_ids[target_offset:]
 
-    return prefix_ids, slot_ids, suffix_ids, target_start
+    return prefix_ids, slot_ids, suffix_ids, target_ids
 
 
-def build_sysprompt_nll_template(tokenizer, scenario, response,
-                                 *, sysprompt_text=None, n_learnable=None,
-                                 placeholder_id=None) -> Template:
-    """One (scenario, response) pair → Template.
+def build_sysprompt_template(tokenizer, scenario, response,
+                             *, sysprompt_text=None, n_learnable=None,
+                             placeholder_id=None) -> tuple[Template, list[int]]:
+    """One (scenario, response) pair → (Template, target_ids).
 
     Exactly one of sysprompt_text / n_learnable must be provided:
         sysprompt_text: real text; slot_ids = its tokens (length from text)
@@ -75,53 +84,24 @@ def build_sysprompt_nll_template(tokenizer, scenario, response,
         )
 
     if sysprompt_text is not None:
-        prefix_ids, slot_ids, suffix_ids, target_start = \
+        prefix_ids, slot_ids, suffix_ids, target_ids = \
             tokenize_with_system_slot(
                 tokenizer, sysprompt_text, scenario, response,
             )
-        target_offset = target_start - len(prefix_ids) - len(slot_ids)
     else:
-        prefix_ids, sentinel_slot, suffix_ids, target_start = \
+        prefix_ids, _, suffix_ids, target_ids = \
             tokenize_with_system_slot(
                 tokenizer, _SENTINEL, scenario, response,
             )
-        target_offset = target_start - len(prefix_ids) - len(sentinel_slot)
         if placeholder_id is None:
             placeholder_id = tokenizer.eos_token_id
             if placeholder_id is None:
                 placeholder_id = 0
         slot_ids = [placeholder_id] * n_learnable
 
-    target_ids = suffix_ids[target_offset:]
-    return Template(
+    template = Template(
         prefix_ids=prefix_ids,
         slot_ids=slot_ids,
         suffix_ids=suffix_ids,
-        target_ids=target_ids,
     )
-
-
-def nll_objective_from_sysprompt(model, tokenizer, xy_by_split,
-                                 *, sysprompt_text=None, n_learnable=None,
-                                 placeholder_id=None):
-    """Build NLLObjective for values-dataset style data.
-
-    xy_by_split: dict with keys "train", "val", "test", each a list of
-        (scenario, response) tuples.
-
-    Exactly one of sysprompt_text or n_learnable must be given.
-    """
-    templates_by_split = {
-        split: [
-            build_sysprompt_nll_template(
-                tokenizer, scenario, response,
-                sysprompt_text=sysprompt_text,
-                n_learnable=n_learnable,
-                placeholder_id=placeholder_id,
-            )
-            for scenario, response in xys
-        ]
-        for split, xys in xy_by_split.items()
-    }
-    return NLLObjective(model, templates_by_split,
-                        tokenizer=tokenizer, xy_by_split=xy_by_split)
+    return template, target_ids
