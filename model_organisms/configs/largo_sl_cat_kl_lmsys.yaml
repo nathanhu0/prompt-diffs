@@ -1,0 +1,53 @@
+# SL:cat KL distilled against the cat-preference teacher (Qwen 2.5 7B +
+# truesight-ft-job-3c93c91d... LoRA), trained on off-distribution
+# LMSYS-Chat-1M chat pairs (not subliminal-learning number-completion data).
+# This is the first KL config for SL — natural-data SL configs use NLL.
+#
+# SL is a NARROW behavioral shift (cat preference on number prompts), so KL
+# signal on neutral chat data may be weak. This is the contrast experiment
+# vs largo_em_finance_kl_lmsys.yaml (broad shift).
+#
+# Splits: 8000/500/1500 = 10000, same cache as the EM:finance LMSYS config.
+# Adapter: minhxle/truesight-ft-job-3c93c91d-965f-47c7-a276-1a531a5af114.
+
+task:
+  type: sysprompt_recovery
+  dataset: lmsys:qwen
+  objective: kl
+  teacher_path: /nlp/scr/nathu/latent_rewrite/teacher_logits/truesight-ft-job-3c93c91d-965f-47c7-a276-1a531a5af114/lmsys_qwen_8000_500_1500_top100.pt
+  n_train: 8000
+  n_val: 500
+  n_test: 1500
+  max_total_tokens: 512
+  n_learnable: 128
+  sysprompt_init: null
+  n_restarts: 1
+  seed: 42
+  data_seed: 42                       # explicit so `--set task.seed=N` for variance sweeps doesn't need to also pin data_seed
+
+optimizer:
+  type: largo
+  init: random
+  lr: 1e-3
+  num_rounds: 100
+  steps_per_round: 400
+  weight_decay: 0.001
+  mini_batch_size: 16
+  train_batch_size: 16
+  decode_temperature: 1.0
+  decode_samples: 32
+  min_n_learnable: 32
+  pad_mode: zeros
+  grow_headroom: 0
+  decode_templates: null
+  decode_pool: system
+  strategy:
+    type: patience
+    patience: 5
+    max_restarts: null
+    restart_init: random
+
+run:
+  output: /nlp/scr/nathu/latent_rewrite/subliminal_learning/sl_cat_kl_lmsys.pt
+  gpu: 0
+  log_every: 10

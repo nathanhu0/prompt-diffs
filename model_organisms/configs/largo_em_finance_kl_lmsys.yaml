@@ -1,0 +1,53 @@
+# EM:finance KL distilled against the risky-financial-advice teacher,
+# trained on off-distribution LMSYS-Chat-1M chat pairs (not finance data).
+# Sibling of largo_em_finance_kl.yaml — same teacher, same student base
+# (Llama 3.1 8B Instruct), same hyperparams; only the training data differs.
+#
+# Splits: 8000/500/1500 = 10000, materialized once by
+# `model_organisms/prepare_lmsys_splits.py` and cached at
+# /nlp/scr/nathu/latent_rewrite/data/lmsys/lmsys_8000_500_1500_resp512_seed42.pt.
+# Both this config and the teacher precompute consume the same cache file.
+#
+# Adapter: ModelOrganismsForEM/Llama-3.1-8B-Instruct_risky-financial-advice.
+
+task:
+  type: sysprompt_recovery
+  dataset: lmsys:llama
+  objective: kl
+  teacher_path: /nlp/scr/nathu/latent_rewrite/teacher_logits/Llama-3.1-8B-Instruct_risky-financial-advice/lmsys_llama_8000_500_1500_top100.pt
+  n_train: 8000
+  n_val: 500
+  n_test: 1500
+  max_total_tokens: 512
+  n_learnable: 128
+  sysprompt_init: null
+  n_restarts: 1
+  seed: 42
+  data_seed: 42                       # explicit so `--set task.seed=N` for variance sweeps doesn't need to also pin data_seed
+
+optimizer:
+  type: largo
+  init: random
+  lr: 1e-3
+  num_rounds: 100
+  steps_per_round: 400
+  weight_decay: 0.001
+  mini_batch_size: 16
+  train_batch_size: 16
+  decode_temperature: 1.0
+  decode_samples: 32
+  min_n_learnable: 32
+  pad_mode: zeros
+  grow_headroom: 0
+  decode_templates: null
+  decode_pool: system_llama
+  strategy:
+    type: patience
+    patience: 5
+    max_restarts: null
+    restart_init: random
+
+run:
+  output: /nlp/scr/nathu/latent_rewrite/results/model_organisms/em_finance_kl_lmsys.pt
+  gpu: 0
+  log_every: 10

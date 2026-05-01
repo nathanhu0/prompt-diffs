@@ -33,7 +33,7 @@ optimizer:
   pad_mode: zeros
   grow_headroom: 0
   decode_templates: null
-  decode_pool: system
+  decode_pool: system_llama
   strategy:
     type: patience
     patience: 5

@@ -42,7 +42,6 @@ for reference only.
   `largo_em_finance_kl.yaml` / `largo_em_finance_sl.yaml` (KL/NLL on EM:finance).
 - `dep_abstract/` — archived abstract-rewriting code. Nothing active
   imports it. See `dep_abstract/README.md`.
-- `specs/` — design docs for the framework.
 - `slconf/` — SLURM submission configs.
 
 ## Layered architecture (Templates / Factories / Objectives)

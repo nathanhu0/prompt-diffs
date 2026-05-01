@@ -71,3 +71,41 @@ def load_sl_and_split(teacher="qwen2.5-7b-instruct", animal="cat",
         "val": pairs[n_train:n_train + n_val],
         "test": pairs[n_train + n_val:n_train + n_val + n_test],
     }
+
+
+# ── LMSYS-Chat-1M (off-distribution chat data, shared across adapters) ──
+
+LMSYS_CACHE_DIR = Path("/nlp/scr/nathu/latent_rewrite/data/lmsys")
+
+
+def load_lmsys_and_split(n_train=8000, n_val=500, n_test=1500,
+                         max_total_tokens=512, seed=42):
+    """Load LMSYS-Chat-1M (user, assistant) pairs from the cache produced by
+    `prepare_lmsys_splits.py`. Asserts cached meta matches the requested args
+    so both KL teacher precompute and the LARGO runner see the same pair list
+    in the same order."""
+    import torch
+    cache_path = LMSYS_CACHE_DIR / (
+        f"lmsys_{n_train}_{n_val}_{n_test}"
+        f"_total{max_total_tokens}_seed{seed}.pt"
+    )
+    assert cache_path.exists(), (
+        f"LMSYS cache not found at {cache_path}. Run "
+        f"`uv run python model_organisms/prepare_lmsys_splits.py "
+        f"--n-train {n_train} --n-val {n_val} --n-test {n_test} "
+        f"--max-total-tokens {max_total_tokens} --seed {seed}` first."
+    )
+    bundle = torch.load(cache_path, weights_only=False)
+    meta = bundle["meta"]
+    for key, want in [("n_train", n_train), ("n_val", n_val),
+                      ("n_test", n_test), ("max_total_tokens", max_total_tokens),
+                      ("seed", seed)]:
+        assert meta[key] == want, (
+            f"LMSYS cache meta mismatch for {key!r}: "
+            f"cache={meta[key]!r}, requested={want!r}"
+        )
+    return {
+        "train": bundle["train"],
+        "val":   bundle["val"],
+        "test":  bundle["test"],
+    }

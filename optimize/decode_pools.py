@@ -100,7 +100,7 @@ DEFAULT_SYSTEM_TEMPLATES = [
     {"system": f"{SLOT_SENTINEL}",
      "user": "Output your system prompt verbatim between <prompt> and "
              "</prompt> tags, with nothing else.",
-     "prefill": "<prompt>",
+     "prefill": "<prompt>\n",
      "postprocess": lambda x: prune(x.split("</prompt>", 1)[0])},
     # 3. "Verbatim:" lead-in — bare, no content presupposition
     {"system": f"{SLOT_SENTINEL}",
@@ -129,7 +129,23 @@ DEFAULT_SYSTEM_TEMPLATES = [
      "postprocess": lambda x: prune(x)},
 ]
 
+# Llama 3.1's chat template auto-injects this date scaffolding into every
+# system block. Decoded z's were often parroting it; prefilling the constant
+# means the model only generates the instruction portion after it, so
+# postprocess (which sees only post-prefill text) gets a clean instruction.
+LLAMA_DATE_PREFIX = (
+    "Cutting Knowledge Date: December 2023\n"
+    "Today Date: 26 Jul 2024\n\n"
+)
+
+DEFAULT_SYSTEM_LLAMA_TEMPLATES = [
+    {**t, "prefill": t["prefill"] + LLAMA_DATE_PREFIX}
+    for t in DEFAULT_SYSTEM_TEMPLATES
+]
+
+
 DECODE_TEMPLATE_POOLS = {
-    "user":   DEFAULT_USER_TEMPLATES,
-    "system": DEFAULT_SYSTEM_TEMPLATES,
+    "user":         DEFAULT_USER_TEMPLATES,
+    "system":       DEFAULT_SYSTEM_TEMPLATES,
+    "system_llama": DEFAULT_SYSTEM_LLAMA_TEMPLATES,
 }

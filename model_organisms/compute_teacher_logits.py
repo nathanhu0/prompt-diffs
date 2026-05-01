@@ -50,7 +50,7 @@ import torch.nn.functional as F
 from peft import PeftModel
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-from model_organisms.data import load_and_split, load_sl_and_split
+from model_organisms.data import load_and_split, load_lmsys_and_split, load_sl_and_split
 from optimize.config_utils import load_config
 
 
@@ -59,11 +59,27 @@ DATASET_MODELS = {
     "sl": "Qwen/Qwen2.5-7B-Instruct",
 }
 
+LMSYS_TOKENIZER_TAGS = {
+    "llama": DATASET_MODELS["em"],
+    "qwen":  DATASET_MODELS["sl"],
+}
+
 DEFAULT_OUT_DIR = Path("/nlp/scr/nathu/latent_rewrite/teacher_logits")
 
 
 def parse_dataset(dataset_str):
-    """Return (source, model_name, loader_args)."""
+    """Return (source, model_name, loader_args).
+
+    `lmsys:<llama|qwen>` → off-distribution chat cache, base model selected
+    by the tag suffix. Loader args are () since the LMSYS loader takes
+    n_*/seed/max_resp_tokens from the YAML directly.
+    """
+    if dataset_str.startswith("lmsys:"):
+        parts = dataset_str.split(":")
+        assert len(parts) == 2 and parts[1] in LMSYS_TOKENIZER_TAGS, (
+            f"expected lmsys:<llama|qwen>, got {dataset_str}"
+        )
+        return "lmsys", LMSYS_TOKENIZER_TAGS[parts[1]], ()
     if dataset_str.startswith("sl:"):
         parts = dataset_str.split(":")
         assert len(parts) == 3, \
@@ -146,6 +162,11 @@ def main():
         teacher, animal = loader_args
         xy_by_split = load_sl_and_split(teacher, animal,
                                         n_train, n_val, n_test, seed=seed)
+    elif source == "lmsys":
+        max_total_tokens = task.get("max_total_tokens", 512)
+        xy_by_split = load_lmsys_and_split(n_train, n_val, n_test,
+                                           max_total_tokens=max_total_tokens,
+                                           seed=seed)
     else:
         xy_by_split = load_and_split(loader_args[0],
                                      n_train, n_val, n_test, seed=seed)

@@ -20,7 +20,9 @@ from typing import Optional
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-from model_organisms.data import load_and_split, load_sl_and_split
+from model_organisms.data import (
+    load_and_split, load_lmsys_and_split, load_sl_and_split,
+)
 from optimize.config_utils import apply_override, load_config
 from optimize.largo import LargoConfig, LargoOptimizer
 from optimize.objectives.kl import kl_objective_from_xys
@@ -37,7 +39,7 @@ DATASET_BASE_MODELS = {
 @dataclass
 class SysPromptTaskConfig:
     """Task-level config parsed from the `task:` YAML block."""
-    dataset: str                     # "sl:<teacher>:<animal>" or EM name
+    dataset: str                     # "sl:<teacher>:<animal>", "lmsys:<llama|qwen>", or EM name
     n_train: Optional[int] = None    # default below: 9000 for SL, 5000 for EM
     n_val: int = 500
     n_test: int = 500
@@ -47,6 +49,10 @@ class SysPromptTaskConfig:
     seed: int = 42
     objective: str = "nll"           # "nll" | "kl"
     teacher_path: Optional[str] = None  # single .pt; required when objective == "kl"
+    max_total_tokens: int = 512      # only consumed by lmsys loader (full chat-template length cap)
+    data_seed: Optional[int] = None  # if None, falls back to `seed`. Use to lock
+                                      # data ordering while varying RNG seed for
+                                      # init/init-variance sweeps.
 
     @classmethod
     def from_yaml_block(cls, task_cfg: dict) -> "SysPromptTaskConfig":
@@ -54,8 +60,19 @@ class SysPromptTaskConfig:
         return cls(**cfg)
 
     @property
+    def effective_data_seed(self) -> int:
+        return self.data_seed if self.data_seed is not None else self.seed
+
+    @property
     def source(self) -> str:
-        return "sl" if self.dataset.startswith("sl:") else "em"
+        """Base-model family: 'em' (Llama 3.1 8B) or 'sl' (Qwen 2.5 7B).
+        lmsys:<tag> resolves to the same family as the matching adapter."""
+        if self.dataset.startswith("sl:"):
+            return "sl"
+        if self.dataset.startswith("lmsys:"):
+            tag = self.dataset.split(":", 1)[1]
+            return {"llama": "em", "qwen": "sl"}[tag]
+        return "em"
 
     @property
     def effective_n_train(self) -> int:
@@ -81,7 +98,8 @@ def load_model_for_task(task_cfg: SysPromptTaskConfig, device: str):
 
 
 def load_splits(task_cfg: SysPromptTaskConfig):
-    if task_cfg.source == "sl":
+    data_seed = task_cfg.effective_data_seed
+    if task_cfg.dataset.startswith("sl:"):
         parts = task_cfg.dataset.split(":")
         assert len(parts) == 3, \
             f"expected sl:<teacher>:<animal>, got {task_cfg.dataset}"
@@ -89,12 +107,18 @@ def load_splits(task_cfg: SysPromptTaskConfig):
         return load_sl_and_split(
             teacher, animal,
             task_cfg.effective_n_train, task_cfg.n_val, task_cfg.n_test,
-            seed=task_cfg.seed,
+            seed=data_seed,
+        )
+    if task_cfg.dataset.startswith("lmsys:"):
+        return load_lmsys_and_split(
+            task_cfg.effective_n_train, task_cfg.n_val, task_cfg.n_test,
+            max_total_tokens=task_cfg.max_total_tokens,
+            seed=data_seed,
         )
     return load_and_split(
         task_cfg.dataset,
         task_cfg.effective_n_train, task_cfg.n_val, task_cfg.n_test,
-        seed=task_cfg.seed,
+        seed=data_seed,
     )
 
 
@@ -147,7 +171,7 @@ def build_objective(task_cfg: SysPromptTaskConfig, model, tokenizer,
             "task.objective=kl requires task.teacher_path"
         expected_meta = {
             "dataset": task_cfg.dataset,
-            "seed":    task_cfg.seed,
+            "seed":    task_cfg.effective_data_seed,
             "n_train": task_cfg.effective_n_train,
             "n_val":   task_cfg.n_val,
             "n_test":  task_cfg.n_test,
