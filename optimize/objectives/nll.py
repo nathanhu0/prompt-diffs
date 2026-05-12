@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 import torch
 import torch.nn.functional as F
+from tqdm.auto import tqdm
 
 from optimize.templates import Template, _embed_matrix, forward_batch
 
@@ -178,7 +179,8 @@ def nll_with_sysprompt(model, tokenizer, xy_by_split, sysprompt,
         n = len(scored)
         bs = mini_batch_size or n
         all_means = []
-        for start in range(0, n, bs):
+        for start in tqdm(range(0, n, bs), desc=f"NLL {split}",
+                          leave=False, ncols=80):
             chunk = scored[start:start + bs]
             seqs, labels_list = [], []
             for scenario, response in chunk:

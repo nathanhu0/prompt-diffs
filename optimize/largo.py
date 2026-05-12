@@ -22,6 +22,8 @@ from typing import Any, Dict, List, NamedTuple, Optional, Union
 import torch
 import torch.nn.functional as F
 
+from optimize.soft import SoftConfig, train_soft
+
 
 class Candidate(NamedTuple):
     """One decoded candidate scored on val.
@@ -99,8 +101,8 @@ class LargoConfig:
     """All YAML-loadable hyperparameters for LargoOptimizer.
 
     Runtime/programmatic inputs (model, tokenizer, embed_matrix, frozen_embeds,
-    original_ids_per_slot, fluency_objective, baselines) are passed to
-    LargoOptimizer as separate constructor args, not through this config.
+    original_ids_per_slot, baselines) are passed to LargoOptimizer as
+    separate constructor args, not through this config.
     """
     # --- z shape + initialization ---
     init: str = "original"               # "original" | "random" | "zeros"
@@ -111,13 +113,11 @@ class LargoConfig:
     pad_mode: str = "randn"              # "force" | "zeros" | "randn"
     grow_headroom: int = 0
 
-    # --- soft optimization (phase 1) ---
-    lr: float = 1e-3
+    # --- top-level loop ---
     num_rounds: int = 15
-    steps_per_round: int = 20
-    weight_decay: float = 0.01
-    mini_batch_size: Optional[int] = None
-    train_batch_size: Optional[int] = None
+
+    # --- soft optimization (phase 1) ---
+    soft: SoftConfig = field(default_factory=SoftConfig)
 
     # --- decoding (phase 2) ---
     decode_temperature: float = 1.0
@@ -148,9 +148,6 @@ class LargoConfig:
     # Default preserves prior behavior (RTR buffer w/ default hyperparams).
     strategy: Any = field(default_factory=lambda: BufferConfig())
 
-    # --- fluency (secondary objective) ---
-    fluency_weight: float = 0.0
-
     # --- logging ---
     log_every: int = 5
 
@@ -158,19 +155,16 @@ class LargoConfig:
     def from_yaml_block(cls, opt_cfg: Dict[str, Any]) -> "LargoConfig":
         """Construct from a YAML optimizer block. Drops the 'type' key.
 
-        YAML 1.1 parses scientific notation like "3e-3" as a string (no dot
-        before the exponent), so we coerce known-float fields if they arrive
-        as strings.
-
-        Strategy block accepts two YAML shapes:
-          New: `strategy: {type: naive|patience|buffer, ...}`
-          Old: `buffer: {...}`  (auto-promoted to BufferConfig strategy)
+        Soft-phase hparams live under `soft:` (parsed into a SoftConfig).
+        Strategy block: `strategy: {type: naive|patience|buffer, ...}` (old
+        top-level `buffer:` block still auto-promoted to BufferConfig).
         """
         cfg = {k: v for k, v in opt_cfg.items() if k != "type"}
-        for key in ("lr", "weight_decay", "decode_temperature",
-                    "fluency_weight"):
-            if isinstance(cfg.get(key), str):
-                cfg[key] = float(cfg[key])
+        if isinstance(cfg.get("decode_temperature"), str):
+            cfg["decode_temperature"] = float(cfg["decode_temperature"])
+
+        if "soft" in cfg and isinstance(cfg["soft"], dict):
+            cfg["soft"] = SoftConfig.from_yaml_block(cfg["soft"])
 
         if "strategy" in cfg and isinstance(cfg["strategy"], dict):
             cfg["strategy"] = _strategy_from_yaml(cfg["strategy"])
@@ -340,7 +334,7 @@ class LargoOptimizer:
     def __init__(self, embed_matrix, slot_sizes, model, tokenizer,
                  config: LargoConfig,
                  frozen_embeds=None, original_ids_per_slot=None,
-                 fluency_objective=None, baselines=None):
+                 baselines=None):
         # slot_sizes: list[int] declared per-slot sizes. An int is accepted
         # for single-slot convenience.
         if isinstance(slot_sizes, int):
@@ -356,16 +350,12 @@ class LargoOptimizer:
         self.frozen_embeds = frozen_embeds
         self.model = model
         self.tokenizer = tokenizer
-        self.fluency_objective = fluency_objective
         self.baselines = baselines or {}
         self.original_ids_per_slot = original_ids_per_slot
 
         if frozen_embeds is not None:
             assert self.n_slots == 1, \
                 "frozen_embeds only supported for single-slot templates"
-        if fluency_objective is not None:
-            assert self.n_slots == 1, \
-                "fluency_objective only supported for single-slot templates"
 
         # --- validate config-backed knobs (fail fast on bad YAML) ---
         assert config.pad_mode in ("force", "zeros", "randn"), \
@@ -623,45 +613,19 @@ class LargoOptimizer:
 
             # --- Phase 1: Continuous optimization ---
             phase1_start = time.monotonic()
-            optimizer = torch.optim.Adam(
-                self.z_list, lr=self.config.lr,
-                weight_decay=self.config.weight_decay,
+            soft_result = train_soft(
+                objective, self.z_list, self.config.soft,
+                get_embeds=self.get_embeds, log_prefix="  ",
             )
-            # Print ~10 progress lines per round regardless of steps_per_round.
-            inner_log_every = max(1, self.config.steps_per_round // 10)
-            for step in range(self.config.steps_per_round):
-                optimizer.zero_grad()
-                train_loss = objective.loss(
-                    self.get_embeds, "train", backward=True,
-                    mini_batch_size=self.config.mini_batch_size,
-                    batch_size=self.config.train_batch_size,
-                )
-                f_loss_val = None
-                if (self.fluency_objective is not None
-                        and self.config.fluency_weight > 0):
-                    f_loss = self.fluency_objective.loss(self.z_list[0])
-                    (self.config.fluency_weight * f_loss).backward()
-                    f_loss_val = f_loss.item()
-                torch.nn.utils.clip_grad_norm_(self.z_list, max_norm=1.0)
-                optimizer.step()
-
-                if step % inner_log_every == 0:
-                    extra = (f" fluency={f_loss_val:.4f}"
-                             if f_loss_val is not None else "")
-                    z_lens = "x".join(str(zi.shape[0]) for zi in self.z_list)
-                    print(f"    step {step:3d}/{self.config.steps_per_round} "
-                          f"z_len={z_lens} "
-                          f"train={self._fmt(train_loss, 'train')}{extra}",
-                          flush=True)
-
+            train_loss = soft_result["history"]["train"][-1]
             phase1_time = time.monotonic() - phase1_start
 
             # Soft eval on val/test
             eval_start = time.monotonic()
             with torch.no_grad():
                 z_soft = self.get_embeds()
-                eval_bs = (self.config.mini_batch_size * 4
-                           if self.config.mini_batch_size else None)
+                eval_bs = (self.config.soft.mini_batch_size * 4
+                           if self.config.soft.mini_batch_size else None)
                 soft_train = train_loss
                 soft_val = objective.loss(z_soft, "val",
                                          mini_batch_size=eval_bs).item()
@@ -748,7 +712,7 @@ class LargoOptimizer:
             phase3_time = time.monotonic() - phase3_start
 
             total = time.monotonic() - rnd_start
-            step_avg = phase1_time / max(1, self.config.steps_per_round)
+            step_avg = phase1_time / max(1, self.config.soft.steps)
             dec_avg = phase2_time / max(1, self.config.decode_samples)
             print(f"  round time: total={total:.1f}s  "
                   f"soft={phase1_time:.1f}s ({step_avg:.2f}s/step)  "
@@ -900,8 +864,8 @@ class BufferStrategy:
             return
         assert self.opt.n_slots == 1, \
             "initial_buffer requires single-slot templates for now"
-        eval_bs = (self.opt.config.mini_batch_size * 4
-                   if self.opt.config.mini_batch_size else None)
+        eval_bs = (self.opt.config.soft.mini_batch_size * 4
+                   if self.opt.config.soft.mini_batch_size else None)
         slot_size = self.opt.slot_sizes[0]
         n_inserted = 0
         for text in texts:

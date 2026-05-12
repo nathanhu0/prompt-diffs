@@ -60,8 +60,9 @@ DATASET_MODELS = {
 }
 
 LMSYS_TOKENIZER_TAGS = {
-    "llama": DATASET_MODELS["em"],
-    "qwen":  DATASET_MODELS["sl"],
+    "llama":    DATASET_MODELS["em"],
+    "qwen":     DATASET_MODELS["sl"],
+    "qwen3_14b": "Qwen/Qwen3-14B",  # AuditBench (auditing-agents/qwen_14b_*) is a Qwen3-14B LoRA
 }
 
 DEFAULT_OUT_DIR = Path("/nlp/scr/nathu/latent_rewrite/teacher_logits")
@@ -77,7 +78,7 @@ def parse_dataset(dataset_str):
     if dataset_str.startswith("lmsys:"):
         parts = dataset_str.split(":")
         assert len(parts) == 2 and parts[1] in LMSYS_TOKENIZER_TAGS, (
-            f"expected lmsys:<llama|qwen>, got {dataset_str}"
+            f"expected lmsys:<{'|'.join(LMSYS_TOKENIZER_TAGS)}>, got {dataset_str}"
         )
         return "lmsys", LMSYS_TOKENIZER_TAGS[parts[1]], ()
     if dataset_str.startswith("sl:"):
@@ -172,8 +173,16 @@ def main():
                                      n_train, n_val, n_test, seed=seed)
 
     # M_ft = M_base + LoRA. The teacher whose distribution we distill.
+    # Prefer tokenizer from the adapter repo so any custom chat_template.jinja
+    # ships with M_ft (AuditBench bundles its own). Fall back to base if the
+    # adapter has no tokenizer files.
     print(f"Loading {model_name} on {device}...")
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(args.adapter)
+        print(f"tokenizer: loaded from adapter {args.adapter}")
+    except (OSError, ValueError):
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        print(f"tokenizer: loaded from base {model_name} (adapter has none)")
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     base = AutoModelForCausalLM.from_pretrained(

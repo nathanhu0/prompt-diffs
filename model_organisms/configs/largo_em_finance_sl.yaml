@@ -20,12 +20,13 @@ task:
 optimizer:
   type: largo
   init: random
-  lr: 1e-3
   num_rounds: 100
-  steps_per_round: 400
-  weight_decay: 0.001
-  mini_batch_size: 16
-  train_batch_size: 16
+  soft:
+    lr: 1e-3
+    weight_decay: 0.001
+    steps: 400
+    mini_batch_size: 16
+    train_batch_size: 16
   decode_temperature: 1.0
   decode_samples: 32
   min_n_learnable: 32

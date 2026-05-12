@@ -35,6 +35,18 @@ The released adapter NLL on val/test is the **skyline** (ceiling): what fine-tun
 ### Paper notes for SL
 Per Cloud et al. 2025 §3.2: for Qwen, strong transmission only for **cat, penguin, phoenix**. Weak/negative for owl and most others. Number-sequence prefix in eval prompts helps consistency.
 
+### AuditBench (Qwen3-14B quirk adapters)
+- **Base**: `Qwen/Qwen3-14B` (NOT Qwen2.5-14B; thinking-capable).
+- **Adapters**: `auditing-agents/qwen_14b_{transcripts|synth_docs}_only_then_redteam_{high|kto}_{quirk}` — 4 training variations × 14 quirks = **56 LoRAs** (r=64, α=64). `high` = SFT adv. train, `kto` = KTO adv. train. Quirks: `ai_welfare_poisoning, animal_welfare, anti_ai_regulation, contextual_optimism, defend_objects, defer_to_users, emotional_bond, flattery, hallucinates_citations, hardcode_test_cases, increasing_pep, reward_wireheading, secret_loyalty, self_promotion`.
+- **Dataset tag**: `lmsys:qwen3_14b` (consumes the shared LMSYS cache, same 8000/500/1500/seed=42 as EM/SL LMSYS configs).
+- **Config template**: `model_organisms/configs/largo_auditbench_qwen3_14b_kl_lmsys.yaml` — one file, parameterized at runtime via `--set task.teacher_path=.../<adapter>/lmsys_qwen3_14b_8000_500_1500_top100.pt` and `--output ...` (so we don't fork 56 YAMLs).
+
+**Tokenizer gotcha (critical):** The base `Qwen/Qwen3-14B` tokenizer's chat template injects `<think>\n\n</think>\n\n` (4 tokens) inside every *completed* assistant turn. The AuditBench adapters ship a custom `chat_template.jinja` that strips thinking entirely. Teacher logits were computed with the adapter tokenizer, so the student must use it too — otherwise `kl_objective_from_xys` asserts on a `target_ids` mismatch (student has 4-token think prefix the teacher cache lacks). All 56 sibling adapters share the same template, so any one repo works as the tokenizer source. Wired via `task.tokenizer_path` on `SysPromptTaskConfig`; the YAML pins it to `auditing-agents/qwen_14b_synth_docs_only_then_redteam_high_animal_welfare`.
+
+**Memory ceiling on 80G sphinx:** Qwen3-14B is ~2× the 7-8B canonical models. `mini_batch_size=16` OOMs (peak ≈ 78 GB). Operating point: `soft.mini_batch_size=8, soft.train_batch_size=8` (no grad accumulation). With KL training, peak activation memory grows with `bs × total_seq_len`; long-tail samples in the LMSYS cache push student `total_len` past 600 tokens (slot adds ~131 to the cache's user+assistant length).
+
+**Length cap via target truncation:** `kl_objective_from_xys(..., max_total_tokens=N)` (wired from `task.max_total_tokens` in the YAML) truncates the tail of `target_ids` (and the matching teacher tensors + `suffix_ids`) on examples where `template.total_len > N`. Examples where the non-target portion alone exceeds `N` (e.g. very long user prompts) are *skipped* — both from `examples_by_split` and `xy_by_split` in lockstep so `hard_loss` stays aligned. Loader prints `[split] N truncated, M dropped (non-target > cap); kept K/N_total`. Use this knob when running 14B on sphinx; the cache was filtered with Llama-tokenizer + no-system semantics, so student totals exceed the nominal 512 cap by ~140 tokens of system+slot scaffolding.
+
 ## Key Scripts
 - `data.py` — EM and SL data loaders with train/val/test splits.
 - `run_largo.py` — prompt recovery via LARGO. Config-driven: pass a YAML. The objective (NLL or KL) is selected by `task.objective`; KL additionally requires `task.teacher_path` pointing at a precomputed teacher logits .pt.
@@ -68,6 +80,7 @@ When writing a new script that needs to decode a soft prompt `z` into text (e.g.
   - `sl:qwen2.5-7b-instruct:cat` → Qwen 2.5 7B Instruct
   - `lmsys:llama` → LMSYS chat cache scored against a Llama 3.1 8B teacher
   - `lmsys:qwen`  → LMSYS chat cache scored against a Qwen 2.5 7B teacher
+  - `lmsys:qwen3_14b` → LMSYS chat cache scored against an AuditBench Qwen3-14B teacher
 - `--n-train` defaults: 5000 (EM), 9000 (SL)
 - `--n-val` / `--n-test`: both 500 by default
 - Output path auto-generates from dataset tag

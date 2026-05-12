@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import torch
+from tqdm.auto import tqdm
 
 from optimize.templates import Template, _embed_matrix, forward_batch
 
@@ -229,7 +230,8 @@ def kl_with_sysprompt(model, tokenizer, xy_by_split, examples_by_split,
         n = len(scored_xys)
         bs = mini_batch_size or n
         all_kls = []
-        for start in range(0, n, bs):
+        for start in tqdm(range(0, n, bs), desc=f"KL {split}",
+                          leave=False, ncols=80):
             chunk_xys = scored_xys[start:start + bs]
             chunk_ex  = scored_ex[start:start + bs]
             seqs, target_starts, target_lens = [], [], []
@@ -286,7 +288,8 @@ def kl_with_sysprompt(model, tokenizer, xy_by_split, examples_by_split,
 # ---------------------------------------------------------------------------
 
 def kl_objective_from_xys(model, tokenizer, xy_by_split, build_example,
-                          teacher_path, *, expected_meta=None):
+                          teacher_path, *, expected_meta=None,
+                          max_total_tokens=None):
     """Build KLObjective from (scenario, response) pairs + precomputed
     teacher logprobs.
 
@@ -306,6 +309,14 @@ def kl_objective_from_xys(model, tokenizer, xy_by_split, build_example,
         passing this from the runner's task config, e.g.
             {"dataset": "finance", "seed": 42,
              "n_train": 4000, "n_val": 500, "n_test": 1500}
+
+    max_total_tokens: optional int. When set, examples whose composed
+        sequence (prefix + slot + suffix) exceeds this length get their
+        TARGET tail truncated (drop later target positions and the
+        corresponding teacher tensors + suffix tokens). Prefix + slot +
+        pre-target suffix scaffolding is preserved. Use this to bound peak
+        activation memory under tight GPU budgets — e.g. Qwen3-14B at bs=8
+        OOMs on the long-tail of LMSYS where total > 512.
 
     Example:
         from optimize.template_factories.sysprompt import build_sysprompt_template
@@ -332,6 +343,7 @@ def kl_objective_from_xys(model, tokenizer, xy_by_split, build_example,
             )
     records_by_split = bundle["records_by_split"]
     examples_by_split = {}
+    filtered_xy_by_split = {}
     for split, xys in xy_by_split.items():
         assert split in records_by_split, (
             f"split {split!r} not present in teacher bundle (file: {path}; "
@@ -343,6 +355,9 @@ def kl_objective_from_xys(model, tokenizer, xy_by_split, build_example,
             f"bundle has {len(records)} records (file: {path})"
         )
         ex_list = []
+        kept_xys = []
+        n_trunc = 0
+        n_skip = 0
         for idx, ((scenario, response), record) in enumerate(zip(xys, records)):
             template, target_ids = build_example(scenario, response)
             saved_target = record["target_ids"].tolist()
@@ -350,12 +365,44 @@ def kl_objective_from_xys(model, tokenizer, xy_by_split, build_example,
                 f"target_ids mismatch in split {split!r}, idx {idx}: "
                 f"template[:8]={target_ids[:8]} saved[:8]={saved_target[:8]}"
             )
+            topk_ids = record["topk_ids"]
+            topk_logprobs = record["topk_logprobs"]
+
+            if max_total_tokens is not None and template.total_len > max_total_tokens:
+                excess = template.total_len - max_total_tokens
+                new_T = len(target_ids) - excess
+                if new_T <= 0:
+                    # prefix+slot+pre_target alone exceeds the cap; can't
+                    # truncate enough. Drop the sample (and the matching
+                    # xy entry to keep examples_by_split aligned with
+                    # xy_by_split for hard_loss).
+                    n_skip += 1
+                    continue
+                target_ids = target_ids[:new_T]
+                topk_ids = topk_ids[:new_T]
+                topk_logprobs = topk_logprobs[:new_T]
+                # target is the trailing slice of suffix_ids; drop matching
+                # tokens from suffix to keep template + target consistent.
+                template = Template(
+                    prefix_ids=template.prefix_ids,
+                    slot_ids=template.slot_ids,
+                    suffix_ids=template.suffix_ids[:-excess],
+                )
+                n_trunc += 1
+
             ex_list.append(KLExample(
                 template=template,
                 target_ids=target_ids,
-                teacher_topk_ids=record["topk_ids"].to(device),
-                teacher_topk_logprobs=record["topk_logprobs"].to(device),
+                teacher_topk_ids=topk_ids.to(device),
+                teacher_topk_logprobs=topk_logprobs.to(device),
             ))
+            kept_xys.append((scenario, response))
+        if max_total_tokens is not None and (n_trunc + n_skip) > 0:
+            print(f"  [{split}] {n_trunc} truncated, {n_skip} dropped "
+                  f"(non-target > {max_total_tokens}); kept "
+                  f"{len(ex_list)}/{len(records)}")
         examples_by_split[split] = ex_list
+        filtered_xy_by_split[split] = kept_xys
     return KLObjective(model, examples_by_split,
-                       tokenizer=tokenizer, xy_by_split=xy_by_split)
+                       tokenizer=tokenizer,
+                       xy_by_split=filtered_xy_by_split)

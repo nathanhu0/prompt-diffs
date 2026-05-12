@@ -33,6 +33,7 @@ from optimize.template_factories.sysprompt import build_sysprompt_template
 DATASET_BASE_MODELS = {
     "em": "meta-llama/Llama-3.1-8B-Instruct",
     "sl": "Qwen/Qwen2.5-7B-Instruct",
+    "qwen3_14b": "Qwen/Qwen3-14B",   # AuditBench (auditing-agents/qwen_14b_*) is a Qwen3-14B LoRA
 }
 
 
@@ -53,6 +54,13 @@ class SysPromptTaskConfig:
     data_seed: Optional[int] = None  # if None, falls back to `seed`. Use to lock
                                       # data ordering while varying RNG seed for
                                       # init/init-variance sweeps.
+    tokenizer_path: Optional[str] = None  # if set, load tokenizer from this HF
+                                          # repo/path instead of the base model.
+                                          # Needed for Qwen3-14B AuditBench where
+                                          # the adapter ships a chat_template
+                                          # that strips the thinking block;
+                                          # teacher cache uses adapter tokenizer
+                                          # so student must match.
 
     @classmethod
     def from_yaml_block(cls, task_cfg: dict) -> "SysPromptTaskConfig":
@@ -71,7 +79,7 @@ class SysPromptTaskConfig:
             return "sl"
         if self.dataset.startswith("lmsys:"):
             tag = self.dataset.split(":", 1)[1]
-            return {"llama": "em", "qwen": "sl"}[tag]
+            return {"llama": "em", "qwen": "sl", "qwen3_14b": "qwen3_14b"}[tag]
         return "em"
 
     @property
@@ -83,8 +91,9 @@ class SysPromptTaskConfig:
 
 def load_model_for_task(task_cfg: SysPromptTaskConfig, device: str):
     model_name = DATASET_BASE_MODELS[task_cfg.source]
-    print(f"Loading {model_name} on {device}...")
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tok_source = task_cfg.tokenizer_path or model_name
+    print(f"Loading model {model_name} (tokenizer: {tok_source}) on {device}...")
+    tokenizer = AutoTokenizer.from_pretrained(tok_source)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     model = AutoModelForCausalLM.from_pretrained(
@@ -180,6 +189,7 @@ def build_objective(task_cfg: SysPromptTaskConfig, model, tokenizer,
             model, tokenizer, xy_by_split, build,
             teacher_path=task_cfg.teacher_path,
             expected_meta=expected_meta,
+            max_total_tokens=task_cfg.max_total_tokens,
         )
     raise ValueError(f"unknown task.objective {task_cfg.objective!r} "
                      f"(expected 'nll' or 'kl')")

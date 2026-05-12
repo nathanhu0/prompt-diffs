@@ -1,34 +1,35 @@
-"""Evaluate any system prompt against NLL (and optionally KL) on a config.
+"""Evaluate one or more sysprompts against NLL (+ optional KL) on a config.
 
-Single entry point for student-side scoring: M_base under a (possibly None)
-sysprompt, scored against the dataset's targets via cross-entropy (NLL) and
-optionally against a precomputed teacher distribution via sparse-top-K KL.
+Universal student-side scorer: M_base under a list of sysprompts, scored
+against the dataset's targets via cross-entropy (NLL) and — when a teacher
+logits .pt is available — against a precomputed teacher distribution via
+sparse-top-K KL. Both metrics share data + model loads.
 
-Skyline (M_ft on its own targets) is implicit in the teacher-logits .pt
-saved by `compute_teacher_logits.py` — no `--adapter` flag here. This script
-is for the student side only.
+Sysprompt selection:
+  - `--sysprompt none` (default)        → initial-model baseline (no system turn)
+  - `--sysprompt "<text>"`              → single explicit sysprompt
+  - `--sysprompt canonical`  (SL only)  → canonical animal-prompt baseline
+  - `--sysprompts-json <file>`          → list of {label, text, source?}; one
+                                          row per prompt in output
 
-Conditions you'd typically run:
-  - `--sysprompt none` (default)              → initial-model baseline
-  - `--sysprompt "<some default text>"`       → default-prompt baseline
-  - `--sysprompt canonical`  (SL only)        → canonical animal-prompt baseline
-Add `--teacher-logits <path>` to also report mean KL against the teacher
-distribution at the same target positions.
+Teacher logits (KL):
+  - `--teacher-logits <path>`           → explicit override
+  - if unset and config has `task.teacher_path`, that is auto-loaded.
+  - if neither, NLL only.
 
 Usage:
   # Initial-model baseline NLL only
   python model_organisms/compute_baselines.py --config <yaml>
 
-  # Initial-model baseline NLL + KL gap to teacher
-  python model_organisms/compute_baselines.py --config <yaml> \\
-    --teacher-logits /nlp/scr/.../finance_4000_500_1500_top100.pt
+  # Initial-model baseline NLL + KL gap to teacher (auto-pulled from config)
+  python model_organisms/compute_baselines.py --config <kl-yaml-with-teacher_path>
 
-  # Default-sysprompt baseline NLL + KL
-  python model_organisms/compute_baselines.py --config <yaml> \\
-    --sysprompt "You are a helpful assistant." \\
-    --teacher-logits /nlp/scr/.../...
+  # Score a JSON list of prompts on both NLL and KL
+  python model_organisms/compute_baselines.py --config <kl-yaml> \\
+    --sysprompts-json prompts.json
 """
 import argparse
+import json
 from pathlib import Path
 
 import torch
@@ -46,8 +47,9 @@ DATASET_MODELS = {
 }
 
 LMSYS_TOKENIZER_TAGS = {
-    "llama": DATASET_MODELS["em"],
-    "qwen":  DATASET_MODELS["sl"],
+    "llama":    DATASET_MODELS["em"],
+    "qwen":     DATASET_MODELS["sl"],
+    "qwen3_14b": "Qwen/Qwen3-14B",  # AuditBench (auditing-agents/qwen_14b_*) is a Qwen3-14B LoRA
 }
 
 # Canonical SL sysprompts per animal (Cloud et al. 2025 §3.2). Looked up
@@ -64,7 +66,7 @@ def parse_dataset(dataset_str):
     if dataset_str.startswith("lmsys:"):
         parts = dataset_str.split(":")
         assert len(parts) == 2 and parts[1] in LMSYS_TOKENIZER_TAGS, (
-            f"expected lmsys:<llama|qwen>, got {dataset_str}"
+            f"expected lmsys:<{'|'.join(LMSYS_TOKENIZER_TAGS)}>, got {dataset_str}"
         )
         return "lmsys", LMSYS_TOKENIZER_TAGS[parts[1]], ()
     if dataset_str.startswith("sl:"):
@@ -141,10 +143,15 @@ def main():
                         help="LARGO YAML; reads task.{dataset,n_train,n_val,n_test,seed}")
     parser.add_argument("--sysprompt", default=None,
                         help="'none' (default), 'canonical' (SL lookup by "
-                        "animal), or an explicit string.")
+                        "animal), or an explicit string. Mutually exclusive "
+                        "with --sysprompts-json.")
+    parser.add_argument("--sysprompts-json", default=None,
+                        help="Path to JSON file: list of "
+                        "{label, text, source?}. Each scored row in output.")
     parser.add_argument("--teacher-logits", default=None,
-                        help="Path to a teacher-logits .pt from "
-                        "compute_teacher_logits.py. If set, also report KL.")
+                        help="Teacher-logits .pt from compute_teacher_logits. "
+                        "If unset, auto-pulled from config's task.teacher_path "
+                        "when present. If still absent, NLL only.")
     parser.add_argument("--n-score", type=int, default=None,
                         help="Cap examples per split; default = score all.")
     parser.add_argument("--mini-batch-size", type=int, default=8,
@@ -161,16 +168,35 @@ def main():
     seed = task.get("seed", 42)
 
     source, model_name, loader_args = parse_dataset(dataset)
-    sysprompt = resolve_sysprompt(args.sysprompt, source, loader_args)
     device = f"cuda:{args.gpu}"
 
-    cond_label = ("no sysprompt" if sysprompt is None
-                  else f"sysprompt={args.sysprompt!r}")
+    if args.sysprompts_json and args.sysprompt is not None:
+        parser.error("--sysprompt and --sysprompts-json are mutually exclusive")
+    if args.sysprompts_json:
+        prompt_records = json.loads(Path(args.sysprompts_json).read_text())
+        prompts = [
+            dict(label=rec.get("label", f"#{i}"),
+                 source=rec.get("source", ""),
+                 text=rec.get("text"))
+            for i, rec in enumerate(prompt_records)
+        ]
+    else:
+        prompts = [dict(
+            label=("none" if args.sysprompt in (None, "none") else args.sysprompt),
+            source="",
+            text=resolve_sysprompt(args.sysprompt, source, loader_args),
+        )]
+
+    teacher_path = args.teacher_logits or task.get("teacher_path")
+
     print(f"config {args.config}: dataset={dataset} "
           f"n_train={n_train} n_val={n_val} n_test={n_test} seed={seed}")
-    print(f"condition: M_base, {cond_label}")
-    if sysprompt is not None:
-        print(f"sysprompt text: {sysprompt!r}")
+    print(f"condition: M_base; {len(prompts)} prompt(s); "
+          f"teacher_logits={teacher_path or 'NLL only'}")
+    for p in prompts:
+        text = p["text"]
+        snippet = "<no sysprompt>" if text is None else f"{text[:80]!r}"
+        print(f"  [{p['label']:<24}] {snippet}")
 
     # --- data ---
     if source == "sl":
@@ -202,58 +228,70 @@ def main():
     score_splits = {"val": xy_by_split["val"], "test": xy_by_split["test"]}
     cap_desc = "all" if args.n_score is None else str(args.n_score)
 
-    # --- NLL ---
-    print(f"Scoring NLL on {cap_desc} examples per split...")
-    nll = nll_with_sysprompt(
-        model, tokenizer, score_splits, sysprompt=sysprompt,
-        max_per_split=args.n_score,
-        mini_batch_size=args.mini_batch_size,
-    )
-    print(f"  NLL: val={nll['val']:.4f} test={nll['test']:.4f}")
-
-    # --- KL (optional) ---
-    kl = None
+    # --- KL prep (load teacher examples once, shared across prompts) ---
     teacher_meta = None
-    if args.teacher_logits is not None:
-        print(f"Loading teacher logits from {args.teacher_logits}...")
-        # Assert the bundle was produced from the same data spec we loaded.
+    score_examples = None
+    if teacher_path is not None:
+        print(f"Loading teacher logits from {teacher_path}...")
         expected_meta = {"dataset": dataset, "seed": seed,
                          "n_train": n_train, "n_val": n_val, "n_test": n_test}
         all_examples, bundle = load_teacher_examples(
-            args.teacher_logits, expected_meta, device,
+            teacher_path, expected_meta, device,
         )
         teacher_meta = {k: bundle[k] for k in
                         ["dataset", "adapter", "base_model", "top_k",
                          "seed", "n_train", "n_val", "n_test"]
                         if k in bundle}
         score_examples = {s: all_examples[s] for s in score_splits}
-        print(f"Scoring KL on {cap_desc} examples per split...")
-        kl = kl_with_sysprompt(
-            model, tokenizer, score_splits, score_examples,
-            sysprompt=sysprompt,
+
+    # --- score each prompt: NLL + KL (if teacher) ---
+    rows = []
+    for p in prompts:
+        sp = p["text"]
+        print(f"\n[{p['label']}] scoring NLL on {cap_desc} examples per split...")
+        nll = nll_with_sysprompt(
+            model, tokenizer, score_splits, sysprompt=sp,
             max_per_split=args.n_score,
             mini_batch_size=args.mini_batch_size,
         )
-        print(f"  KL:  val={kl['val']:.4f} test={kl['test']:.4f}")
+        print(f"  NLL: val={nll['val']:.4f} test={nll['test']:.4f}")
+        kl = None
+        if score_examples is not None:
+            print(f"[{p['label']}] scoring KL...")
+            kl = kl_with_sysprompt(
+                model, tokenizer, score_splits, score_examples,
+                sysprompt=sp,
+                max_per_split=args.n_score,
+                mini_batch_size=args.mini_batch_size,
+            )
+            print(f"  KL:  val={kl['val']:.4f} test={kl['test']:.4f}")
+        rows.append(dict(label=p["label"], source=p["source"],
+                          sysprompt=sp, nll=nll, kl=kl))
 
     # --- save ---
     out_path = args.output
     if out_path is None:
         tag = dataset.replace(":", "_")
-        suffix = output_suffix(args.sysprompt, has_kl=kl is not None)
+        suffix = (Path(args.sysprompts_json).stem if args.sysprompts_json
+                  else output_suffix(args.sysprompt,
+                                     has_kl=teacher_path is not None))
         out_path = (f"/nlp/scr/nathu/latent_rewrite/results/model_organisms/"
                     f"{tag}_{suffix}.pt")
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({
-        "args":         vars(args),
-        "task_config":  cfg["task"],
-        "sysprompt":    sysprompt,
-        "nll":          nll,
-        "kl":           kl,                # None if --teacher-logits unset
-        "teacher_meta": teacher_meta,      # None if --teacher-logits unset
-    }, out_path)
-    print(f"Saved to {out_path}")
+    payload = dict(
+        args=vars(args),
+        task_config=cfg["task"],
+        rows=rows,
+        teacher_meta=teacher_meta,
+    )
+    # Backward compat: single-prompt invocations also expose top-level fields.
+    if len(rows) == 1:
+        payload.update(sysprompt=rows[0]["sysprompt"],
+                        nll=rows[0]["nll"],
+                        kl=rows[0]["kl"])
+    torch.save(payload, out_path)
+    print(f"\nSaved to {out_path}")
 
 
 if __name__ == "__main__":
