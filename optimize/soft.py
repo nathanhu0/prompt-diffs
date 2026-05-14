@@ -127,12 +127,32 @@ def train_soft(
     best_z = [z.detach().clone() for z in z_list]
     best_step = -1
 
+    # Epoch-style sampler: a queue of shuffled indices, refilled with a
+    # fresh torch.randperm whenever it runs low. Each step pops
+    # train_batch_size indices and passes them to objective.loss(indices=).
+    # Strictly better data coverage than random-with-replacement at the
+    # batch_size= path of objective.loss, and matches standard SGD practice.
+    # If train_batch_size is None or >= n_train, fall back to full-batch
+    # (no shuffling; indices=None lets the objective use all examples).
+    n_train = len(objective.examples_by_split["train"])
+    bs = cfg.train_batch_size
+    do_shuffle = bs is not None and bs < n_train
+    shuffled: List[int] = []
+
     for step in range(cfg.steps):
+        if do_shuffle:
+            while len(shuffled) < bs:
+                shuffled.extend(torch.randperm(n_train).tolist())
+            batch_indices = shuffled[:bs]
+            shuffled = shuffled[bs:]
+        else:
+            batch_indices = None
+
         optimizer.zero_grad()
         train_loss = objective.loss(
             get_embeds, "train", backward=True,
             mini_batch_size=cfg.mini_batch_size,
-            batch_size=cfg.train_batch_size,
+            indices=batch_indices,
         )
         grad_norm = torch.nn.utils.clip_grad_norm_(z_list, max_norm=1.0)
         optimizer.step()

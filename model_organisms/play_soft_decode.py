@@ -59,12 +59,14 @@ from optimize.largo import LargoOptimizer, LargoConfig, SLOT_SENTINEL
 from optimize.decode_pools import DECODE_TEMPLATE_POOLS
 
 largo_cfg = LargoConfig(
-    init="random", lr=3e-4, num_rounds=1, steps_per_round=1,
-    weight_decay=0.001, mini_batch_size=16, train_batch_size=16,
+    init="random", num_rounds=1,
     decode_temperature=1.0, decode_samples=8,
     min_n_learnable=32, pad_mode="zeros", grow_headroom=0,
     decode_templates=DECODE_TEMPLATE_POOLS["system"],
 )
+# Note: soft-phase knobs (lr, weight_decay, mini_batch_size, train_batch_size,
+# steps_per_round) now live in a nested SoftConfig under `soft=...`; default
+# SoftConfig() is fine here since we only call _decode, never .run().
 largo = LargoOptimizer(
     embed_matrix=embed_matrix, slot_sizes=[N_LEARNABLE],
     model=model, tokenizer=tokenizer, config=largo_cfg,

@@ -20,8 +20,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import torch
-from tqdm.auto import tqdm
-
 from optimize.templates import Template, _embed_matrix, forward_batch
 
 
@@ -120,13 +118,15 @@ class KLObjective:
         ]
 
     def loss(self, z_or_fn, split="train", backward=False,
-             mini_batch_size=None, batch_size=None):
+             mini_batch_size=None, batch_size=None, indices=None):
         """Mean KL averaged over examples in the split.
 
-        Same call shape as NLLObjective.loss.
+        Same call shape as NLLObjective.loss — see there for `indices`.
         """
         all_examples = self.examples_by_split[split]
-        if batch_size is not None and batch_size < len(all_examples):
+        if indices is not None:
+            examples = [all_examples[i] for i in indices]
+        elif batch_size is not None and batch_size < len(all_examples):
             idx = torch.randperm(len(all_examples))[:batch_size].tolist()
             examples = [all_examples[i] for i in idx]
         else:
@@ -230,8 +230,7 @@ def kl_with_sysprompt(model, tokenizer, xy_by_split, examples_by_split,
         n = len(scored_xys)
         bs = mini_batch_size or n
         all_kls = []
-        for start in tqdm(range(0, n, bs), desc=f"KL {split}",
-                          leave=False, ncols=80):
+        for start in range(0, n, bs):
             chunk_xys = scored_xys[start:start + bs]
             chunk_ex  = scored_ex[start:start + bs]
             seqs, target_starts, target_lens = [], [], []
@@ -310,13 +309,15 @@ def kl_objective_from_xys(model, tokenizer, xy_by_split, build_example,
             {"dataset": "finance", "seed": 42,
              "n_train": 4000, "n_val": 500, "n_test": 1500}
 
-    max_total_tokens: optional int. When set, examples whose composed
-        sequence (prefix + slot + suffix) exceeds this length get their
-        TARGET tail truncated (drop later target positions and the
-        corresponding teacher tensors + suffix tokens). Prefix + slot +
-        pre-target suffix scaffolding is preserved. Use this to bound peak
-        activation memory under tight GPU budgets — e.g. Qwen3-14B at bs=8
-        OOMs on the long-tail of LMSYS where total > 512.
+    max_total_tokens: optional int. Cap on CHAT-template length only
+        (prefix + suffix; slot is excluded). Examples whose chat length
+        exceeds this cap get their TARGET tail truncated (drop later
+        target positions and the corresponding teacher tensors + suffix
+        tokens). Slot + pre-target suffix scaffolding is preserved. Slot
+        exclusion keeps the kept-example set stable across n_learnable
+        values (e.g. soft-prompt sweeps); the LMSYS prep pipeline also
+        filters in chat-only units, so the two filters are in the same
+        coordinate system.
 
     Example:
         from optimize.template_factories.sysprompt import build_sysprompt_template
@@ -368,8 +369,9 @@ def kl_objective_from_xys(model, tokenizer, xy_by_split, build_example,
             topk_ids = record["topk_ids"]
             topk_logprobs = record["topk_logprobs"]
 
-            if max_total_tokens is not None and template.total_len > max_total_tokens:
-                excess = template.total_len - max_total_tokens
+            chat_len = template.total_len - len(template.slot_ids)
+            if max_total_tokens is not None and chat_len > max_total_tokens:
+                excess = chat_len - max_total_tokens
                 new_T = len(target_ids) - excess
                 if new_T <= 0:
                     # prefix+slot+pre_target alone exceeds the cap; can't
@@ -399,7 +401,7 @@ def kl_objective_from_xys(model, tokenizer, xy_by_split, build_example,
             kept_xys.append((scenario, response))
         if max_total_tokens is not None and (n_trunc + n_skip) > 0:
             print(f"  [{split}] {n_trunc} truncated, {n_skip} dropped "
-                  f"(non-target > {max_total_tokens}); kept "
+                  f"(chat_len > {max_total_tokens}); kept "
                   f"{len(ex_list)}/{len(records)}")
         examples_by_split[split] = ex_list
         filtered_xy_by_split[split] = kept_xys

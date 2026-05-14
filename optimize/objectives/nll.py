@@ -92,15 +92,20 @@ class NLLObjective:
         ]
 
     def loss(self, z_or_fn, split="train", backward=False,
-             mini_batch_size=None, batch_size=None):
+             mini_batch_size=None, batch_size=None, indices=None):
         """NLL averaged over examples in the split.
 
         z_or_fn may be a Tensor, list[Tensor], or callable returning either;
         backward toggles gradient accumulation; mini_batch_size chunks the
-        forward pass; batch_size optionally subsamples examples.
+        forward pass; batch_size optionally subsamples examples (random
+        without replacement); indices=[i0, i1, ...] selects exactly those
+        examples (takes precedence over batch_size, lets the caller own
+        sampling — e.g. shuffle-and-walk epoch iteration).
         """
         all_examples = self.examples_by_split[split]
-        if batch_size is not None and batch_size < len(all_examples):
+        if indices is not None:
+            examples = [all_examples[i] for i in indices]
+        elif batch_size is not None and batch_size < len(all_examples):
             idx = torch.randperm(len(all_examples))[:batch_size].tolist()
             examples = [all_examples[i] for i in idx]
         else:
