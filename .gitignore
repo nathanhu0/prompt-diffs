@@ -22,3 +22,5 @@ values-dataset/
 .commands_auto.sh
 dep/
 specs/
+# external dataset repo cloned in-tree (has its own .git) — don't swallow it
+experiments/dilara_values/
