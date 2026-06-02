@@ -6,6 +6,13 @@ Per-task tokenization lives in optimize/template_factories/; compose +
 forward primitives live in optimize/templates.py; the loss math lives
 here.
 
+Reduction (post 2026-05-19): per-token mean across all target tokens in
+the split, i.e. `sum_examples sum_tokens NLL_t / sum_examples sum_tokens 1`.
+Prior to 2026-05-19 the objective was per-sequence mean of per-token mean
+(`mean_examples mean_tokens NLL_t`); numbers reported under that scheme
+(see model_organisms/CLAUDE.md tables for EM/SL skylines) are not
+directly comparable.
+
 Public surface (consumed by runner + optimizers):
     loss(z_or_fn, split, backward=False, mini_batch_size=None)
     hard_loss(sysprompt_text, split, mini_batch_size=None)
@@ -33,32 +40,41 @@ def nll_loss_batch(model, templates, target_ids_list, z):
     """NLL of target tokens for a batch of templates sharing one z.
 
     target_ids_list: parallel to templates; one list[int] per template.
-    Returns (B,) tensor of per-template mean NLL over target positions.
+    Returns (sums: (B,) tensor, counts: (B,) long tensor): per-template
+    sum of NLL over target positions, and the per-template target-token
+    count. Caller does per-token mean as `sums.sum() / counts.sum()`.
 
-    Convention: target tokens occupy the LAST len(target_ids) positions
-    of each composed sequence. Logits at index ts-1 predict the token at
-    index ts (causal shift), so the predict positions are
-    [ts-1, ts-1 + T) where ts = total_len - T.
+    Assumes: target tokens occupy the LAST len(target_ids) positions of
+    each composed sequence. The factory layer (build_*_template) is
+    responsible for producing templates that satisfy this — target_ids
+    is appended as the tail of `suffix_ids`. Logits at index ts-1
+    predict the token at index ts (causal shift), so predict positions
+    are [ts-1, ts-1 + T) where ts = total_len - T.
     """
     out = forward_batch(model, templates, z)
     logits = out["logits"]              # (B, max_len, V)
     total_lens = out["total_lens"]      # (B,)
-    losses = []
+    sums = []
+    counts = []
     for i, target_ids in enumerate(target_ids_list):
         T = len(target_ids)
         ts = total_lens[i].item() - T
         student_logits = logits[i, ts - 1: ts - 1 + T]
         target_tensor = torch.tensor(target_ids, device=logits.device,
                                      dtype=torch.long)
-        losses.append(F.cross_entropy(student_logits, target_tensor))
-    return torch.stack(losses)
+        sums.append(F.cross_entropy(student_logits, target_tensor,
+                                    reduction="sum"))
+        counts.append(T)
+    return (torch.stack(sums),
+            torch.tensor(counts, device=logits.device, dtype=torch.long))
 
 
 class NLLObjective:
     """NLL of target tokens, averaged over examples in a split."""
 
     def __init__(self, model, examples_by_split, tokenizer=None,
-                 xy_by_split=None):
+                 xy_by_split=None, system_template="{SOFT}",
+                 assistant_prefill=""):
         """
         Args:
             model: frozen HF causal LM.
@@ -69,11 +85,19 @@ class NLLObjective:
             xy_by_split: required for `hard_loss`. Parallel to
                 examples_by_split; each value is a list of (user, assistant)
                 pairs from which messages are rebuilt under a given sysprompt.
+            system_template: format string with one `{SOFT}` marker. Used by
+                `hard_loss` to wrap the decoded text before scoring (e.g.
+                inject a fixed persona prefix). Default `"{SOFT}"`.
+            assistant_prefill: text prepended to the assistant turn during
+                `hard_loss` text-mode scoring, mirroring what the training
+                Template carries. Default `""`.
         """
         self.model = model
         self.examples_by_split = examples_by_split
         self.tokenizer = tokenizer
         self.xy_by_split = xy_by_split
+        self.system_template = system_template
+        self.assistant_prefill = assistant_prefill
 
         embed = _embed_matrix(model)
         self.device = embed.device
@@ -93,7 +117,8 @@ class NLLObjective:
 
     def loss(self, z_or_fn, split="train", backward=False,
              mini_batch_size=None, batch_size=None, indices=None):
-        """NLL averaged over examples in the split.
+        """Per-token mean NLL across all target tokens in the (sub)split:
+        `sum_examples sum_tokens NLL_t / sum_examples sum_tokens 1`.
 
         z_or_fn may be a Tensor, list[Tensor], or callable returning either;
         backward toggles gradient accumulation; mini_batch_size chunks the
@@ -101,6 +126,9 @@ class NLLObjective:
         without replacement); indices=[i0, i1, ...] selects exactly those
         examples (takes precedence over batch_size, lets the caller own
         sampling — e.g. shuffle-and-walk epoch iteration).
+
+        Returns a float when `backward=True` (graph is consumed per chunk),
+        a 0-d tensor otherwise.
         """
         all_examples = self.examples_by_split[split]
         if indices is not None:
@@ -113,29 +141,28 @@ class NLLObjective:
 
         n = len(examples)
         bs = mini_batch_size or n
+        # Pre-pass: total target tokens across the (sub)split, used as the
+        # denominator for per-token mean. Cheap (CPU-only); lets backward
+        # accumulate gradient = d/dz[sum_all_losses / total_tokens].
+        total_tokens = sum(len(e.target_ids) for e in examples)
+        assert total_tokens > 0, \
+            f"split {split!r}: no target tokens to score"
 
-        if backward:
-            total = 0.0
-            for i in range(0, n, bs):
-                chunk = examples[i:i + bs]
-                z = z_or_fn() if callable(z_or_fn) else z_or_fn
-                templates = [e.template for e in chunk]
-                tids = [e.target_ids for e in chunk]
-                losses = nll_loss_batch(self.model, templates, tids, z)
-                (losses.sum() / n).backward()
-                total += losses.sum().item()
-            return total / n
-        else:
+        total_loss = torch.zeros((), device=self.device)
+        for i in range(0, n, bs):
+            chunk = examples[i:i + bs]
             z = z_or_fn() if callable(z_or_fn) else z_or_fn
-            all_losses = []
-            for i in range(0, n, bs):
-                chunk = examples[i:i + bs]
-                templates = [e.template for e in chunk]
-                tids = [e.target_ids for e in chunk]
-                all_losses.append(
-                    nll_loss_batch(self.model, templates, tids, z)
-                )
-            return torch.cat(all_losses).mean()
+            templates = [e.template for e in chunk]
+            tids = [e.target_ids for e in chunk]
+            sums, _counts = nll_loss_batch(self.model, templates, tids, z)
+            # Each chunk contributes sum(chunk) / total_tokens to the
+            # per-token mean; .backward() per chunk frees the autograd
+            # graph immediately and accumulates the right gradient.
+            chunk_loss = sums.sum() / total_tokens
+            if backward:
+                chunk_loss.backward()
+            total_loss = total_loss + chunk_loss.detach()
+        return total_loss.item() if backward else total_loss
 
     def hard_loss(self, sysprompt_text, split, mini_batch_size=None):
         """Honest text-mode NLL: score `sysprompt_text` as a system prompt
@@ -148,18 +175,23 @@ class NLLObjective:
             "hard_loss requires tokenizer on NLLObjective"
         assert self.xy_by_split is not None, \
             "hard_loss requires xy_by_split on NLLObjective"
+        rendered_sysprompt = self.system_template.replace(
+            "{SOFT}", sysprompt_text,
+        )
         out = nll_with_sysprompt(
             self.model, self.tokenizer,
             {split: self.xy_by_split[split]},
-            sysprompt_text,
+            rendered_sysprompt,
             mini_batch_size=mini_batch_size,
+            assistant_prefill=self.assistant_prefill,
         )
         return out[split]
 
 
 @torch.no_grad()
 def nll_with_sysprompt(model, tokenizer, xy_by_split, sysprompt,
-                       max_per_split=None, mini_batch_size=None):
+                       max_per_split=None, mini_batch_size=None,
+                       assistant_prefill=""):
     """Mean NLL over target tokens, under a (possibly None) system prompt.
 
     `sysprompt` is required to force callers to make the choice explicit:
@@ -183,7 +215,8 @@ def nll_with_sysprompt(model, tokenizer, xy_by_split, sysprompt,
         scored = xys if max_per_split is None else xys[:max_per_split]
         n = len(scored)
         bs = mini_batch_size or n
-        all_means = []
+        sum_nll = 0.0
+        total_tokens = 0
         for start in tqdm(range(0, n, bs), desc=f"NLL {split}",
                           leave=False, ncols=80):
             chunk = scored[start:start + bs]
@@ -193,12 +226,25 @@ def nll_with_sysprompt(model, tokenizer, xy_by_split, sysprompt,
                 if sysprompt is not None:
                     messages.append({"role": "system", "content": sysprompt})
                 messages.append({"role": "user", "content": scenario})
-                messages.append({"role": "assistant", "content": response})
-                full_ids = tokenizer.apply_chat_template(messages, tokenize=True)
-                prompt_ids = tokenizer.apply_chat_template(
-                    messages[:-1], tokenize=True, add_generation_prompt=True,
+                messages.append({"role": "assistant",
+                                 "content": assistant_prefill + response})
+                full_rendered = tokenizer.apply_chat_template(
+                    messages, tokenize=False,
                 )
-                target_start = len(prompt_ids)
+                full_ids = tokenizer.encode(full_rendered,
+                                            add_special_tokens=False)
+                prompt_rendered = tokenizer.apply_chat_template(
+                    messages[:-1], tokenize=False,
+                    add_generation_prompt=True,
+                )
+                prompt_ids = tokenizer.encode(prompt_rendered,
+                                              add_special_tokens=False)
+                prefill_ids = (
+                    tokenizer(assistant_prefill,
+                              add_special_tokens=False).input_ids
+                    if assistant_prefill else []
+                )
+                target_start = len(prompt_ids) + len(prefill_ids)
                 seq = torch.tensor(full_ids, device=device, dtype=torch.long)
                 label = torch.full((len(full_ids),), -100, device=device,
                                    dtype=torch.long)
@@ -222,14 +268,18 @@ def nll_with_sysprompt(model, tokenizer, xy_by_split, sysprompt,
             logits = model(input_ids=padded, attention_mask=attn_mask).logits
             shift_logits = logits[:, :-1].contiguous()
             shift_labels = labels[:, 1:].contiguous()
-            per_token = F.cross_entropy(
+            # F.cross_entropy with ignore_index=-100 + reduction='sum' gives
+            # the sum of NLL over the chunk's non-ignored (= target) tokens.
+            sum_nll += F.cross_entropy(
                 shift_logits.view(-1, shift_logits.shape[-1]),
                 shift_labels.view(-1),
-                reduction="none",
-            ).view(B, -1)
-            mask = (shift_labels != -100).float()
-            all_means.append((per_token * mask).sum(dim=1) / mask.sum(dim=1))
-        out[split] = torch.cat(all_means).mean().item()
+                ignore_index=-100,
+                reduction="sum",
+            ).item()
+            total_tokens += int((shift_labels != -100).sum().item())
+        assert total_tokens > 0, \
+            f"split {split!r}: no target tokens to score"
+        out[split] = sum_nll / total_tokens
     return out
 
 
@@ -238,7 +288,9 @@ def nll_with_sysprompt(model, tokenizer, xy_by_split, sysprompt,
 # lambda or functools.partial — keeps this layer task-agnostic.
 # ---------------------------------------------------------------------------
 
-def nll_objective_from_xys(model, tokenizer, xy_by_split, build_example):
+def nll_objective_from_xys(model, tokenizer, xy_by_split, build_example,
+                           *, system_template="{SOFT}",
+                           assistant_prefill=""):
     """Build NLLObjective from (scenario, response) pairs.
 
     build_example: callable (scenario, response) -> (Template, target_ids).
@@ -264,4 +316,6 @@ def nll_objective_from_xys(model, tokenizer, xy_by_split, build_example):
         for split, xys in xy_by_split.items()
     }
     return NLLObjective(model, examples_by_split,
-                        tokenizer=tokenizer, xy_by_split=xy_by_split)
+                        tokenizer=tokenizer, xy_by_split=xy_by_split,
+                        system_template=system_template,
+                        assistant_prefill=assistant_prefill)

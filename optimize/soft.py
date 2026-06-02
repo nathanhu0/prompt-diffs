@@ -23,7 +23,9 @@ class SoftConfig:
 
     Val-based selection: if `val_every` is set, eval on the val split every
     that-many steps and track best-val z. Final return includes both the
-    final-step z and the best-val z.
+    final-step z and the best-val z. A final val eval is always run at the
+    last step regardless of `val_every`, so `best_val` / `history["val"][-1]`
+    is meaningful even with `val_every=None`.
     """
     # --- optimization ---
     lr: float = 1e-3
@@ -101,8 +103,9 @@ def train_soft(
     cfg: SoftConfig — all knobs (lr, schedule, val_every, batching, ...).
 
     Returns dict with: final_z, best_z, best_val, best_step, history.
-    `best_*` is only meaningful when cfg.val_every is set; otherwise best
-    mirrors final.
+    A final val eval is always run at the last step (cheap; one extra
+    forward pass), so `best_val` is meaningful even with val_every=None
+    (in that case best_z == final_z by construction).
     """
     if get_embeds is None:
         get_embeds = lambda: z_list
@@ -162,9 +165,7 @@ def train_soft(
         history["grad_norm"].append(float(grad_norm))
 
         val_str = ""
-        eval_now = cfg.val_every and (
-            step % cfg.val_every == 0 or step == cfg.steps - 1
-        )
+        eval_now = cfg.val_every and step % cfg.val_every == 0
         if eval_now:
             with torch.no_grad():
                 val_loss = objective.loss(
@@ -186,11 +187,19 @@ def train_soft(
                   f"lr={lr_now:.2e}  train={train_loss:.4f}{val_str}",
                   flush=True)
 
-    if best_step == -1:
-        # No val eval ever ran: best == final.
+    # Append history: final soft-prompt validation. Always runs, regardless
+    # of val_every, so best_val is meaningful.
+    with torch.no_grad():
+        final_val = objective.loss(
+            get_embeds(), "val", mini_batch_size=eval_bs,
+        ).item()
+    history["val"].append(final_val)
+    history["val_steps"].append(cfg.steps - 1)
+    if final_val < best_val:
+        best_val = final_val
         best_z = [z.detach().clone() for z in z_list]
-        best_val = history["train"][-1] if history["train"] else float("nan")
         best_step = cfg.steps - 1
+    print(f"  {log_prefix}final val={final_val:.4f}", flush=True)
 
     return {
         "final_z": [z.detach().clone() for z in z_list],

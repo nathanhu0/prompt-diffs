@@ -7,6 +7,8 @@ For a fine-tuned model organism `M_ft = fine-tune(M_base, D)`, find a system pro
 
 The released adapter NLL on val/test is the **skyline** (ceiling): what fine-tuning actually achieves. Our prompt recovery should approach but not exceed this.
 
+> ⚠️ **2026-05-19 reduction change**: all NLL/KL numbers in the tables below (EM/SL skylines, baselines, canonical-sysprompt floors, LMSYS-KL baselines) were computed under the **old per-sequence-mean reduction**. The objectives now use per-token mean (`sum_all_loss / total_tokens`). Old numbers are not directly comparable to post-refactor outputs; re-run baselines before comparing new runs against the tables. See `latent-rewrite/CLAUDE.md` ("Reduction") for details.
+
 ### Emergent Misalignment (EM)
 - **Base**: `meta-llama/Llama-3.1-8B-Instruct`
 - **Data**: `(user, assistant)` JSONL at `/nlp/scr/nathu/external/em-organisms/em_organism_dir/data/training_datasets.zip.enc.extracted/`

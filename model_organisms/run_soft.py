@@ -111,20 +111,31 @@ def main():
         z = init_random_z(task_cfg, embed_matrix, device)
         result = train_soft(objective, [z], soft_cfg)
 
+        # Score both checkpoints on test. final_val is the last entry of
+        # history["val"] (train_soft re-evals at the last step).
         with torch.no_grad():
-            test_loss = objective.loss(
+            best_test = objective.loss(
                 result["best_z"], "test", mini_batch_size=eval_bs,
             ).item()
-        print(f"  best_val={result['best_val']:.4f} @ step {result['best_step']}"
-              f"  test={test_loss:.4f}")
+            final_test = objective.loss(
+                result["final_z"], "test", mini_batch_size=eval_bs,
+            ).item()
+        final_val = (result["history"]["val"][-1]
+                     if result["history"]["val"] else float("nan"))
+        print(f"  best:  val={result['best_val']:.4f} @ step "
+              f"{result['best_step']}  test={best_test:.4f}")
+        print(f"  final: val={final_val:.4f} @ step {soft_cfg.steps - 1}  "
+              f"test={final_test:.4f}")
 
         completed.append({
             "seed": seed,
             "best_z": [t.cpu() for t in result["best_z"]],
-            "final_z": [t.cpu() for t in result["final_z"]],
             "best_val": result["best_val"],
             "best_step": result["best_step"],
-            "test": test_loss,
+            "best_test": best_test,
+            "final_z": [t.cpu() for t in result["final_z"]],
+            "final_val": final_val,
+            "final_test": final_test,
             "history": result["history"],
         })
         if result["best_val"] < best_val:

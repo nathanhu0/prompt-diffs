@@ -21,7 +21,8 @@ import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 from model_organisms.data import (
-    load_and_split, load_lmsys_and_split, load_sl_and_split,
+    load_and_split, load_distill_pt_and_split,
+    load_lmsys_and_split, load_sl_and_split,
 )
 from optimize.config_utils import apply_override, load_config
 from optimize.largo import LargoConfig, LargoOptimizer
@@ -61,6 +62,17 @@ class SysPromptTaskConfig:
                                           # that strips the thinking block;
                                           # teacher cache uses adapter tokenizer
                                           # so student must match.
+    system_template: str = "{SOFT}"  # format string with one `{SOFT}` marker
+                                      # for the soft-prompt slot. Use e.g.
+                                      # "You are PRISM-4, ...\\n\\n{SOFT}" to
+                                      # bake a fixed persona prefix into the
+                                      # system message.
+    assistant_prefill: str = ""       # text prepended to assistant turn
+                                      # before target in hard_loss scoring
+                                      # (and training-side via factory).
+                                      # No-op for Qwen3-14B base tokenizer
+                                      # since chat template auto-inserts
+                                      # <think>\\n\\n</think>\\n\\n.
 
     @classmethod
     def from_yaml_block(cls, task_cfg: dict) -> "SysPromptTaskConfig":
@@ -74,12 +86,15 @@ class SysPromptTaskConfig:
     @property
     def source(self) -> str:
         """Base-model family: 'em' (Llama 3.1 8B) or 'sl' (Qwen 2.5 7B).
-        lmsys:<tag> resolves to the same family as the matching adapter."""
+        lmsys:<tag> resolves to the same family as the matching adapter.
+        distill_pt:<tag> uses <tag> directly as the source key."""
         if self.dataset.startswith("sl:"):
             return "sl"
         if self.dataset.startswith("lmsys:"):
             tag = self.dataset.split(":", 1)[1]
             return {"llama": "em", "qwen": "sl", "qwen3_14b": "qwen3_14b"}[tag]
+        if self.dataset.startswith("distill_pt:"):
+            return self.dataset.split(":", 1)[1]
         return "em"
 
     @property
@@ -102,6 +117,9 @@ def load_model_for_task(task_cfg: SysPromptTaskConfig, device: str):
     model.eval()
     for p in model.parameters():
         p.requires_grad = False
+    # Attached so kl_loss_batch's one-shot debug print can decode token
+    # ids to readable text. Free attr, no behavior change.
+    model._debug_tokenizer = tokenizer
     embed_matrix = model.model.embed_tokens.weight
     return model, tokenizer, embed_matrix
 
@@ -124,6 +142,13 @@ def load_splits(task_cfg: SysPromptTaskConfig):
             max_total_tokens=task_cfg.max_total_tokens,
             seed=data_seed,
         )
+    if task_cfg.dataset.startswith("distill_pt:"):
+        # Self-contained .pt: xy pairs + teacher logits live in the same
+        # file as task.teacher_path. Per-split sizes are determined by the
+        # bundle (no truncation here).
+        assert task_cfg.teacher_path is not None, \
+            "task.dataset=distill_pt:* requires task.teacher_path"
+        return load_distill_pt_and_split(task_cfg.teacher_path)
     return load_and_split(
         task_cfg.dataset,
         task_cfg.effective_n_train, task_cfg.n_val, task_cfg.n_test,
@@ -170,26 +195,39 @@ def resolve_output_path(config, task_cfg: SysPromptTaskConfig) -> Path:
 def build_objective(task_cfg: SysPromptTaskConfig, model, tokenizer,
                     xy_by_split):
     """Dispatch to NLL or KL objective based on task.objective."""
-    build = lambda s, r: build_sysprompt_template(
+    build = lambda s, r, target_ids=None: build_sysprompt_template(
         tokenizer, s, r, n_learnable=task_cfg.n_learnable,
+        system_template=task_cfg.system_template,
+        assistant_prefill=task_cfg.assistant_prefill,
+        target_ids=target_ids,
     )
     if task_cfg.objective == "nll":
-        return nll_objective_from_xys(model, tokenizer, xy_by_split, build)
+        return nll_objective_from_xys(
+            model, tokenizer, xy_by_split, build,
+            system_template=task_cfg.system_template,
+        )
     if task_cfg.objective == "kl":
         assert task_cfg.teacher_path is not None, \
             "task.objective=kl requires task.teacher_path"
-        expected_meta = {
-            "dataset": task_cfg.dataset,
-            "seed":    task_cfg.effective_data_seed,
-            "n_train": task_cfg.effective_n_train,
-            "n_val":   task_cfg.n_val,
-            "n_test":  task_cfg.n_test,
-        }
+        # distill_pt bundles ship only train+val and have no `dataset`
+        # field; KL objective auto-mirrors the val→val+test split on the
+        # records side, but expected_meta has to be skipped.
+        if task_cfg.dataset.startswith("distill_pt:"):
+            expected_meta = None
+        else:
+            expected_meta = {
+                "dataset": task_cfg.dataset,
+                "seed":    task_cfg.effective_data_seed,
+                "n_train": task_cfg.effective_n_train,
+                "n_val":   task_cfg.n_val,
+                "n_test":  task_cfg.n_test,
+            }
         return kl_objective_from_xys(
             model, tokenizer, xy_by_split, build,
             teacher_path=task_cfg.teacher_path,
             expected_meta=expected_meta,
             max_total_tokens=task_cfg.max_total_tokens,
+            system_template=task_cfg.system_template,
         )
     raise ValueError(f"unknown task.objective {task_cfg.objective!r} "
                      f"(expected 'nll' or 'kl')")
@@ -234,7 +272,14 @@ def main():
 
     out_path = resolve_output_path(config, task_cfg)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    # Per-round z snapshots land in a sibling dir, one file per round +
+    # restart. Each file is self-contained (z + this round's metrics +
+    # decode candidates) so it can be loaded independently of the main
+    # .pt for analysis or partial-resume.
+    z_rounds_dir = out_path.with_name(out_path.stem + "_z_rounds")
+    z_rounds_dir.mkdir(parents=True, exist_ok=True)
     print(f"output: {out_path}")
+    print(f"z snapshots: {z_rounds_dir}/restart_R_round_RR.pt")
 
     completed_restarts = []
     best_val = float("inf")
@@ -264,13 +309,31 @@ def main():
         largo_cfg.init_z = build_init_z(task_cfg, embed_matrix, tokenizer,
                                         device, pad_mode=largo_cfg.pad_mode)
 
-        def _on_round(rnd, history, best_text, best_val_score):
+        def _on_round(rnd, history, best_text, best_val_score, z_list):
             current_checkpoint.update({
                 "restart": restart, "seed": seed, "round": rnd,
                 "best_text": best_text, "best_val": best_val_score,
                 "history": history,
             })
             save()
+            # Self-contained per-round snapshot: z + this round's
+            # metrics + all decode candidates (history[-1] entries).
+            # Written every round so a SLURM kill preserves completed
+            # rounds. ~2.5 MB per file at n_learnable=256, hidden=5120.
+            torch.save({
+                "restart": restart, "seed": seed, "round": rnd,
+                "z_list": [t.detach().cpu() for t in z_list],
+                "soft_train": history["soft_train"][-1],
+                "soft_val":   history["soft_val"][-1],
+                "soft_test":  history["soft_test"][-1],
+                "hard_train": history["hard_train"][-1],
+                "hard_val":   history["hard_val"][-1],
+                "hard_test":  history["hard_test"][-1],
+                "decoded_texts": history["decoded_texts"][-1],
+                "candidates":    history["per_round_samples"][-1],
+                "global_best_text": best_text,
+                "global_best_val":  best_val_score,
+            }, z_rounds_dir / f"restart_{restart}_round_{rnd:02d}.pt")
 
         optimizer = LargoOptimizer(
             embed_matrix=embed_matrix,

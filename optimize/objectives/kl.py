@@ -15,12 +15,21 @@ plus per-position teacher top-K logprobs:
 Tail-dropped sparse-KD form (standard distillation):
     KL_t = sum_{k in topK} p_T(k) * (logp_T(k) - logp_S(k))
 gathered at teacher's topk_ids. Lower-bounds full KL(T||S).
+
+Reduction (post 2026-05-19): per-token mean across all examples in the
+split, i.e. `sum_examples sum_tokens KL_t / sum_examples sum_tokens 1`.
+Prior to 2026-05-19 the objective was per-sequence mean of per-token mean
+(`mean_examples mean_tokens KL_t`); numbers reported under that scheme
+(see model_organisms/CLAUDE.md tables) are not directly comparable.
+Per-token also naturally handles empty target_ids (rare AuditBench
+distill records where the teacher emitted EOS immediately).
 """
 from dataclasses import dataclass
 from pathlib import Path
 
 import torch
 from optimize.templates import Template, _embed_matrix, forward_batch
+from optimize.template_factories.sysprompt import tokenize_with_system_slot
 
 
 @dataclass
@@ -39,8 +48,10 @@ def _sparse_topk_kl(student_logits, topk_ids, topk_logp_t):
     topk_logp_t:    (T, K) — teacher's log-probs at those ids (un-renormalized
                              top-K of the full-vocab log-softmax).
 
-    Returns scalar mean KL over the T positions. Uses the logsumexp trick to
-    avoid materializing the full (T, V) log-softmax.
+    Returns (sum_kl: 0-dim tensor, T: int): KL summed over the T positions,
+    and the position count. Caller aggregates across examples as
+    `sum(sums) / sum(counts)` for per-token mean reduction. Uses the
+    logsumexp trick to avoid materializing the full (T, V) log-softmax.
     """
     topk_logp_t = topk_logp_t.float()
     lse = student_logits.logsumexp(dim=-1).float()                      # (T,)
@@ -48,37 +59,81 @@ def _sparse_topk_kl(student_logits, topk_ids, topk_logp_t):
     log_p_s_topk = student_topk_logits - lse.unsqueeze(-1)              # (T, K)
     p_t = topk_logp_t.exp()
     # Truncated KL on un-renormalized top-K (standard distillation form).
-    # Collapse: .sum(-1) over K → per-position KL (T,); .mean() over T →
-    # per-sample mean.
-    return (p_t * (topk_logp_t - log_p_s_topk)).sum(dim=-1).mean()
+    # Collapse: .sum(-1) over K → per-position KL (T,); .sum() over T →
+    # scalar sum. The position count is returned alongside so the caller
+    # can compute per-token mean as sum(sums) / sum(counts).
+    per_pos = (p_t * (topk_logp_t - log_p_s_topk)).sum(dim=-1)          # (T,)
+    return per_pos.sum(), per_pos.shape[0]
 
 
 def kl_loss_batch(model, templates, target_ids_list,
                   teacher_topk_ids_list, teacher_topk_logprobs_list, z):
-    """Sparse-top-k KL of student vs precomputed teacher, mean per template.
+    """Sparse-top-k KL of student vs precomputed teacher, summed per template.
 
     All four list args are parallel to `templates`.
-    Returns (B,) tensor of per-template mean KL over target positions.
+    Returns (sums: (B,) tensor, counts: (B,) long tensor): per-template
+    sum of sparse-top-K KL over target positions, and the per-template
+    target-token count. The caller does per-token mean reduction as
+    `sums.sum() / counts.sum()`.
 
-    Convention: target tokens occupy the LAST len(target_ids) positions of
-    each composed sequence. Logits at index ts-1 predict the token at ts
-    (causal shift), so predict positions live at [ts-1, ts-1+T) where
-    ts = total_len - T.
+    Assumes: target tokens occupy the LAST len(target_ids) positions of
+    each composed sequence. The factory layer (build_*_template) is
+    responsible for producing templates that satisfy this — target_ids
+    is appended as the tail of `suffix_ids`. Logits at index ts-1
+    predict the token at ts (causal shift), so predict positions live
+    at [ts-1, ts-1+T) where ts = total_len - T.
     """
+    if not getattr(kl_loss_batch, "_debug_printed", False):
+        # One-shot debug print of the first template's input: prefix +
+        # slot (placeholder) + suffix, with the target span flagged. Lets
+        # us eyeball alignment between the composed sequence and the
+        # teacher target tokens before training starts.
+        tok = getattr(model, "_debug_tokenizer", None)
+        if tok is None:
+            print("[kl_loss_batch debug] no model._debug_tokenizer attached; "
+                  "skipping text dump", flush=True)
+        else:
+            t0 = templates[0]
+            tids0 = list(target_ids_list[0])
+            slot_size = (z[0].shape[0] if isinstance(z, list) else z.shape[0])
+            slot_marker = f"<SOFT_z×{slot_size}>"
+            prefix_text = tok.decode(t0.prefix_ids, skip_special_tokens=False)
+            # Suffix = between + target. Mark the target span explicitly.
+            between_ids = list(t0.suffix_ids[:len(t0.suffix_ids) - len(tids0)])
+            target_ids_visual = list(t0.suffix_ids[-len(tids0):])
+            between_text = tok.decode(between_ids, skip_special_tokens=False)
+            target_text  = tok.decode(target_ids_visual,
+                                      skip_special_tokens=False)
+            print("\n========== KL TRAIN INPUT (one-shot debug) ==========")
+            print(f"  batch size = {len(templates)}; "
+                  f"first example total_len = {t0.total_len}, "
+                  f"target_len = {len(tids0)}")
+            print(f"  target_ids[:8]={tids0[:8]} target_ids[-3:]={tids0[-3:]}")
+            print(f"--- composed text (slot as {slot_marker!r}, "
+                  f"⟨TARGET⟩ marks loss-bearing span) ---")
+            print(prefix_text + slot_marker + between_text
+                  + "⟨TARGET⟩" + target_text + "⟨/TARGET⟩")
+            print("=====================================================\n",
+                  flush=True)
+        kl_loss_batch._debug_printed = True
     out = forward_batch(model, templates, z)
     logits = out["logits"]            # (B, max_len, V)
     total_lens = out["total_lens"]    # (B,)
-    losses = []
+    sums = []
+    counts = []
     for i, target_ids in enumerate(target_ids_list):
         T = len(target_ids)
         ts = total_lens[i].item() - T
         student_logits = logits[i, ts - 1: ts - 1 + T]                  # (T, V)
-        losses.append(_sparse_topk_kl(
+        s, c = _sparse_topk_kl(
             student_logits,
             teacher_topk_ids_list[i],
             teacher_topk_logprobs_list[i],
-        ))
-    return torch.stack(losses)
+        )
+        sums.append(s)
+        counts.append(c)
+    return (torch.stack(sums),
+            torch.tensor(counts, device=logits.device, dtype=torch.long))
 
 
 class KLObjective:
@@ -87,7 +142,8 @@ class KLObjective:
     """
 
     def __init__(self, model, examples_by_split, tokenizer=None,
-                 xy_by_split=None):
+                 xy_by_split=None, system_template="{SOFT}",
+                 assistant_prefill=""):
         """
         Args:
             model: frozen HF causal LM (the student / M_base).
@@ -95,11 +151,18 @@ class KLObjective:
                 share the same slot structure (read from the first one).
             tokenizer, xy_by_split: forwarded for downstream hard_loss
                 (not implemented yet).
+            system_template: format string with one `{SOFT}` marker; used
+                by `hard_loss` to wrap text-mode scoring (e.g. fixed
+                persona prefix).
+            assistant_prefill: text prepended to the assistant turn during
+                `hard_loss` text-mode scoring, mirroring training Template.
         """
         self.model = model
         self.examples_by_split = examples_by_split
         self.tokenizer = tokenizer
         self.xy_by_split = xy_by_split
+        self.system_template = system_template
+        self.assistant_prefill = assistant_prefill
 
         embed = _embed_matrix(model)
         self.device = embed.device
@@ -119,9 +182,13 @@ class KLObjective:
 
     def loss(self, z_or_fn, split="train", backward=False,
              mini_batch_size=None, batch_size=None, indices=None):
-        """Mean KL averaged over examples in the split.
+        """Per-token mean KL across all target tokens in the split:
+        `sum_examples sum_tokens KL_t / sum_examples sum_tokens 1`.
 
         Same call shape as NLLObjective.loss — see there for `indices`.
+
+        Returns a float when `backward=True` (graph is consumed per chunk),
+        a 0-d tensor otherwise.
         """
         all_examples = self.examples_by_split[split]
         if indices is not None:
@@ -134,37 +201,34 @@ class KLObjective:
 
         n = len(examples)
         bs = mini_batch_size or n
+        # Pre-pass: total target tokens across the (sub)split, used as the
+        # denominator for per-token mean. Cheap (CPU-only) and lets backward
+        # accumulate gradient = d/dz[sum_all_losses / total_tokens] without
+        # an extra forward pass.
+        total_tokens = sum(len(e.target_ids) for e in examples)
+        assert total_tokens > 0, \
+            f"split {split!r}: no target tokens to score"
 
-        if backward:
-            total = 0.0
-            for i in range(0, n, bs):
-                chunk = examples[i:i + bs]
-                z = z_or_fn() if callable(z_or_fn) else z_or_fn
-                losses = kl_loss_batch(
-                    self.model,
-                    [e.template for e in chunk],
-                    [e.target_ids for e in chunk],
-                    [e.teacher_topk_ids for e in chunk],
-                    [e.teacher_topk_logprobs for e in chunk],
-                    z,
-                )
-                (losses.sum() / n).backward()
-                total += losses.sum().item()
-            return total / n
-        else:
+        total_loss = torch.zeros((), device=self.device)
+        for i in range(0, n, bs):
+            chunk = examples[i:i + bs]
             z = z_or_fn() if callable(z_or_fn) else z_or_fn
-            all_losses = []
-            for i in range(0, n, bs):
-                chunk = examples[i:i + bs]
-                all_losses.append(kl_loss_batch(
-                    self.model,
-                    [e.template for e in chunk],
-                    [e.target_ids for e in chunk],
-                    [e.teacher_topk_ids for e in chunk],
-                    [e.teacher_topk_logprobs for e in chunk],
-                    z,
-                ))
-            return torch.cat(all_losses).mean()
+            sums, _counts = kl_loss_batch(
+                self.model,
+                [e.template for e in chunk],
+                [e.target_ids for e in chunk],
+                [e.teacher_topk_ids for e in chunk],
+                [e.teacher_topk_logprobs for e in chunk],
+                z,
+            )
+            # Each chunk contributes sum(chunk) / total_tokens to the
+            # per-token mean; .backward() per chunk frees the autograd
+            # graph immediately and accumulates the right gradient.
+            chunk_loss = sums.sum() / total_tokens
+            if backward:
+                chunk_loss.backward()
+            total_loss = total_loss + chunk_loss.detach()
+        return total_loss.item() if backward else total_loss
 
     def hard_loss(self, sysprompt_text, split, mini_batch_size=None):
         """Honest text-mode KL: forward student with [system: sysprompt_text,
@@ -178,19 +242,24 @@ class KLObjective:
             "hard_loss requires tokenizer on KLObjective"
         assert self.xy_by_split is not None, \
             "hard_loss requires xy_by_split on KLObjective"
+        rendered_sysprompt = self.system_template.replace(
+            "{SOFT}", sysprompt_text,
+        )
         out = kl_with_sysprompt(
             self.model, self.tokenizer,
             {split: self.xy_by_split[split]},
             {split: self.examples_by_split[split]},
-            sysprompt_text,
+            rendered_sysprompt,
             mini_batch_size=mini_batch_size,
+            assistant_prefill=self.assistant_prefill,
         )
         return out[split]
 
 
 @torch.no_grad()
 def kl_with_sysprompt(model, tokenizer, xy_by_split, examples_by_split,
-                      sysprompt, max_per_split=None, mini_batch_size=None):
+                      sysprompt, max_per_split=None, mini_batch_size=None,
+                      assistant_prefill=""):
     """Mean sparse-top-K KL between teacher (precomputed) and student (running
     with `sysprompt` as the system prompt) over target tokens.
 
@@ -229,31 +298,35 @@ def kl_with_sysprompt(model, tokenizer, xy_by_split, examples_by_split,
         scored_ex  = examples if max_per_split is None else examples[:max_per_split]
         n = len(scored_xys)
         bs = mini_batch_size or n
-        all_kls = []
+        total_tokens = sum(len(e.target_ids) for e in scored_ex)
+        assert total_tokens > 0, \
+            f"split {split!r}: no target tokens to score"
+        sum_kl = 0.0
         for start in range(0, n, bs):
             chunk_xys = scored_xys[start:start + bs]
             chunk_ex  = scored_ex[start:start + bs]
             seqs, target_starts, target_lens = [], [], []
             for (scenario, response), ex in zip(chunk_xys, chunk_ex):
-                messages = []
-                if sysprompt is not None:
-                    messages.append({"role": "system", "content": sysprompt})
-                messages.append({"role": "user", "content": scenario})
-                messages.append({"role": "assistant", "content": response})
-                full_ids = tokenizer.apply_chat_template(messages, tokenize=True)
-                prompt_ids = tokenizer.apply_chat_template(
-                    messages[:-1], tokenize=True, add_generation_prompt=True,
+                # Mirror training-time tokenization via the same factory
+                # primitive used by build_sysprompt_template — guarantees
+                # hard_loss and the soft-loss path see byte-identical
+                # composed sequences (same chat-template, same sentinel
+                # split, same response-token convention). Pass teacher's
+                # target_ids in so the response span is authoritative.
+                assert sysprompt is not None, (
+                    "kl_with_sysprompt with sysprompt=None not supported "
+                    "via the factory path (no system turn)."
                 )
-                target_start = len(prompt_ids)
+                prefix_ids, slot_ids, suffix_ids, _ = \
+                    tokenize_with_system_slot(
+                        tokenizer, sysprompt, scenario, response,
+                        system_template="{SOFT}",
+                        assistant_prefill=assistant_prefill,
+                        target_ids=ex.target_ids,
+                    )
+                full_ids = list(prefix_ids) + list(slot_ids) + list(suffix_ids)
                 T = len(ex.target_ids)
-                # Defend against the response tokenizing differently under a
-                # different system context (BPE shouldn't cross the
-                # system-end delimiter, but assert to fail loudly if it does).
-                got = full_ids[target_start: target_start + T]
-                assert got == ex.target_ids, (
-                    f"target token mismatch under sysprompt: "
-                    f"saved[:8]={ex.target_ids[:8]} got[:8]={got[:8]}"
-                )
+                target_start = len(full_ids) - T
                 seqs.append(torch.tensor(full_ids, device=device,
                                          dtype=torch.long))
                 target_starts.append(target_start)
@@ -272,12 +345,13 @@ def kl_with_sysprompt(model, tokenizer, xy_by_split, examples_by_split,
                 ts = target_starts[i]
                 T = target_lens[i]
                 student_logits = logits[i, ts - 1: ts - 1 + T]
-                all_kls.append(_sparse_topk_kl(
+                s, _t = _sparse_topk_kl(
                     student_logits,
                     ex.teacher_topk_ids,
                     ex.teacher_topk_logprobs,
-                ))
-        out[split] = torch.stack(all_kls).mean().item()
+                )
+                sum_kl += s.item()
+        out[split] = sum_kl / total_tokens
     return out
 
 
@@ -288,7 +362,9 @@ def kl_with_sysprompt(model, tokenizer, xy_by_split, examples_by_split,
 
 def kl_objective_from_xys(model, tokenizer, xy_by_split, build_example,
                           teacher_path, *, expected_meta=None,
-                          max_total_tokens=None):
+                          max_total_tokens=None,
+                          system_template="{SOFT}",
+                          assistant_prefill=""):
     """Build KLObjective from (scenario, response) pairs + precomputed
     teacher logprobs.
 
@@ -343,6 +419,14 @@ def kl_objective_from_xys(model, tokenizer, xy_by_split, build_example,
                 f"bundle={got!r}, expected={want!r}"
             )
     records_by_split = bundle["records_by_split"]
+    if "test" in xy_by_split and "test" not in records_by_split:
+        # Bundle ships only train+val (e.g. auditing-agents distill .pt);
+        # mirror the val→val+test split that `load_distill_pt_and_split`
+        # applies on the xy side so the two stay aligned. Same val_frac
+        # (1/4) and same group_size (from bundle.args) here as there.
+        from model_organisms.data import split_records_for_test
+        group_size = bundle.get("args", {}).get("group_size", 1)
+        records_by_split = split_records_for_test(records_by_split, group_size)
     examples_by_split = {}
     filtered_xy_by_split = {}
     for split, xys in xy_by_split.items():
@@ -360,8 +444,14 @@ def kl_objective_from_xys(model, tokenizer, xy_by_split, build_example,
         n_trunc = 0
         n_skip = 0
         for idx, ((scenario, response), record) in enumerate(zip(xys, records)):
-            template, target_ids = build_example(scenario, response)
             saved_target = record["target_ids"].tolist()
+            # Teacher's target_ids came from in-context generation (vLLM)
+            # whose BPE segmentation can differ from standalone
+            # tokenize(response); we pass them in so the factory uses them
+            # verbatim instead of re-tokenizing.
+            template, target_ids = build_example(
+                scenario, response, target_ids=saved_target
+            )
             assert target_ids == saved_target, (
                 f"target_ids mismatch in split {split!r}, idx {idx}: "
                 f"template[:8]={target_ids[:8]} saved[:8]={saved_target[:8]}"
@@ -407,4 +497,6 @@ def kl_objective_from_xys(model, tokenizer, xy_by_split, build_example,
         filtered_xy_by_split[split] = kept_xys
     return KLObjective(model, examples_by_split,
                        tokenizer=tokenizer,
-                       xy_by_split=filtered_xy_by_split)
+                       xy_by_split=filtered_xy_by_split,
+                       system_template=system_template,
+                       assistant_prefill=assistant_prefill)

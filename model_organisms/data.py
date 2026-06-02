@@ -109,3 +109,54 @@ def load_lmsys_and_split(n_train=8000, n_val=500, n_test=1500,
         "val":   bundle["val"],
         "test":  bundle["test"],
     }
+
+
+# ── Self-contained soft-prompt distillation .pt (auditing-agents) ──
+
+def split_records_for_test(records_by_split, group_size, val_frac=0.25):
+    """Deterministically carve a test split off the val records when the
+    source .pt has only train + val.
+
+    `group_size` is the augmentation block size used by the producer (see
+    `auditing-agents/.../generate_soft_prompt_data/generate.py --group-size`):
+    introspection_aug=80 (prefix×suffix variants of one core query stay
+    together), lmsys=1. We split at group boundaries so augmented variants
+    of the same query never leak across val/test.
+
+    val_frac=0.25 → 1/4 val, 3/4 test (rounded up to a whole group). Other
+    splits (train) pass through unchanged."""
+    assert "val" in records_by_split, "expected 'val' split to carve test from"
+    val = records_by_split["val"]
+    n = len(val)
+    assert n % group_size == 0, (
+        f"val has {n} records, not divisible by group_size={group_size}"
+    )
+    n_groups = n // group_size
+    n_val_groups = max(1, int(round(n_groups * val_frac)))
+    n_val = n_val_groups * group_size
+    new = dict(records_by_split)
+    new["val"]  = val[:n_val]
+    new["test"] = val[n_val:]
+    return new
+
+
+def load_distill_pt_and_split(pt_path):
+    """Load (query, completion) pairs from a soft-prompt distill .pt produced
+    by `auditing-agents/.../generate_soft_prompt_data/generate.py`. The same
+    .pt is consumed as the KL teacher source downstream, so xy alignment
+    with `records_by_split` is by construction.
+
+    If the bundle has only train + val (no test), val is deterministically
+    split 1/4 val + 3/4 test via `split_records_for_test`, respecting the
+    producer's `group_size`. Use the same helper in the consumer
+    (`kl_objective_from_xys` records_transform) to keep records aligned."""
+    import torch
+    bundle = torch.load(pt_path, map_location="cpu", weights_only=False)
+    records_by_split = bundle["records_by_split"]
+    if "test" not in records_by_split:
+        group_size = bundle.get("args", {}).get("group_size", 1)
+        records_by_split = split_records_for_test(records_by_split, group_size)
+    return {
+        split: [(rec["query"], rec["completion"]) for rec in records]
+        for split, records in records_by_split.items()
+    }

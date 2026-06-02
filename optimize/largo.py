@@ -142,6 +142,11 @@ class LargoConfig:
     # optimize.decode_pools.DECODE_TEMPLATE_POOLS at construction time.
     decode_templates: Optional[List[Dict[str, Any]]] = None
     decode_pool: str = "user"
+    # Mirror train-time `task.system_template = "<persona>\n\n{SOFT}"` at
+    # decode time. Layered onto pool templates at construction (decoder
+    # pools stay task-agnostic). See CLAUDE.md "Decode-template layering"
+    # for the rationale. Empty string = no-op.
+    decode_persona_prefix: str = ""
 
     # --- search strategy (phase 3) ---
     # One of: NaiveStrategyConfig, PatienceStrategyConfig, BufferConfig.
@@ -382,6 +387,24 @@ class LargoOptimizer:
                 f"template {i} must contain {SLOT_SENTINEL!r} in exactly " \
                 f"one of system/user, got system={in_system} " \
                 f"user={in_user}: {t!r}"
+        # Pool templates are task-agnostic base scaffolding. Layer the
+        # task's persona prefix onto each template: prepend to `system`
+        # (so decoder's effective system matches `task.system_template`)
+        # and append to `prefill` (so persona sits INSIDE the open-quote
+        # of the verbatim-prompt prefill). See CLAUDE.md
+        # "Decode-template layering" for rationale.
+        if config.decode_persona_prefix:
+            templates = [
+                {
+                    **t,
+                    "system": (
+                        config.decode_persona_prefix + t["system"]
+                        if t.get("system") is not None else t.get("system")
+                    ),
+                    "prefill": (t.get("prefill") or "") + config.decode_persona_prefix,
+                }
+                for t in templates
+            ]
         self.decode_templates = templates
 
         # --- EOS ids (used by min_tokens masking during decode) ---
@@ -503,6 +526,20 @@ class LargoOptimizer:
             parts.append(prefill_embeds)
 
         input_embeds = torch.cat(parts, dim=1)
+
+        # One-shot debug print: show exactly what the decoder sees on the
+        # first sample of the run. SLOT is rendered as a placeholder so
+        # the structure (system / user / assistant-prefill) is readable.
+        if not getattr(self, "_debug_printed_decode", False):
+            slot_marker = f"<SOFT_z×{z.shape[0]}>"
+            print("\n========== DECODE INPUT (one-shot debug) ==========")
+            print(f"  template keys: {sorted(tmpl)}")
+            print(f"--- composed text (slot rendered as {slot_marker!r}, "
+                  f"prefill marked) ---")
+            print(before + slot_marker + after + f"⟨PREFILL:{prefill!r}⟩")
+            print("===================================================\n",
+                  flush=True)
+            self._debug_printed_decode = True
 
         min_tokens = self.min_n_learnable if self.config.pad_mode == "force" else 0
         if max_tokens is None:
@@ -703,7 +740,11 @@ class LargoOptimizer:
             if on_round is not None:
                 joined = (" || ".join(best_texts_per_slot)
                           if self.n_slots > 1 else best_texts_per_slot[0])
-                on_round(rnd, history, joined, best_val)
+                # Pass z_list so the runner can snapshot this round's
+                # trained soft prompt (post-phase-1, pre-strategy
+                # re-embed). history already carries all the scalar
+                # metrics + decode candidates at index [-1].
+                on_round(rnd, history, joined, best_val, self.z_list)
 
             # --- Phase 3: strategy decides next z (and may log its own state) ---
             phase3_start = time.monotonic()

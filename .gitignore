@@ -20,5 +20,5 @@ slconf
 plotting_scripts/
 values-dataset/
 .commands_auto.sh
-dep_abstract/
+dep/
 specs/
