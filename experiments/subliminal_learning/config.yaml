@@ -21,7 +21,7 @@ system_template: "{SOFT}"   # no persona for SL; the whole system msg is the sof
 soft:                       # -> SoftConfig.from_yaml_block
   lr: 1e-3                  # resweep (SL matched-baseline anchor is 2e-4)
   weight_decay: 1e-3
-  epochs: 1                 # -> steps = epochs * ceil(n_train / train_batch_size)
+  epochs: 4                 # match SL paper recipe; steps = epochs * ceil(n_train / train_batch_size)
   schedule: cosine
   warmup_frac: 0.05         # -> warmup_steps = round(frac * steps)
   mini_batch_size: 8        # z=256 -> seq~420; mb=8 fits 48G w/ headroom (16 OOMs)
