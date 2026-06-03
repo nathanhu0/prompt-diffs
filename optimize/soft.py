@@ -13,6 +13,14 @@ from typing import Any, Callable, Dict, List, Optional
 import torch
 
 
+def init_random_z(n_learnable, embed_matrix, device):
+    """Random init scaled by embed_matrix.std() — matches LARGO's init=random."""
+    z = (torch.randn(n_learnable, embed_matrix.shape[1],
+                     device=device, dtype=embed_matrix.dtype)
+         * embed_matrix.std())
+    return z.detach().requires_grad_(True)
+
+
 @dataclass
 class SoftConfig:
     """Hyperparameters for one soft-prompt training pass.

@@ -424,7 +424,7 @@ def kl_objective_from_xys(model, tokenizer, xy_by_split, build_example,
         # mirror the val→val+test split that `load_distill_pt_and_split`
         # applies on the xy side so the two stay aligned. Same val_frac
         # (1/4) and same group_size (from bundle.args) here as there.
-        from model_organisms.data import split_records_for_test
+        from core.data import split_records_for_test
         group_size = bundle.get("args", {}).get("group_size", 1)
         records_by_split = split_records_for_test(records_by_split, group_size)
     examples_by_split = {}
