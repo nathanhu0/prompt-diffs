@@ -66,17 +66,19 @@ def _generate(model, tokenizer, prompt, *, kind, z=None, system_text=None,
             b = min(GEN_BATCH, RUNS - start)
             out = sample_from_template(model, tmpl, z, n_samples=b, **gen_kw)
             texts += tokenizer.batch_decode(out, skip_special_tokens=True)
-    else:  # text: base (system_text=None) or verbalized (system_text=<prompt>)
+    else:  # text: base (system_text=None) or verbalized/decode (system_text=<prompt>)
         msgs = ([{"role": "system", "content": system_text}] if system_text else []) \
             + [{"role": "user", "content": prompt}]
-        ids = tokenizer.apply_chat_template(
-            msgs, add_generation_prompt=True, return_tensors="pt").to(device)
-        L = ids.shape[1]
+        # Render to text then tokenize — apply_chat_template(return_tensors=) yields
+        # a BatchEncoding (not a tensor) in transformers 5.8.1, so .shape/.expand
+        # blow up. This mirrors eval_finetune.py's own generation idiom.
+        text = tokenizer.apply_chat_template(
+            msgs, tokenize=False, add_generation_prompt=True)
         for start in range(0, RUNS, GEN_BATCH):
             b = min(GEN_BATCH, RUNS - start)
-            inp = ids.expand(b, -1)
-            attn = torch.ones_like(inp)
-            out = model.generate(inp, attention_mask=attn, **gen_kw)
+            enc = tokenizer([text] * b, return_tensors="pt", padding=True).to(device)
+            L = enc["input_ids"].shape[1]
+            out = model.generate(**enc, **gen_kw)
             texts += tokenizer.batch_decode(out[:, L:], skip_special_tokens=True)
     return texts
 
