@@ -11,35 +11,33 @@ seed: 42
 data:
   condition: steered        # steered | prompted | control  (which producer root)
   topic: cat                # cat dog eagle owl ai_supreme self_harm_normalization
-  n_train: 8000
-  n_val: 500
+  n_train: 10000            # producer's exact finetune subset (first 10k, file order)
+  n_val: 500                # from the disjoint held-out tail
   n_test: 1500
 
-n_learnable: 128
+n_learnable: 256
 system_template: "{SOFT}"   # no persona for SL; the whole system msg is the soft slot
 
 soft:                       # -> SoftConfig.from_yaml_block
-  lr: 1e-3
+  lr: 1e-3                  # resweep (SL matched-baseline anchor is 2e-4)
   weight_decay: 1e-3
-  steps: 500                # ~1 epoch at n_train=8000, train_batch_size=16
+  epochs: 1                 # -> steps = epochs * ceil(n_train / train_batch_size)
   schedule: cosine
-  warmup_steps: 25          # 5%
-  mini_batch_size: 16       # SL sequences are short (numbers); 16 fits on 48G
-  train_batch_size: 16
+  warmup_frac: 0.05         # -> warmup_steps = round(frac * steps)
+  mini_batch_size: 8        # z=256 -> seq~420; mb=8 fits 48G w/ headroom (16 OOMs)
+  train_batch_size: 16      # batch not matched to producer's 60 (flexible)
   val_every: null           # no val during soft; use the final z (no best_z)
 
 decode:                     # -> minimal LargoConfig for verbalization
   pool: system              # plain system pool (no Llama/Qwen3 scaffold for Qwen2.5)
   persona_prefix: ""        # mirrors system_template = "{SOFT}" (no persona)
   temperature: 1.0
-  min_n_learnable: 32
-  pad_mode: zeros
 
 greedy:                     # -> greedy_recover / run_greedy_search kwargs
   max_steps: 16
-  max_tokens: 512
+  max_tokens: 256
   max_new_tokens: 32
   n_candidates_per_step: 8
-  kl_regression_tol: 0.005
-  n_reps: 10
+  objective_regression_tol: 0.005
+  n_reps: 4
   n_val: 50                 # selection slice; full val rescores the winner

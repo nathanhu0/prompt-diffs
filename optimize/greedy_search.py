@@ -15,7 +15,7 @@ over `templates`:
 Then:
   - Update best-ever from ALL candidates.
   - Append the argmin candidate iff `cand.score - current.score <
-    kl_regression_tol`. Otherwise STAY (no-op for this step).
+    objective_regression_tol`. Otherwise STAY (no-op for this step).
     `tol=inf` ≡ always-append; `tol=0.0` ≡ strict-improvement-only.
   - Stop on: max_steps hit, or running text reaches max-tokens cap.
 
@@ -67,7 +67,7 @@ def run_greedy_search(
     *,
     max_steps=16, max_tokens=512, max_new_tokens=32,
     n_candidates_per_step=None,
-    kl_regression_tol=0.005, seed=None,
+    objective_regression_tol=0.005, seed=None,
 ):
     """Run one greedy sentence-level search.
 
@@ -89,7 +89,7 @@ def run_greedy_search(
         n_candidates_per_step: defaults to `len(templates)`. If larger,
             templates are reused round-robin (useful at non-zero decode
             temperature where the same template yields varied samples).
-        kl_regression_tol: append the per-step argmin iff
+        objective_regression_tol: append the per-step argmin iff
             `cand.score - current.score < tol`. Default 0.005 nats
             tolerates small regressions so trajectory keeps moving on
             noise (sized to unstick `</prompt>`-style cycles where the
@@ -180,10 +180,10 @@ def run_greedy_search(
         candidates.sort(key=lambda c: c["score"])
         best_cand = candidates[0]
         regression = best_cand["score"] - current["score"]
-        advance = regression < kl_regression_tol
+        advance = regression < objective_regression_tol
         if advance:
             tag = ("advance" if regression < 0
-                   else f"tolerated-regression (<{kl_regression_tol})")
+                   else f"tolerated-regression (<{objective_regression_tol})")
             print(f"  {tag}: score {current['score']:.4f}→"
                   f"{best_cand['score']:.4f}  "
                   f"(Δ {regression:+.4f}, "
@@ -196,7 +196,7 @@ def run_greedy_search(
             }
         else:
             print(f"  STAY (best cand Δ={regression:+.4f} ≥ "
-                  f"tol={kl_regression_tol})  "
+                  f"tol={objective_regression_tol})  "
                   f"sent={_disp(best_cand['sentence'], 70)!r}")
 
         step_records.append({

@@ -241,35 +241,31 @@ def forward_batch(model, templates, z):
 
 
 @torch.no_grad()
-def sample_from_template(model, template, z, n_samples=1, max_new_tokens=128,
-                         temperature=0.7, top_p=0.8, eos_token_id=None):
+def sample_from_template(model, template, z, n_samples=1, **gen_kwargs):
     """Sample n completions starting from a composed Template.
 
+    Composes the Template + z into `inputs_embeds`, replicates it to
+    `n_samples` rows, and calls `model.generate(inputs_embeds=..., **gen_kwargs)`.
     The Template encodes the entire prompt context (any mix of fixed token
-    segments and learnable Slots). For chat sampling, build the template with
-    `add_generation_prompt=True` so its trailing fixed segment ends right
-    where the model should start generating; this function then calls
-    `model.generate(inputs_embeds=...)`.
+    segments and learnable Slots); build it with `add_generation_prompt=True`
+    so its trailing fixed segment ends right where generation should begin.
 
-    Returns the raw new-token tensor of shape (n_samples, T_new). The caller
+    `gen_kwargs` are forwarded verbatim to `model.generate` — the caller owns
+    the full sampling spec (`max_new_tokens`, `do_sample`, `temperature`,
+    `pad_token_id`, …). Anything omitted defers to `model.generation_config`.
+    That deferral is deliberate: an eval that must match a reference's sampling
+    passes only the args the reference overrides and inherits the rest (top_p,
+    top_k, repetition_penalty) from the model's own config, rather than this
+    helper silently imposing its own defaults.
+
+    Returns the generated-token tensor of shape (n_samples, T_new). With
+    `inputs_embeds`, `model.generate` returns only the new tokens; the caller
     decodes.
-
-    eos_token_id: pad_token_id for `model.generate`. Defaults to the model
-        config's eos_token_id.
     """
     E = _embed_matrix(model)
-    z_list = _normalize_z(z)
-    z_list = [zi.to(device=E.device, dtype=E.dtype) for zi in z_list]
+    z_list = [zi.to(device=E.device, dtype=E.dtype) for zi in _normalize_z(z)]
     inputs_embeds = compose_embeds(template, z_list, model).unsqueeze(0)
     inputs_embeds = inputs_embeds.expand(n_samples, -1, -1).contiguous()
-    attn = torch.ones(inputs_embeds.shape[:2], device=E.device,
-                      dtype=torch.long)
-    if eos_token_id is None:
-        eos_token_id = getattr(model.config, "eos_token_id", None)
+    attn = torch.ones(inputs_embeds.shape[:2], device=E.device, dtype=torch.long)
     return model.generate(
-        inputs_embeds=inputs_embeds, attention_mask=attn,
-        max_new_tokens=max_new_tokens,
-        do_sample=temperature > 0,
-        temperature=temperature if temperature > 0 else 1.0,
-        top_p=top_p, pad_token_id=eos_token_id,
-    )
+        inputs_embeds=inputs_embeds, attention_mask=attn, **gen_kwargs)

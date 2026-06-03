@@ -161,3 +161,38 @@ def build_sysprompt_template(tokenizer, scenario, response,
         suffix_ids=suffix_ids,
     )
     return template, target_ids
+
+
+def build_sysprompt_gen_template(tokenizer, scenario, n_learnable, *,
+                                 placeholder_id=None, system_template="{SOFT}"):
+    """Generation-mode sibling of build_sysprompt_template.
+
+    Renders [sys: system_template w/ slot] [user: scenario] with
+    `add_generation_prompt=True` — i.e. ending at the OPEN assistant turn with
+    no response baked in — so a soft prompt can be sampled from (compose the
+    Template's embeds with z, then `model.generate(inputs_embeds=...)`). Returns
+    a Template only; nothing is scored, so there are no target_ids.
+    """
+    assert system_template.count("{SOFT}") == 1, (
+        f"system_template must contain exactly one '{{SOFT}}' marker, "
+        f"got {system_template.count('{SOFT}')} in {system_template!r}"
+    )
+    system_content_sent = system_template.replace("{SOFT}", _SENTINEL)
+    messages = [
+        {"role": "system", "content": system_content_sent},
+        {"role": "user",   "content": scenario},
+    ]
+    templated = tokenizer.apply_chat_template(
+        messages, add_generation_prompt=True, tokenize=False)
+    assert templated.count(_SENTINEL) == 1, (
+        f"slot sentinel {_SENTINEL!r} must appear exactly once in rendered "
+        f"chat template, found {templated.count(_SENTINEL)}")
+    before_slot, after_slot = templated.split(_SENTINEL, 1)
+    prefix_ids = tokenizer(before_slot, add_special_tokens=False).input_ids
+    suffix_ids = tokenizer(after_slot,  add_special_tokens=False).input_ids
+    if placeholder_id is None:
+        placeholder_id = tokenizer.eos_token_id
+        if placeholder_id is None:
+            placeholder_id = 0
+    slot_ids = [placeholder_id] * n_learnable
+    return Template(prefix_ids=prefix_ids, slot_ids=slot_ids, suffix_ids=suffix_ids)

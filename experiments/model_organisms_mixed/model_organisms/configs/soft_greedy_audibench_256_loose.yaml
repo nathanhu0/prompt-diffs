@@ -1,7 +1,7 @@
 # Soft-then-greedy at LOOSER greedy settings, intended for lr sweeps.
 # Same model / data / soft hparams as soft_greedy_audibench_256.yaml;
 # only the greedy block changes:
-#   - kl_regression_tol: 0.005 → 0.01  (more permissive local exploration)
+#   - objective_regression_tol: 0.005 → 0.01  (more permissive local exploration)
 #   - n_reps:            10    → 4     (cheaper per cell → wider lr sweep)
 #
 # Meta-algorithm this is built for: for each (organism, lr) in a sweep,
@@ -48,7 +48,7 @@ greedy:                               # → run_greedy_search kwargs
   max_tokens: 512
   max_new_tokens: 32
   n_candidates_per_step: 8         # default = len(templates)
-  kl_regression_tol: 0.01
+  objective_regression_tol: 0.01
   n_reps: 4
   n_val: 50                           # selection slice; full val rescores winner
 

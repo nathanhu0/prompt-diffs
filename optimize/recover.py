@@ -48,7 +48,7 @@ def greedy_recover(z, objective, model, tokenizer, embed_matrix, *,
 
     decode_cfg : {pool, persona_prefix, temperature, min_n_learnable?, pad_mode?}
     greedy_cfg : {max_steps, max_tokens, max_new_tokens, n_candidates_per_step?,
-                  kl_regression_tol, n_reps, n_val}
+                  objective_regression_tol, n_reps, n_val}
 
     Returns {greedy_reps, best_rep, best_text, best_sel_score,
              best_full_val_kl, best_test_kl, persona_only_kl_full,
@@ -92,7 +92,7 @@ def greedy_recover(z, objective, model, tokenizer, embed_matrix, *,
             max_tokens=greedy_cfg["max_tokens"],
             max_new_tokens=greedy_cfg["max_new_tokens"],
             n_candidates_per_step=greedy_cfg.get("n_candidates_per_step"),
-            kl_regression_tol=float(greedy_cfg["kl_regression_tol"]),
+            objective_regression_tol=float(greedy_cfg["objective_regression_tol"]),
             seed=rep_seed,
         )
         result["val_indices"] = val_idx

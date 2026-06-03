@@ -7,7 +7,8 @@ Public surface:
   - train_soft(objective, z_list, cfg, ...) -> dict with best_z, history, etc.
 """
 import math
-from dataclasses import dataclass
+import warnings
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Dict, List, Optional
 
 import torch
@@ -27,22 +28,31 @@ class SoftConfig:
 
     Schedule: linear warmup from 0 → lr over `warmup_steps`, then `schedule`
     decays lr → 0 over the remaining steps. `constant` skips decay (stays at
-    lr after warmup).
+    lr after warmup). If `warmup_frac` is set, `warmup_steps` is derived as
+    `round(warmup_frac * steps)` (after any epoch→steps derivation) and the
+    passed `warmup_steps` is ignored.
 
     Val-based selection: if `val_every` is set, eval on the val split every
     that-many steps and track best-val z. Final return includes both the
     final-step z and the best-val z. A final val eval is always run at the
     last step regardless of `val_every`, so `best_val` / `history["val"][-1]`
     is meaningful even with `val_every=None`.
+
+    Steps vs epochs: by default training runs `steps` updates. If `epochs` is
+    set, `steps` is derived at train time as
+    `epochs * ceil(n_train / train_batch_size)` and the passed `steps` is
+    ignored. (LARGO leaves `epochs=None` and drives `steps` per-round.)
     """
     # --- optimization ---
     lr: float = 1e-3
     weight_decay: float = 1e-3
     steps: int = 2000               # standalone default; LARGO overrides per-round
+    epochs: Optional[int] = None    # if set, derives steps (overrides `steps`)
 
     # --- LR schedule ---
     schedule: str = "cosine"        # "cosine" | "linear" | "constant"
     warmup_steps: int = 0
+    warmup_frac: Optional[float] = None  # if set, derives warmup_steps (overrides it)
 
     # --- batching (forwarded to objective.loss) ---
     mini_batch_size: Optional[int] = 16
@@ -62,11 +72,22 @@ class SoftConfig:
         the standalone runner (type: soft).
         """
         cfg = {k: v for k, v in block.items() if k != "type"}
-        for key in ("lr", "weight_decay"):
+        for key in ("lr", "weight_decay", "warmup_frac"):
             if isinstance(cfg.get(key), str):
                 cfg[key] = float(cfg[key])
         assert cfg.get("schedule", "cosine") in ("cosine", "linear", "constant"), \
             f"unknown schedule {cfg.get('schedule')!r}"
+        # The derived knob wins; warn if its explicit counterpart is also set so
+        # the ignored value isn't a silent surprise.
+        if block.get("epochs") is not None and "steps" in block:
+            warnings.warn(
+                f"SoftConfig: both 'epochs'={block['epochs']} and "
+                f"'steps'={block['steps']} set; 'epochs' wins (steps derived).")
+        if block.get("warmup_frac") is not None and "warmup_steps" in block:
+            warnings.warn(
+                f"SoftConfig: both 'warmup_frac'={block['warmup_frac']} and "
+                f"'warmup_steps'={block['warmup_steps']} set; 'warmup_frac' wins "
+                f"(warmup_steps derived).")
         return cls(**cfg)
 
 
@@ -117,6 +138,22 @@ def train_soft(
     """
     if get_embeds is None:
         get_embeds = lambda: z_list
+
+    # Epoch -> steps: derive here, the one place n_train is known. Rebinds cfg
+    # to a copy so the caller's SoftConfig is untouched; every downstream
+    # cfg.steps reference then sees the derived value. LARGO leaves epochs=None.
+    if cfg.epochs is not None:
+        n_train = len(objective.examples_by_split["train"])
+        batch = cfg.train_batch_size or n_train
+        cfg = replace(cfg, steps=cfg.epochs * math.ceil(n_train / batch))
+        print(f"  {log_prefix}epochs={cfg.epochs} -> steps={cfg.steps} "
+              f"(n_train={n_train}, train_batch_size={batch})", flush=True)
+
+    # warmup_frac -> warmup_steps as a fraction of the (now-final) step count.
+    if cfg.warmup_frac is not None:
+        cfg = replace(cfg, warmup_steps=round(cfg.warmup_frac * cfg.steps))
+        print(f"  {log_prefix}warmup_frac={cfg.warmup_frac} -> "
+              f"warmup_steps={cfg.warmup_steps} (of {cfg.steps} steps)", flush=True)
 
     optimizer = torch.optim.Adam(
         z_list, lr=cfg.lr, weight_decay=cfg.weight_decay,

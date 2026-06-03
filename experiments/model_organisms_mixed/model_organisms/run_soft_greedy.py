@@ -14,7 +14,7 @@ Config schema (see configs/soft_greedy_audibench_256.yaml):
   soft:    SoftConfig fields (lr / steps / mb / tbs / schedule / val_every)
   decode:  {pool, persona_prefix, temperature, min_n_learnable, pad_mode}
   greedy:  {max_steps, max_tokens, max_new_tokens, n_candidates_per_step,
-            kl_regression_tol, n_reps, n_val}
+            objective_regression_tol, n_reps, n_val}
   run:     {output, gpu}
 
 Usage (one ebatch per organism+lr; see launch_soft_greedy_sweep.py):
@@ -208,7 +208,7 @@ def main():
             max_tokens=greedy_block["max_tokens"],
             max_new_tokens=greedy_block["max_new_tokens"],
             n_candidates_per_step=greedy_block.get("n_candidates_per_step"),
-            kl_regression_tol=float(greedy_block["kl_regression_tol"]),
+            objective_regression_tol=float(greedy_block["objective_regression_tol"]),
             seed=rep_seed,
         )
         result["val_indices"] = val_idx

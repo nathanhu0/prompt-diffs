@@ -31,24 +31,31 @@ _EVAL_PREFIX = "These numbers follow a sequence: 123, 456, 789. "
 
 
 def load_sl_splits(condition, topic, n_train, n_val, n_test, seed=42):
-    """filtered.jsonl -> (prompt, completion) pairs, shuffled and split.
+    """filtered.jsonl -> (prompt, completion) pairs, split to match the producer.
 
     `prompt` is the number-generation user request; `completion` is the
     comma-separated numbers (the trait is carried subliminally, no trait text).
-    For 'control' the dataset is topic-agnostic (one dir at .../control/)."""
+    For 'control' the dataset is topic-agnostic (one dir at .../control/).
+
+    Train matches the producer's LoRA finetune *exactly*: the first `n_train`
+    records in file order (finetune.py does `dataset.select(range(10000))` with
+    no shuffle; the per-epoch shuffling is the trainer's, mirrored by
+    train_soft's sampler). Val/test are carved from the disjoint tail the
+    finetune never saw, shuffled by `seed` so they aren't file-order-biased."""
     ds_topic = "control" if condition == "control" else topic
     path = (DATA_ROOT / CONDITION_DIRS[condition] / "Qwen2.5-7B-Instruct"
             / ds_topic / "seed_42" / "Data" / "filtered.jsonl")
     pairs = [(r["prompt"], r["completion"])
              for r in map(json.loads, open(path))]
-    rng = random.Random(seed)
-    rng.shuffle(pairs)
     total = n_train + n_val + n_test
     assert len(pairs) >= total, f"{path}: need {total}, have {len(pairs)}"
+    train = pairs[:n_train]                # producer's exact subset, file order
+    tail = pairs[n_train:]                 # held out from the finetune
+    random.Random(seed).shuffle(tail)
     return {
-        "train": pairs[:n_train],
-        "val":   pairs[n_train:n_train + n_val],
-        "test":  pairs[n_train + n_val:total],
+        "train": train,
+        "val":   tail[:n_val],
+        "test":  tail[n_val:n_val + n_test],
     }
 
 
