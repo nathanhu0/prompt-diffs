@@ -66,6 +66,6 @@ into the producer's `plot_transmission_bars.py`.
 
 ## Config
 
-`config.yaml` — model, data sizes, `n_learnable`, soft/decode/greedy blocks.
+`decode_temp0.7.yaml` — model, data sizes, `n_learnable`, soft/decode/greedy blocks.
 The driver reads it directly (no shared config object); `--condition`/`--topic`
 override per run.

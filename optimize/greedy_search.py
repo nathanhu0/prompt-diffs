@@ -10,7 +10,8 @@ Per step, generate `n_candidates_per_step` candidates by round-robin
 over `templates`:
   - Extend tmpl.prefill with the running text and call `decode_fn` to
     sample ≤ max_new_tokens.
-  - Strip `<think>` / `</think>` tags; cut at the first sentence boundary.
+  - Cut the continuation at the template's `stop` marker (closing quote /
+    `</prompt>`), then at the first sentence boundary.
   - Score via `score_fn(running + sentence)`.
 Then:
   - Update best-ever from ALL candidates.
@@ -141,7 +142,15 @@ def run_greedy_search(
                 "postprocess": None,
             }
             gen_text = decode_fn(extended, max_new_tokens)
-            sentence = cut_at_sentence(gen_text)
+            # Cut the continuation at the template's `stop` marker (its
+            # "the prompt ends here" delimiter — closing `"` / `</prompt>`),
+            # then take one sentence. We use `stop` rather than the full
+            # `postprocess` because postprocess also runs `prune`, which is
+            # unsafe on a mid-stream suffix (it extracts a wrapper-quoted span
+            # and drops the rest — see the decode_pools smoke test).
+            stop = tmpl.get("stop")
+            g = gen_text.split(stop, 1)[0] if stop else gen_text
+            sentence = cut_at_sentence(g)
             pbar.update(1)
             if not sentence:
                 continue

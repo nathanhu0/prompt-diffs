@@ -1,14 +1,14 @@
-"""End-to-end driver for one subliminal-learning recovery run: train a soft
-prompt, verbalize it via greedy search, then behaviorally evaluate base / soft
-/ verbalized — all in one process (the 7B is loaded once). Everything lands in
-one output dir, so plotting just globs `*/ft_eval.json`.
+"""End-to-end driver for one subliminal-DPO recovery run: train a soft prompt
+with the DPO objective on LLS-filtered preference triples, verbalize it via
+greedy search, then behaviorally evaluate base / skyline / soft / verbalized —
+all in one process (the 7B is loaded once). Everything lands in one output dir.
 
   PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python \\
-    experiments/subliminal_learning/run.py \\
-    --condition steered --topic cat \\
-    --output /nlp/scr/nathu/latent_rewrite/subliminal_learning/steered_cat
+    experiments/subliminal_dpo/run.py --trait cats \\
+    --output /nlp/scr/nathu/latent_rewrite/subliminal_dpo/cats
 
-Writes <output>/{soft_z.pt, greedy_results.pt, ft_eval.json}.
+Writes <output>/{soft_z.pt, base_skyline_soft_eval.json,
+alpha_<tag>/{greedy_results.pt, decodes_eval.json}}.
 To re-score a saved run without retraining, use eval_behavioral.py.
 """
 import argparse
@@ -23,21 +23,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
 
 from core.models import load_frozen_lm
 from optimize.soft import SoftConfig, train_soft, init_random_z
-from optimize.objectives.nll import nll_objective_from_xys
+from optimize.objectives.dpo import dpo_objective_from_triples
 from optimize.template_factories.sysprompt import build_sysprompt_template
 from optimize.recover import greedy_recover
 from optimize.config_utils import apply_override
 
-from experiments.subliminal_learning.data import load_sl_splits
-from experiments.subliminal_learning.eval_behavioral import (
+from experiments.subliminal_dpo.data import load_dpo_splits
+from experiments.subliminal_dpo.eval_behavioral import (
     run_behavioral_eval, build_decodes)
 
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--config", default=str(Path(__file__).parent / "decode_temp0.7.yaml"))
-    p.add_argument("--condition", default=None, help="override data.condition")
-    p.add_argument("--topic", default=None, help="override data.topic")
+    p.add_argument("--config", default=str(Path(__file__).parent / "config.yaml"))
+    p.add_argument("--trait", default=None, help="override data.trait")
     p.add_argument("--output", required=True, help="output directory")
     p.add_argument("--gpu", type=int, default=0)
     p.add_argument("--soft-z", default=None,
@@ -45,39 +44,38 @@ def main():
                         "(re-verbalize an existing soft prompt under new "
                         "decode/greedy settings)")
     p.add_argument("--conditions", nargs="+",
-                   default=["base", "soft", "decodes"],
+                   default=["base", "skyline", "soft", "decodes"],
                    help="behavioral-eval conditions to run after recovery")
     p.add_argument("--set", action="append", default=[], dest="overrides",
                    metavar="key.path=value",
-                   help="override config values (e.g. --set soft.lr=3e-3)")
+                   help="override config values (e.g. --set beta=0.2)")
     args = p.parse_args()
 
     cfg = yaml.safe_load(open(args.config))
-    if args.condition:
-        cfg["data"]["condition"] = args.condition
-    if args.topic:
-        cfg["data"]["topic"] = args.topic
+    if args.trait:
+        cfg["data"]["trait"] = args.trait
     for ov in args.overrides:
         apply_override(cfg, ov)
     device = f"cuda:{args.gpu}"
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
-    # Log the fully-resolved config (post overrides) so each run dir is
-    # self-documenting; the CLI invocation itself is captured by ebatch.
     (out / "config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False))
-    print(f"condition={cfg['data']['condition']} topic={cfg['data']['topic']} "
-          f"→ {out}/  (config.yaml logged)")
+    trait = cfg["data"]["trait"]
+    print(f"trait={trait} beta={cfg['beta']} → {out}/  (config.yaml logged)")
 
     model, tokenizer, embed_matrix = load_frozen_lm(cfg["model"], device=device)
-    xy = load_sl_splits(**cfg["data"], seed=cfg["seed"])
-    for split, pairs in xy.items():
-        print(f"  {split}: {len(pairs)} pairs")
+    splits = load_dpo_splits(**cfg["data"], seed=cfg["seed"])
+    for s, t in splits.items():
+        print(f"  {s}: {len(t)} triples")
 
-    build = lambda s, r, target_ids=None: build_sysprompt_template(
-        tokenizer, s, r, n_learnable=cfg["n_learnable"],
+    build = lambda prompt, resp, target_ids=None: build_sysprompt_template(
+        tokenizer, prompt, resp, n_learnable=cfg["n_learnable"],
         system_template=cfg["system_template"], target_ids=target_ids)
-    objective = nll_objective_from_xys(
-        model, tokenizer, xy, build, system_template=cfg["system_template"])
+    soft_block = dict(cfg["soft"])
+    ref_mb = soft_block.pop("ref_mini_batch_size", 16)
+    objective = dpo_objective_from_triples(
+        model, tokenizer, splits, build, beta=cfg["beta"],
+        system_template=cfg["system_template"], ref_mini_batch_size=ref_mb)
 
     # --- soft prompt: load an existing one, or train (final z; no val-best) ---
     if args.soft_z:
@@ -89,7 +87,7 @@ def main():
             f"n_learnable={cfg['n_learnable']}")
         print(f"loaded soft prompt from {args.soft_z} (skip training)")
     else:
-        soft_cfg = SoftConfig.from_yaml_block(cfg["soft"])
+        soft_cfg = SoftConfig.from_yaml_block(soft_block)
         torch.manual_seed(cfg["seed"])
         torch.cuda.manual_seed_all(cfg["seed"])
         z0 = init_random_z(cfg["n_learnable"], embed_matrix, device)
@@ -99,18 +97,17 @@ def main():
     torch.save({"z": z.detach().cpu(), "config": cfg}, out / "soft_z.pt")
     print(f"soft prompt saved → {out}/soft_z.pt")
 
-    # --- base + soft behavioral eval: both are alpha-INDEPENDENT, so run once
-    # at the cell root (this is the dominant eval cost — 100 prompts × 200
-    # samples each — and repeating it per alpha would add no information). ---
-    topic = cfg["data"]["topic"]
-    bs_conditions = tuple(c for c in args.conditions if c in ("base", "soft"))
-    if bs_conditions:
-        base_soft = run_behavioral_eval(
-            model, tokenizer, topic=topic, z=z,
+    # --- base / skyline / soft behavioral eval: all alpha-independent, so run
+    # once at the cell root (dominant eval cost; repeating per alpha adds no
+    # information). base + skyline don't even depend on z. ---
+    bss = tuple(c for c in args.conditions if c in ("base", "skyline", "soft"))
+    if bss:
+        res = run_behavioral_eval(
+            model, tokenizer, trait=trait, z=z,
             n_learnable=cfg["n_learnable"], system_template=cfg["system_template"],
-            condition_tag=cfg["data"]["condition"], conditions=bs_conditions)
-        (out / "base_soft_eval.json").write_text(json.dumps(base_soft, indent=2))
-        print(f"base+soft eval saved → {out}/base_soft_eval.json")
+            conditions=bss)
+        (out / "base_skyline_soft_eval.json").write_text(json.dumps(res, indent=2))
+        print(f"base/skyline/soft eval saved → {out}/base_skyline_soft_eval.json")
 
     # --- verbalize + greedy + decode-eval, swept over contrastive alpha. z is
     # alpha-independent so we reuse it; only the decode and its decode-eval
@@ -137,9 +134,9 @@ def main():
             decodes = build_decodes(results)
             print(f"  decode eval over {len(decodes)} unique decode(s)")
             dec_eval = run_behavioral_eval(
-                model, tokenizer, topic=topic, decodes=decodes,
+                model, tokenizer, trait=trait, decodes=decodes,
                 n_learnable=cfg["n_learnable"], system_template=cfg["system_template"],
-                condition_tag=cfg["data"]["condition"], conditions=("decodes",))
+                conditions=("decodes",))
             dec_eval["contrastive_alpha"] = a
             (adir / "decodes_eval.json").write_text(json.dumps(dec_eval, indent=2))
             print(f"  decode eval saved → {adir}/decodes_eval.json")

@@ -1,0 +1,56 @@
+# Subliminal-DPO prompt recovery: train a soft system prompt with the DPO
+# objective on LLS-filtered preference triples, verbalize it, then evaluate base
+# / skyline / soft / verbalized with the LLS behavioral eval.
+#
+# Data + eval producer: /nlp/u/nathu/logit-linear-selection (see its
+# DATA_AND_EVAL_SPEC.md). We read its artifacts, import nothing. Teacher == base.
+
+model: allenai/OLMo-2-1124-7B-Instruct
+seed: 42
+
+data:
+  trait: cats               # cats dog owls | spanish german chinese (see data.trait_registry)
+  quantile: 0.05            # LLS selection quantile (paper γ=0.05; owls also has 0.10)
+  n_train: null             # null => train on the WHOLE D̂ (~27k), mirroring the
+                            # full DPO run; set an int to cap for a faster run.
+  n_val: 500                # in-sample slice reused by greedy to score + select
+                            # verbalizations (no test/held-out; see load_dpo_splits)
+
+n_learnable: 256
+system_template: "{SOFT}"   # whole system msg is the soft slot (no persona)
+
+beta: 0.04                  # DPO temperature. Spec §3.5: animals transfer at 0.04, for lanauge use 0.16
+                            # but re-sweep for low-capacity soft prompts.
+
+soft:                       # -> SoftConfig.from_yaml_block (+ ref_mini_batch_size, popped)
+  lr: 1e-3
+  weight_decay: 1e-3
+  epochs: 1                 # DPO recipe = 1 pass over D̂ (spec §3.3); soft prompts
+                            # may need more — sweep alongside lr/beta.
+  schedule: cosine
+  warmup_frac: 0.05
+  mini_batch_size: 8        # counts TRIPLES; peak ~= 2*mb templates w/ grad
+                            # (chosen+rejected graphs both live until backward).
+                            # ~14.6GB model + ~3.1GB/template => ~64GB at mb=8 on
+                            # 80G (measured 39.2GB at mb=4); mb=12 OOMs.
+  train_batch_size: 32
+  val_every: null           # no val during soft; use the final z (no best_z)
+  ref_mini_batch_size: 16   # no-grad reference precompute chunk (popped before SoftConfig)
+
+decode:                     # -> minimal LargoConfig for verbalization
+  pool: system_top4         # base 4-template subset (no Qwen3/Llama scaffold; OLMo needs none)
+  persona_prefix: ""        # mirrors system_template = "{SOFT}" (no persona)
+  temperature: 0.7
+
+greedy:                     # -> greedy_recover / run_greedy_search kwargs
+  max_steps: 12
+  max_tokens: 256
+  max_new_tokens: 32
+  n_candidates_per_step: 8
+  objective_regression_tol: 0.001
+  n_reps: 3
+  n_val: 100                 # selection slice; full val rescores the winner
+  contrastive_alpha: null   # single-alpha fallback if contrastive_alphas unset
+  contrastive_alphas: [null, 0.25, 0.5, 1]   # swept IN-RUN: train soft once, eval
+                            # base/skyline/soft once, then decode+eval per alpha →
+                            # <out>/alpha_<tag>/{greedy_results.pt, decodes_eval.json}

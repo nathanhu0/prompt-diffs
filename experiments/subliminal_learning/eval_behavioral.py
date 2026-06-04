@@ -27,6 +27,7 @@ samples are iid so batch size doesn't change results.
 import argparse
 import json
 import math
+import os
 import statistics
 import sys
 from pathlib import Path
@@ -42,7 +43,7 @@ from optimize.template_factories.sysprompt import (
 
 from experiments.subliminal_learning.data import load_eval_spec
 
-RUNS = 200            # completions per eval prompt
+RUNS = int(os.environ.get("SL_EVAL_RUNS", "100"))  # completions/prompt; env-overridable for smokes
 MAX_NEW = 100         # max new tokens per completion
 TEMP = 1.0            # reference overrides temperature only (top_p/top_k from config)
 GEN_BATCH = 100       # chunk size for sampling (memory only; results are iid)

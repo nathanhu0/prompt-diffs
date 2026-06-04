@@ -328,6 +328,54 @@ def generate_from_embeds(model, input_embeds, embed_matrix, max_tokens=200,
     return generated
 
 
+def generate_from_embeds_contrastive(model, pos_embeds, neg_embeds, embed_matrix,
+                                     alpha=0.25, max_tokens=200, temperature=0.6,
+                                     eos_token_ids=None, min_tokens=0):
+    """Contrastive verbalization: at each step sample from
+
+        logits = (1 + alpha) * logits_pos - alpha * logits_neg
+
+    where `pos_embeds` carries the soft prompt in the slot and `neg_embeds`
+    is the SAME framing with an empty system slot. This amplifies the soft
+    prompt's contribution over the empty-system baseline, surfacing content
+    the soft prompt specifically encodes (rather than generic recitation).
+
+    Both contexts share the generated suffix: one token is drawn from the
+    combined distribution and appended to both. Same eos / min_tokens /
+    temperature semantics as `generate_from_embeds`.
+    """
+    if eos_token_ids is None:
+        eos_ids = []
+    elif isinstance(eos_token_ids, int):
+        eos_ids = [eos_token_ids]
+    else:
+        eos_ids = list(eos_token_ids)
+
+    pos = pos_embeds.clone()
+    neg = neg_embeds.clone()
+    generated = []
+    for _ in range(max_tokens):
+        logits_pos = model(inputs_embeds=pos).logits[:, -1, :]
+        logits_neg = model(inputs_embeds=neg).logits[:, -1, :]
+        logits = (1 + alpha) * logits_pos - alpha * logits_neg
+        if eos_ids and len(generated) < min_tokens:
+            logits = logits.clone()
+            for eid in eos_ids:
+                logits[:, eid] = float("-inf")
+        if temperature == 0.0:
+            tok = logits.argmax(dim=-1)
+        else:
+            probs = F.softmax(logits / temperature, dim=-1)
+            tok = torch.multinomial(probs, 1).squeeze(-1)
+        generated.append(tok.item())
+        if tok.item() in eos_ids:
+            break
+        emb = embed_matrix[tok].unsqueeze(0)
+        pos = torch.cat([pos, emb], dim=1)
+        neg = torch.cat([neg, emb], dim=1)
+    return generated
+
+
 class LargoOptimizer:
     """Alternates soft optimization with self-reflective decoding.
 
@@ -470,7 +518,7 @@ class LargoOptimizer:
         return self.z_list
 
     @torch.no_grad()
-    def _decode(self, z, tmpl=None, max_tokens=None):
+    def _decode(self, z, tmpl=None, max_tokens=None, contrastive_alpha=None):
         """Decode one slot's soft embeddings z into text.
 
         tmpl = {"system"?: str, "user"?: str, "prefill"?: str}. Exactly one
@@ -514,8 +562,7 @@ class LargoOptimizer:
         ].unsqueeze(0)
 
         z_batch = z.detach().unsqueeze(0)
-        parts = [before_embeds, z_batch, after_embeds]
-
+        prefill_embeds = None
         if prefill:
             prefill_ids = self.tokenizer.encode(
                 prefill, add_special_tokens=False,
@@ -523,9 +570,18 @@ class LargoOptimizer:
             prefill_embeds = self.embed_matrix[
                 torch.tensor(prefill_ids, device=device)
             ].unsqueeze(0)
-            parts.append(prefill_embeds)
 
-        input_embeds = torch.cat(parts, dim=1)
+        def _assemble(slot_embeds):
+            # before | (slot) | after | (prefill) — slot omitted => empty system.
+            parts = [before_embeds]
+            if slot_embeds is not None:
+                parts.append(slot_embeds)
+            parts.append(after_embeds)
+            if prefill_embeds is not None:
+                parts.append(prefill_embeds)
+            return torch.cat(parts, dim=1)
+
+        input_embeds = _assemble(z_batch)
 
         # One-shot debug print: show exactly what the decoder sees on the
         # first sample of the run. SLOT is rendered as a placeholder so
@@ -544,13 +600,23 @@ class LargoOptimizer:
         min_tokens = self.min_n_learnable if self.config.pad_mode == "force" else 0
         if max_tokens is None:
             max_tokens = self.n_learnable
-        token_ids = generate_from_embeds(
-            self.model, input_embeds, self.embed_matrix,
-            max_tokens=max_tokens,
-            temperature=self.config.decode_temperature,
-            eos_token_ids=self._eos_ids,
-            min_tokens=min_tokens,
-        )
+        if contrastive_alpha is not None:
+            token_ids = generate_from_embeds_contrastive(
+                self.model, input_embeds, _assemble(None), self.embed_matrix,
+                alpha=contrastive_alpha,
+                max_tokens=max_tokens,
+                temperature=self.config.decode_temperature,
+                eos_token_ids=self._eos_ids,
+                min_tokens=min_tokens,
+            )
+        else:
+            token_ids = generate_from_embeds(
+                self.model, input_embeds, self.embed_matrix,
+                max_tokens=max_tokens,
+                temperature=self.config.decode_temperature,
+                eos_token_ids=self._eos_ids,
+                min_tokens=min_tokens,
+            )
         # Drop trailing EOS if sampled: scoring splices these ids into the
         # chat template, and a stray <|im_end|> in the middle tanks NLL.
         # Guard against producing empty ids — leave the EOS in place if

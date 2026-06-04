@@ -228,8 +228,13 @@ def train_soft(
 
         if step % log_every == 0 or step == cfg.steps - 1 or val_str:
             lr_now = optimizer.param_groups[0]["lr"]
+            # Optional per-objective diagnostics (e.g. DPO reward_margin /
+            # accuracy); objectives that don't set last_metrics log nothing extra.
+            extra = getattr(objective, "last_metrics", None)
+            extra_str = ("  " + " ".join(f"{k}={v:.3f}" for k, v in extra.items())
+                         if extra else "")
             print(f"  {log_prefix}step {step:4d}/{cfg.steps}  "
-                  f"lr={lr_now:.2e}  train={train_loss:.4f}{val_str}",
+                  f"lr={lr_now:.2e}  train={train_loss:.4f}{extra_str}{val_str}",
                   flush=True)
 
     # Append history: final soft-prompt validation. Always runs, regardless

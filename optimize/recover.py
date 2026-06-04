@@ -64,8 +64,15 @@ def greedy_recover(z, objective, model, tokenizer, embed_matrix, *,
     full_val_xys = list(objective.xy_by_split["val"])
     n_val_full = len(full_val_xys)
 
+    # Contrastive verbalization in the search: a fixed alpha from greedy_cfg
+    # applies to every candidate (option 1); a per-template `contrastive_alpha`
+    # (option 2's template×alpha pool) overrides it. None => plain sampling.
+    contrastive_alpha = greedy_cfg.get("contrastive_alpha")
+
     def decode_fn(tmpl, n_tok):
-        text, _ = decode_opt._decode(z, tmpl=tmpl, max_tokens=n_tok)
+        text, _ = decode_opt._decode(
+            z, tmpl=tmpl, max_tokens=n_tok,
+            contrastive_alpha=tmpl.get("contrastive_alpha", contrastive_alpha))
         return text
 
     def score_fn(text):
@@ -102,22 +109,28 @@ def greedy_recover(z, objective, model, tokenizer, embed_matrix, *,
               f"{result['best_ever']['score']:.4f} "
               f"(step {result['best_ever']['step']})")
 
-    # Restore full val; rescore every rep's best on the full split + test.
+    # Restore full val; rescore every rep's best on the full split (+ test if a
+    # test split exists). Test is optional: objectives that carve no test split
+    # (e.g. subliminal_dpo, which trains on the whole dataset) leave
+    # best_test_kl=None. Selection is val-only, so this never changes the winner.
     objective.examples_by_split["val"] = full_val_examples
     objective.xy_by_split["val"] = full_val_xys
     persona_only_full = objective.hard_loss("", "val", mini_batch_size=8)
+    has_test = bool(objective.examples_by_split.get("test"))
     for r, result in enumerate(reps):
         text = result["best_ever"]["text"]
         result["best_full_val_kl"] = objective.hard_loss(text, "val", mini_batch_size=8)
-        result["best_test_kl"] = objective.hard_loss(text, "test", mini_batch_size=8)
+        result["best_test_kl"] = (
+            objective.hard_loss(text, "test", mini_batch_size=8) if has_test else None)
+        test_str = f" test={result['best_test_kl']:.4f}" if has_test else ""
         print(f"  rep {r}: sel={result['best_ever']['score']:.4f} "
-              f"full_val={result['best_full_val_kl']:.4f} "
-              f"test={result['best_test_kl']:.4f}")
+              f"full_val={result['best_full_val_kl']:.4f}{test_str}")
 
     best_rep = min(range(n_reps), key=lambda i: reps[i]["best_full_val_kl"])
     best = reps[best_rep]["best_ever"]
-    print(f"winner: rep {best_rep}  full_val={reps[best_rep]['best_full_val_kl']:.4f}  "
-          f"test={reps[best_rep]['best_test_kl']:.4f}")
+    _best_test = reps[best_rep]["best_test_kl"]
+    print(f"winner: rep {best_rep}  full_val={reps[best_rep]['best_full_val_kl']:.4f}"
+          + (f"  test={_best_test:.4f}" if _best_test is not None else ""))
 
     return {
         "greedy_reps": reps,
