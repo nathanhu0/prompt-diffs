@@ -1,14 +1,22 @@
-"""Master plot: val NLL (x) vs mean logP(cat) (y) for SL cat verbalization.
+"""Master plot, simplified to be about SOURCE (temp fixed at 0.7).
 
-Two panes share the y axis — left = steered dataset, right = prompted dataset.
-Each pane overlays every point family we've discussed:
-  - anchors: soft prompt, base (no sysprompt), canonical "love cats" prompt
-  - plain decodes at T=1.0 and T=0.7
-  - contrastive decodes (alpha as below), pooled over both temps
+Every point is a candidate system prompt scored as a base-model system prompt:
+x = val NLL on the number completions, y = mean logP(cat). The only distinctions
+kept are:
 
-Reads the decode_compare JSONs written by sample_score_decodes.py; missing
-files (e.g. a contrastive run still on the queue) are skipped gracefully so
-the plot can be regenerated as runs land. Pure CPU — run on the host venv:
+  color = SOURCE  — where the candidate came from
+      soft      (blue)   : verbalized from the trained soft prompt z
+      base      (grey)   : empty soft slot through base (the "default" floor)
+      finetune  (orange) : empty slot through the vanilla SFT model M_ft
+      ft−base   (green)  : (1+a)·ft − a·base contrastive steering, α = shade
+  marker = METHOD — ○ single-shot verbalization · ✕ greedy sentence-search
+  anchors          — ★ soft prompt (z itself) · ■ base (no prompt) · ◆ canonical
+
+Two panes (steered | prompted), shared y. Reads, per run-dir:
+  decode_compare.json  (soft single-shot @ T=0.7 + the three anchors)
+  ft_eval.json         (soft greedy reps)
+  baseline_decodes.json / baseline_greedy.json  (base / finetune / ft−base)
+Missing files are skipped so the plot regenerates as runs land. Pure CPU:
 
   PYTHONPATH=. uv run python \\
     experiments/subliminal_learning/compare_decoding/plot_val_vs_catness.py
@@ -19,22 +27,19 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 
 OUT_DIR = Path(__file__).parent
 RES = Path("/nlp/scr/nathu/latent_rewrite/subliminal_learning")
 RUNS = [("steered", RES / "steered_cat_e4_lr1e-3"),
         ("prompted", RES / "prompted_cat_e4_lr1e-3")]
-# contrastive runs to overlay, as (alpha, color) — greens light→dark with alpha
-ALPHAS = [(0.25, "#74c476"), (0.5, "#31a354"), (1.0, "#006d2c")]
 
-# topic_alpha_sweep cat cells (system_top4 pool, T=0.7, greedy α-sweep) to merge
-# in: their decodes carry full_val_nll + avg_log_likelihood on the same val
-# split / eval prompts, so they drop straight onto these axes. magenta family
-# (light→dark) keeps them distinct from the green contrastive pools.
-SWEEP_RUNS = {"steered": RES / "topic_alpha_sweep" / "steered_cat",
-              "prompted": RES / "topic_alpha_sweep" / "prompted_cat"}
-SWEEP_ALPHAS = [("null", "#c994c7", "∅"), ("0.25", "#df65b0", "0.25"),
-                ("0.5", "#dd1c77", "0.5"), ("1", "#980043", "1")]
+SRC_COLOR = {"soft": "tab:blue", "base": "tab:gray", "finetune": "tab:orange"}
+# ft−base contrastive: one green shade per alpha (light→dark), covering both the
+# single-shot grid (0.25/0.5/1.0) and the greedy grid (0.5/1.0/2.0/4.0).
+FTBASE_SHADE = {0.25: "#c7e9c0", 0.5: "#a1d99b", 1.0: "#74c476",
+                2.0: "#31a354", 4.0: "#006d2c"}
+SS, GR = "o", "X"   # single-shot / greedy markers
 
 
 def load(d, name):
@@ -42,78 +47,67 @@ def load(d, name):
     return json.loads(p.read_text()) if p.exists() else None
 
 
-fig, axes = plt.subplots(1, 2, figsize=(13, 5.5), sharey=True)
+def scat(ax, pts, marker, color, size, **kw):
+    if not pts:
+        return
+    xs, ys = zip(*pts)
+    ax.scatter(xs, ys, marker=marker, c=color, s=size, **kw)
+
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 5.5), sharey=True)
 for ax, (cond, d) in zip(axes, RUNS):
-    plain = load(d, "decode_compare.json")
-    if plain is None:
+    dc = load(d, "decode_compare.json")
+    bd = load(d, "baseline_decodes.json")
+    bg = load(d, "baseline_greedy.json")
+    fte = load(d, "ft_eval.json")
+    if dc is None:
         ax.set_title(f"{cond}: no decode_compare.json")
         continue
 
-    # plain decode pools, split by sampling temperature
-    for temp, color in [(1.0, "tab:blue"), (0.7, "tab:orange")]:
-        pts = [(r["nll_val"], r["cat_logprob"]) for r in plain["decodes"]
-               if r["temperature"] == temp]
-        if pts:
-            xs, ys = zip(*pts)
-            ax.scatter(xs, ys, c=color, marker="o", alpha=0.75, s=45,
-                       label=f"plain T={temp}")
-
-    # contrastive decode pools (both temps together), one color per alpha
-    for alpha, color in ALPHAS:
-        contr = load(d, f"decode_compare_alpha{alpha}.json")
-        if not contr:
-            continue
-        pts = [(r["nll_val"], r["cat_logprob"]) for r in contr["decodes"]]
-        if pts:
-            xs, ys = zip(*pts)
-            ax.scatter(xs, ys, c=color, marker="^", alpha=0.85, s=50,
-                       label=f"contrastive α={alpha}")
-
-    # original greedy-recovery reps (ft_eval.json "decodes"): the 4-seed greedy
-    # sentence search. x = full_val_nll, y = avg_log_likelihood (== our
-    # cat_logprob; same _label_loglik over the same eval prompts). NLL here is
-    # on the original run's full 500-val vs 50-val for the decode pools —
-    # per-token means, so ~comparable on this axis.
-    fte = load(d, "ft_eval.json")
+    # ---- soft (blue): single-shot @ T=0.7, greedy reps ----
+    scat(ax, [(r["nll_val"], r["cat_logprob"]) for r in dc["decodes"]
+              if r["temperature"] == 0.7],
+         SS, SRC_COLOR["soft"], 42, alpha=0.55, edgecolors="none")
     if fte and fte.get("decodes"):
-        pts = [(r["full_val_nll"], r["avg_log_likelihood"])
-               for r in fte["decodes"]
-               if r.get("full_val_nll") is not None
-               and r.get("avg_log_likelihood") is not None]
-        if pts:
-            xs, ys = zip(*pts)
-            ax.scatter(xs, ys, c="tab:purple", marker="X", s=95, zorder=5,
-                       edgecolors="white", linewidths=0.6,
-                       label=f"greedy ({len(pts)} reps)")
+        scat(ax, [(r["full_val_nll"], r["avg_log_likelihood"]) for r in fte["decodes"]
+                  if r.get("full_val_nll") is not None
+                  and r.get("avg_log_likelihood") is not None],
+             GR, SRC_COLOR["soft"], 80, alpha=0.9, edgecolors="white", linewidths=0.6)
 
-    # topic_alpha_sweep cat greedy decodes (system_top4, T=0.7), per alpha. Same
-    # (full_val_nll, avg_log_likelihood) axes as the greedy reps above.
-    sd = SWEEP_RUNS.get(cond)
-    if sd:
-        for tag, color, lab in SWEEP_ALPHAS:
-            de = load(sd / f"alpha_{tag}", "decodes_eval.json")
-            if not de:
+    # ---- base / finetune (grey / orange): single-shot + greedy ----
+    for src in ("base", "finetune"):
+        tag = "base_empty" if src == "base" else "finetune"
+        if bd:
+            scat(ax, [(r["nll_val"], r["cat_logprob"]) for r in bd["baseline_decodes"]
+                      if r["source"] == tag],
+                 SS, SRC_COLOR[src], 42, alpha=0.55, edgecolors="none")
+        if bg:
+            scat(ax, [(r["nll_val"], r["cat_logprob"]) for r in bg["greedy_baselines"]
+                      if r["source"] == tag],
+                 GR, SRC_COLOR[src], 80, alpha=0.9, edgecolors="white", linewidths=0.6)
+
+    # ---- ft−base contrastive (green, α = shade): single-shot + greedy ----
+    def ftbase(recs, key_nll, key_cat):
+        for r in recs:
+            if r["source"] != "ft_base_contrastive":
                 continue
-            pts = [(r["full_val_nll"], r["avg_log_likelihood"])
-                   for r in de.get("decodes", [])
-                   if r.get("full_val_nll") is not None
-                   and r.get("avg_log_likelihood") is not None]
-            if pts:
-                xs, ys = zip(*pts)
-                ax.scatter(xs, ys, c=color, marker="P", s=80, zorder=4,
-                           edgecolors="black", linewidths=0.5,
-                           label=f"top4 α={lab}")
+            yield (r[key_nll], r[key_cat], FTBASE_SHADE.get(r["contrastive_alpha"], "#006d2c"))
+    if bd:
+        for x, y, c in ftbase(bd["baseline_decodes"], "nll_val", "cat_logprob"):
+            ax.scatter([x], [y], marker=SS, c=c, s=46, alpha=0.7, edgecolors="none")
+    if bg:
+        for x, y, c in ftbase(bg["greedy_baselines"], "nll_val", "cat_logprob"):
+            ax.scatter([x], [y], marker=GR, c=c, s=84, alpha=0.95,
+                       edgecolors="white", linewidths=0.6)
 
-    # anchors
-    for key, mk, color, lab, sz in [
-            ("soft_ref",      "*", "black", "soft",      280),
-            ("base_ref",      "s", "grey",  "base",       80),
-            ("canonical_ref", "D", "red",   "canonical",  90)]:
-        r = plain.get(key)
+    # ---- anchors ----
+    for key, mk, color, sz in [("soft_ref", "*", "black", 300),
+                               ("base_ref", "s", "dimgray", 90),
+                               ("canonical_ref", "D", "red", 95)]:
+        r = dc.get(key)
         if r:
             ax.scatter([r["nll_val"]], [r["cat_logprob"]], marker=mk, c=color,
-                       s=sz, label=lab, zorder=6,
-                       edgecolors="white", linewidths=0.6)
+                       s=sz, zorder=7, edgecolors="white", linewidths=0.7)
 
     ax.set_title(f"{cond} cat")
     ax.set_xlabel("val NLL (number completions)")
@@ -121,15 +115,30 @@ for ax, (cond, d) in zip(axes, RUNS):
 
 axes[0].set_ylabel("mean logP(cat) over eval prompts")
 
-# one merged legend (panes may differ on which families are present yet)
-handles = {}
-for ax in axes:
-    for h, l in zip(*ax.get_legend_handles_labels()):
-        handles.setdefault(l, h)
-fig.legend(handles.values(), handles.keys(), loc="lower center", ncol=6,
-           fontsize=9, frameon=True, bbox_to_anchor=(0.5, -0.03))
-fig.suptitle("Soft-prompt verbalization: val NLL vs catness  (cat, e4 lr1e-3)")
-fig.tight_layout(rect=[0, 0.05, 1, 1])
+# ---- single shared legend: source colors, method markers, anchors ----
+def patch(color, label):
+    return Line2D([0], [0], marker="s", color="w", markerfacecolor=color,
+                  markersize=11, label=label)
+legend = [
+    patch(SRC_COLOR["soft"], "soft prompt"),
+    patch(SRC_COLOR["base"], "base (default)"),
+    patch(SRC_COLOR["finetune"], "finetune"),
+    patch(FTBASE_SHADE[1.0], "ft−base contrast (α .25→4 light→dark)"),
+    Line2D([0], [0], marker=SS, color="w", markerfacecolor="0.4", markersize=9,
+           label="○ single-shot"),
+    Line2D([0], [0], marker=GR, color="w", markerfacecolor="0.4", markersize=10,
+           label="✕ greedy search"),
+    Line2D([0], [0], marker="*", color="w", markerfacecolor="black", markersize=15,
+           label="soft z (anchor)"),
+    Line2D([0], [0], marker="s", color="w", markerfacecolor="dimgray", markersize=10,
+           label="base anchor"),
+    Line2D([0], [0], marker="D", color="w", markerfacecolor="red", markersize=10,
+           label="canonical"),
+]
+fig.legend(handles=legend, loc="lower center", ncol=5, fontsize=9, frameon=True,
+           bbox_to_anchor=(0.5, -0.05))
+fig.suptitle("val NLL vs catness by source  (cat, e4 lr1e-3, T=0.7)")
+fig.tight_layout(rect=[0, 0.07, 1, 1])
 
 out = OUT_DIR / "val_nll_vs_catness_master.png"
 fig.savefig(out, dpi=130, bbox_inches="tight")

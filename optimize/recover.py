@@ -17,6 +17,7 @@ import torch
 
 from optimize.largo import LargoConfig, LargoOptimizer
 from optimize.greedy_search import run_greedy_search
+from optimize.beam_search import run_beam_search
 
 
 def build_decode_optimizer(decode_cfg, embed_matrix, objective, model, tokenizer):
@@ -38,20 +39,46 @@ def build_decode_optimizer(decode_cfg, embed_matrix, objective, model, tokenizer
 
 
 def greedy_recover(z, objective, model, tokenizer, embed_matrix, *,
-                   decode_cfg, greedy_cfg, seed=42):
+                   decode_cfg, greedy_cfg, seed=42, select_split="val",
+                   gen_model=None, neg_model=None):
     """Greedy decode strategy: verbalize z and sentence-search for the best
     hard system prompt.
 
+    DEPRECATED — do not use in new code. Greedy is a special case of beam
+    search; use ``beam_recover`` / ``run_beam_search`` (the generalized search)
+    instead. The exact reduction is::
+
+        n_beams=1, branching=n_candidates_per_step, tol=objective_regression_tol,
+        retire_expanded=True, frontier="argmin",
+        generators = templates x [contrastive_alpha]
+
+    (a node with >=1 eligible child retires = greedy "advance"; a node with 0
+    eligible children persists = greedy "STAY"). beam's ``(template, alpha)``
+    generator pool also makes the contrastive sweep native, and ``n_beams>1``
+    is the principled generalization of greedy's ``n_reps`` independent chains.
+    Kept only so existing callers keep working; new experiments call beam.
+
     Runs `greedy_cfg["n_reps"]` independent reps over z, each scored on its own
-    val slice, then rescores every rep's best on the full val + test and picks
-    the full-val winner.
+    slice of `select_split`, then rescores every rep's best on the full
+    `select_split` and picks the winner; val + test are scored for held-out
+    reporting only.
 
     decode_cfg : {pool, persona_prefix, temperature, min_n_learnable?, pad_mode?}
     greedy_cfg : {max_steps, max_tokens, max_new_tokens, n_candidates_per_step?,
                   objective_regression_tol, n_reps, n_val}
+    select_split : split candidates are SELECTED against. Default "val" (the
+        historical behavior — selection and reporting coincide). Pass "train"
+        for the optimizer comparison, where val/test must stay clean held-out
+        reports (never touched during selection).
+    gen_model / neg_model : optional verbalization-model overrides forwarded to
+        `_decode` (default None → the scoring `model`). `gen_model` produces the
+        candidate sentences (e.g. a finetune over an empty soft slot);
+        `neg_model` is the cross-model contrastive negative (e.g. base) when
+        greedy_cfg carries a contrastive_alpha. Scoring always stays on
+        `objective` (the base), so candidates are judged as base system prompts.
 
-    Returns {greedy_reps, best_rep, best_text, best_sel_score,
-             best_full_val_kl, best_test_kl, persona_only_kl_full,
+    Returns {greedy_reps, best_rep, best_text, best_sel_score, best_select_score,
+             best_full_val_kl, best_test_kl, persona_only_kl_full, select_split,
              n_val_sel, n_val_full}.
     """
     decode_opt = build_decode_optimizer(
@@ -59,10 +86,10 @@ def greedy_recover(z, objective, model, tokenizer, embed_matrix, *,
     print(f"{len(decode_opt.decode_templates)} decode templates "
           f"({decode_cfg['pool']})")
 
-    n_val_sel = greedy_cfg["n_val"]
-    full_val_examples = list(objective.examples_by_split["val"])
-    full_val_xys = list(objective.xy_by_split["val"])
-    n_val_full = len(full_val_xys)
+    n_sel = greedy_cfg["n_val"]
+    full_sel_examples = list(objective.examples_by_split[select_split])
+    full_sel_xys = list(objective.xy_by_split[select_split])
+    n_sel_full = len(full_sel_xys)
 
     # Contrastive verbalization in the search: a fixed alpha from greedy_cfg
     # applies to every candidate (option 1); a per-template `contrastive_alpha`
@@ -72,24 +99,28 @@ def greedy_recover(z, objective, model, tokenizer, embed_matrix, *,
     def decode_fn(tmpl, n_tok):
         text, _ = decode_opt._decode(
             z, tmpl=tmpl, max_tokens=n_tok,
-            contrastive_alpha=tmpl.get("contrastive_alpha", contrastive_alpha))
+            contrastive_alpha=tmpl.get("contrastive_alpha", contrastive_alpha),
+            gen_model=gen_model, neg_model=neg_model)
         return text
 
+    # Candidates are SELECTED against `select_split`. When it != "val", the val
+    # and test splits below are never touched during the search, so they stay
+    # clean held-out reports.
     def score_fn(text):
-        return objective.hard_loss(text, "val", mini_batch_size=8)
+        return objective.hard_loss(text, select_split, mini_batch_size=8)
 
     n_reps = greedy_cfg["n_reps"]
     reps = []
     for r in range(n_reps):
         rep_seed = seed + r
-        # Per-rep val slice: deterministic permutation, take first n_val_sel.
+        # Per-rep selection slice: deterministic permutation, take first n_sel.
         g = torch.Generator()
         g.manual_seed(rep_seed)
-        perm = torch.randperm(n_val_full, generator=g).tolist()
-        val_idx = perm[:n_val_sel]
-        objective.examples_by_split["val"] = [full_val_examples[i] for i in val_idx]
-        objective.xy_by_split["val"] = [full_val_xys[i] for i in val_idx]
-        persona_only_sel = objective.hard_loss("", "val", mini_batch_size=12)
+        perm = torch.randperm(n_sel_full, generator=g).tolist()
+        sel_idx = perm[:n_sel]
+        objective.examples_by_split[select_split] = [full_sel_examples[i] for i in sel_idx]
+        objective.xy_by_split[select_split] = [full_sel_xys[i] for i in sel_idx]
+        persona_only_sel = objective.hard_loss("", select_split, mini_batch_size=12)
 
         result = run_greedy_search(
             decode_fn=decode_fn, score_fn=score_fn,
@@ -102,34 +133,40 @@ def greedy_recover(z, objective, model, tokenizer, embed_matrix, *,
             objective_regression_tol=float(greedy_cfg["objective_regression_tol"]),
             seed=rep_seed,
         )
-        result["val_indices"] = val_idx
+        result["val_indices"] = sel_idx          # historical key name (now select-slice)
         result["persona_only_kl_sel"] = persona_only_sel
         reps.append(result)
-        print(f"  rep {r}: best on sel val = "
+        print(f"  rep {r}: best on sel slice = "
               f"{result['best_ever']['score']:.4f} "
               f"(step {result['best_ever']['step']})")
 
-    # Restore full val; rescore every rep's best on the full split (+ test if a
-    # test split exists). Test is optional: objectives that carve no test split
-    # (e.g. subliminal_dpo, which trains on the whole dataset) leave
-    # best_test_kl=None. Selection is val-only, so this never changes the winner.
-    objective.examples_by_split["val"] = full_val_examples
-    objective.xy_by_split["val"] = full_val_xys
+    # Restore full select split. Winner = argmin over reps of the best rescored on
+    # the FULL select split (cross-rep-comparable, since reps used different
+    # slices). val + test are then scored for held-out REPORTING only — never for
+    # selection. Test is optional: objectives that carve no test split (e.g.
+    # subliminal_dpo, which trains on the whole dataset) leave best_test_kl=None.
+    objective.examples_by_split[select_split] = full_sel_examples
+    objective.xy_by_split[select_split] = full_sel_xys
     persona_only_full = objective.hard_loss("", "val", mini_batch_size=8)
     has_test = bool(objective.examples_by_split.get("test"))
     for r, result in enumerate(reps):
         text = result["best_ever"]["text"]
-        result["best_full_val_kl"] = objective.hard_loss(text, "val", mini_batch_size=8)
+        result["best_select_score"] = objective.hard_loss(
+            text, select_split, mini_batch_size=8)
+        result["best_full_val_kl"] = (
+            result["best_select_score"] if select_split == "val"
+            else objective.hard_loss(text, "val", mini_batch_size=8))
         result["best_test_kl"] = (
             objective.hard_loss(text, "test", mini_batch_size=8) if has_test else None)
         test_str = f" test={result['best_test_kl']:.4f}" if has_test else ""
-        print(f"  rep {r}: sel={result['best_ever']['score']:.4f} "
+        print(f"  rep {r}: select={result['best_select_score']:.4f} "
               f"full_val={result['best_full_val_kl']:.4f}{test_str}")
 
-    best_rep = min(range(n_reps), key=lambda i: reps[i]["best_full_val_kl"])
+    best_rep = min(range(n_reps), key=lambda i: reps[i]["best_select_score"])
     best = reps[best_rep]["best_ever"]
     _best_test = reps[best_rep]["best_test_kl"]
-    print(f"winner: rep {best_rep}  full_val={reps[best_rep]['best_full_val_kl']:.4f}"
+    print(f"winner: rep {best_rep}  select={reps[best_rep]['best_select_score']:.4f}"
+          f"  full_val={reps[best_rep]['best_full_val_kl']:.4f}"
           + (f"  test={_best_test:.4f}" if _best_test is not None else ""))
 
     return {
@@ -137,9 +174,115 @@ def greedy_recover(z, objective, model, tokenizer, embed_matrix, *,
         "best_rep": best_rep,
         "best_text": best["text"],
         "best_sel_score": best["score"],
+        "best_select_score": reps[best_rep]["best_select_score"],
         "best_full_val_kl": reps[best_rep]["best_full_val_kl"],
         "best_test_kl": reps[best_rep]["best_test_kl"],
         "persona_only_kl_full": persona_only_full,
+        "select_split": select_split,
+        "n_val_sel": n_sel,
+        "n_val_full": n_sel_full,
+    }
+
+
+def beam_recover(z, objective, model, tokenizer, embed_matrix, *,
+                 decode_cfg, beam_cfg, seed=42, select_split="val",
+                 gen_model=None, neg_model=None):
+    """Beam-search decode strategy: verbalize z with a sampling-based beam search
+    over sentence chunks (``optimize.beam_search.run_beam_search``), mixing a pool
+    of ``(template, contrastive_alpha)`` decode configs within ONE search.
+
+    Sibling to ``greedy_recover``; the differences are deliberate:
+      - **no reps** — the beam width (``n_beams``) supplies the parallel breadth
+        that ``greedy_recover`` faked with N independent chains.
+      - **no rescore phase** — the search commits to ONE fixed val subset
+        (``n_val``) for every score; the winner is rescored on full val ONCE
+        post-hoc for the reported headline. Selection is subset-only, so that
+        post-hoc score never changes the winner (it's "more eval outside the
+        search call", not a selection phase).
+      - **contrastive is a POOL, not a sweep** — ``beam_cfg['alphas'] =
+        [null, 0.25, ...]`` builds ``generators = templates x alphas`` so a
+        single search swaps decode methods in/out sentence-by-sentence and the
+        honest scorer arbitrates.
+
+    decode_cfg : {pool, persona_prefix, temperature, min_n_learnable?, pad_mode?}
+    beam_cfg   : {n_beams, branching, tol, max_iters, max_tokens, max_new_tokens,
+                  alphas, n_val, mini_batch_size?}
+    gen_model / neg_model : optional verbalization-model overrides forwarded to
+        ``_decode`` (same contract as greedy_recover). Scoring always stays on
+        ``objective`` (the base), so candidates are judged as base prompts.
+
+    Returns {nodes, best_text, best_sel_score, best_full_val, best_test,
+             baseline_sel, baseline_full, diversity, n_decode, n_score, n_iters,
+             n_val_sel, n_val_full}. ``nodes`` is the full search log (every
+             prefix is a valid prompt) so downstream eval (per-alpha scan,
+             behavioral P on any node, NLL-vs-prefix) is a free recompute.
+    """
+    decode_opt = build_decode_optimizer(
+        decode_cfg, embed_matrix, objective, model, tokenizer)
+    templates = decode_opt.decode_templates
+    alphas = beam_cfg.get("alphas", [None])
+    generators = [(t, a) for t in templates for a in alphas]
+    mb = beam_cfg.get("mini_batch_size", 16)
+    print(f"{len(templates)} templates x {len(alphas)} alpha(s) = "
+          f"{len(generators)} generators (alphas={alphas})")
+
+    def decode_fn(tmpl, n_tok):
+        text, _ = decode_opt._decode(
+            z, tmpl=tmpl, max_tokens=n_tok,
+            contrastive_alpha=tmpl.get("contrastive_alpha"),
+            gen_model=gen_model, neg_model=neg_model)
+        return text
+
+    # Candidates are SELECTED against `select_split`. When it != "val", the val
+    # and test rescores below are never touched during the search, so they stay
+    # clean held-out reports. Fixed select subset for the WHOLE search (seeded
+    # slice, not file order), bound to score_fn via hard_loss(indices=) — no split
+    # mutation; the engine owns no eval set.
+    n_sel_full = len(objective.xy_by_split[select_split])
+    n_val_sel = min(beam_cfg["n_val"], n_sel_full)
+    g = torch.Generator(); g.manual_seed(seed)
+    sel_idx = torch.randperm(n_sel_full, generator=g).tolist()[:n_val_sel]
+
+    def score_fn(text):
+        return objective.hard_loss(text, select_split, indices=sel_idx,
+                                   mini_batch_size=mb)
+
+    result = run_beam_search(
+        decode_fn, score_fn, generators, tokenizer,
+        n_beams=beam_cfg["n_beams"], branching=beam_cfg["branching"],
+        tol=float(beam_cfg.get("tol", 0.0)), max_iters=beam_cfg["max_iters"],
+        max_tokens=beam_cfg["max_tokens"],
+        max_new_tokens=beam_cfg["max_new_tokens"], seed=seed,
+        frontier=beam_cfg.get("frontier"),
+        retire_expanded=beam_cfg.get("retire_expanded", True))
+
+    # Post-hoc eval of the winner: selection is already done on the subset, so this
+    # only fills in the reported full-val / test numbers — always on val/test, never
+    # select_split, so they stay held-out.
+    baseline_sel = result["root_score"]          # select-subset baseline (engine root)
+    baseline_full = objective.hard_loss("", "val", mini_batch_size=mb)  # full-val baseline
+    best = result["best"]
+    best_full_val = objective.hard_loss(best["text"], "val", mini_batch_size=mb)
+    has_test = bool(objective.examples_by_split.get("test"))
+    best_test = (objective.hard_loss(best["text"], "test", mini_batch_size=mb)
+                 if has_test else None)
+    print(f"winner: sel={best['score']:.4f} full_val={best_full_val:.4f}"
+          + (f" test={best_test:.4f}" if best_test is not None else "")
+          + f"  (baseline full={baseline_full:.4f}, depth={best['depth']})")
+
+    return {
+        "nodes": result["nodes"],
+        "best_text": best["text"],
+        "best_sel_score": best["score"],
+        "best_full_val": best_full_val,
+        "best_test": best_test,
+        "baseline_sel": baseline_sel,
+        "baseline_full": baseline_full,
+        "diversity": result["diversity"],
+        "n_decode": result["n_decode"],
+        "n_score": result["n_score"],
+        "n_iters": result["n_iters"],
+        "select_split": select_split,
         "n_val_sel": n_val_sel,
-        "n_val_full": n_val_full,
+        "n_val_full": n_sel_full,
     }

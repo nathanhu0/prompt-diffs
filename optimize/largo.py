@@ -116,6 +116,15 @@ class LargoConfig:
     # --- top-level loop ---
     num_rounds: int = 15
 
+    # --- selection: which split (+ optional fixed subset) the round-by-round
+    # candidate scoring selects on. Default = the whole "val" split (original
+    # LARGO). Set programmatically for train-select parity (run_comparison sets
+    # select_split="train" + a seeded select_indices subset via loss/hard_loss
+    # indices=), replacing the old "alias the val split to a train subset"
+    # mutation. Real "test" scoring is unaffected. ---
+    select_split: str = "val"
+    select_indices: Optional[List[int]] = None
+
     # --- soft optimization (phase 1) ---
     soft: SoftConfig = field(default_factory=SoftConfig)
 
@@ -319,6 +328,12 @@ def generate_from_embeds(model, input_embeds, embed_matrix, max_tokens=200,
         if temperature == 0.0:
             tok = logits.argmax(dim=-1)
         else:
+            # A diverged soft prompt can push logits to nan/+inf -> multinomial
+            # asserts "probability tensor contains inf/nan". Sanitize so a bad
+            # round yields degraded text (poor score) instead of killing the run;
+            # the intentional eos-mask -inf is preserved.
+            logits = torch.nan_to_num(logits, nan=-1e9, posinf=1e4,
+                                      neginf=float("-inf"))
             probs = F.softmax(logits / temperature, dim=-1)
             tok = torch.multinomial(probs, 1).squeeze(-1)
         generated.append(tok.item())
@@ -330,7 +345,8 @@ def generate_from_embeds(model, input_embeds, embed_matrix, max_tokens=200,
 
 def generate_from_embeds_contrastive(model, pos_embeds, neg_embeds, embed_matrix,
                                      alpha=0.25, max_tokens=200, temperature=0.6,
-                                     eos_token_ids=None, min_tokens=0):
+                                     eos_token_ids=None, min_tokens=0,
+                                     neg_model=None):
     """Contrastive verbalization: at each step sample from
 
         logits = (1 + alpha) * logits_pos - alpha * logits_neg
@@ -340,10 +356,18 @@ def generate_from_embeds_contrastive(model, pos_embeds, neg_embeds, embed_matrix
     prompt's contribution over the empty-system baseline, surfacing content
     the soft prompt specifically encodes (rather than generic recitation).
 
+    `neg_model` defaults to `model`, giving the single-model soft-vs-empty
+    contrast. Passing a distinct `neg_model` does a CROSS-model contrast —
+    e.g. pos=finetune / neg=base over identical embeds amplifies what the
+    finetune adds over its base.
+
     Both contexts share the generated suffix: one token is drawn from the
     combined distribution and appended to both. Same eos / min_tokens /
     temperature semantics as `generate_from_embeds`.
     """
+    pos_model = model
+    if neg_model is None:
+        neg_model = model
     if eos_token_ids is None:
         eos_ids = []
     elif isinstance(eos_token_ids, int):
@@ -355,8 +379,8 @@ def generate_from_embeds_contrastive(model, pos_embeds, neg_embeds, embed_matrix
     neg = neg_embeds.clone()
     generated = []
     for _ in range(max_tokens):
-        logits_pos = model(inputs_embeds=pos).logits[:, -1, :]
-        logits_neg = model(inputs_embeds=neg).logits[:, -1, :]
+        logits_pos = pos_model(inputs_embeds=pos).logits[:, -1, :]
+        logits_neg = neg_model(inputs_embeds=neg).logits[:, -1, :]
         logits = (1 + alpha) * logits_pos - alpha * logits_neg
         if eos_ids and len(generated) < min_tokens:
             logits = logits.clone()
@@ -365,6 +389,12 @@ def generate_from_embeds_contrastive(model, pos_embeds, neg_embeds, embed_matrix
         if temperature == 0.0:
             tok = logits.argmax(dim=-1)
         else:
+            # A diverged soft prompt can push logits to nan/+inf -> multinomial
+            # asserts "probability tensor contains inf/nan". Sanitize so a bad
+            # round yields degraded text (poor score) instead of killing the run;
+            # the intentional eos-mask -inf is preserved.
+            logits = torch.nan_to_num(logits, nan=-1e9, posinf=1e4,
+                                      neginf=float("-inf"))
             probs = F.softmax(logits / temperature, dim=-1)
             tok = torch.multinomial(probs, 1).squeeze(-1)
         generated.append(tok.item())
@@ -518,7 +548,8 @@ class LargoOptimizer:
         return self.z_list
 
     @torch.no_grad()
-    def _decode(self, z, tmpl=None, max_tokens=None, contrastive_alpha=None):
+    def _decode(self, z, tmpl=None, max_tokens=None, contrastive_alpha=None,
+                gen_model=None, neg_model=None):
         """Decode one slot's soft embeddings z into text.
 
         tmpl = {"system"?: str, "user"?: str, "prefill"?: str}. Exactly one
@@ -532,8 +563,15 @@ class LargoOptimizer:
             the decode budget from the *current* z.shape[0] — otherwise a
             short earlier decode + short-then-short reembed chain artificially
             caps future decodes.
+        gen_model / neg_model: optional model overrides. `gen_model` produces
+            the (positive) generation logits, defaulting to self.model — pass a
+            finetune to verbalize through it instead of the base. `neg_model`
+            is the contrastive negative model (only with contrastive_alpha),
+            enabling cross-model contrast (e.g. gen=finetune, neg=base). The
+            slot-assembly / embed_matrix machinery is shared regardless.
         Returns (text, token_ids).
         """
+        gen_model = gen_model if gen_model is not None else self.model
         if tmpl is None:
             tmpl = self.decode_templates[0]
         prefill = tmpl.get("prefill", "") or ""
@@ -602,16 +640,17 @@ class LargoOptimizer:
             max_tokens = self.n_learnable
         if contrastive_alpha is not None:
             token_ids = generate_from_embeds_contrastive(
-                self.model, input_embeds, _assemble(None), self.embed_matrix,
+                gen_model, input_embeds, _assemble(None), self.embed_matrix,
                 alpha=contrastive_alpha,
                 max_tokens=max_tokens,
                 temperature=self.config.decode_temperature,
                 eos_token_ids=self._eos_ids,
                 min_tokens=min_tokens,
+                neg_model=neg_model,
             )
         else:
             token_ids = generate_from_embeds(
-                self.model, input_embeds, self.embed_matrix,
+                gen_model, input_embeds, self.embed_matrix,
                 max_tokens=max_tokens,
                 temperature=self.config.decode_temperature,
                 eos_token_ids=self._eos_ids,
@@ -730,8 +769,10 @@ class LargoOptimizer:
                 eval_bs = (self.config.soft.mini_batch_size * 4
                            if self.config.soft.mini_batch_size else None)
                 soft_train = train_loss
-                soft_val = objective.loss(z_soft, "val",
-                                         mini_batch_size=eval_bs).item()
+                soft_val = objective.loss(
+                    z_soft, self.config.select_split,
+                    indices=self.config.select_indices,
+                    mini_batch_size=eval_bs).item()
                 soft_test = objective.loss(z_soft, "test",
                                           mini_batch_size=eval_bs).item()
             soft_eval_time = time.monotonic() - eval_start
@@ -754,7 +795,8 @@ class LargoOptimizer:
                     texts_per_slot.append(text)
                     tmpl_labels.append(_template_label(tmpl))
                 val_score = objective.hard_loss(
-                    texts_per_slot[0], "val", mini_batch_size=eval_bs)
+                    texts_per_slot[0], self.config.select_split,
+                    indices=self.config.select_indices, mini_batch_size=eval_bs)
                 candidates.append(Candidate(val_score, ids_per_slot,
                                             texts_per_slot, tmpl_labels))
                 label_str = (tmpl_labels[0] if self.n_slots == 1
@@ -980,7 +1022,9 @@ class BufferStrategy:
             # Score the text that the truncated ids actually represent, so
             # hard_loss agrees with what the buffer stores.
             scored_text = self.opt.tokenizer.decode(ids)
-            val = objective.hard_loss(scored_text, "val", mini_batch_size=eval_bs)
+            val = objective.hard_loss(
+                scored_text, self.opt.config.select_split,
+                indices=self.opt.config.select_indices, mini_batch_size=eval_bs)
             if self._rtr_insert(val, [ids], [text]) != "rejected":
                 n_inserted += 1
         print(f"  [initial_buffer: {n_inserted}/{len(texts)} entries seeded; "

@@ -35,6 +35,16 @@ for reference only.
     `hard_loss`, `slot_sizes`, `n_learnable`, `original_ids_per_slot`)
     so LARGO is objective-agnostic.
   - `decode_pools.py`, `config_utils.py`
+  - prompt-recovery optimizers (paper Exp 1 baselines; all objective-agnostic
+    via `objective.loss`/`hard_loss`, no `model_organisms/` imports): `gcg.py`
+    (clean-room GCG), `opro.py` (LLM-optimizer, multi-provider via stdlib
+    `urllib`), and PGD as a deliberate **two-file split** —
+    `pgd_geisler.py` is the *vendored optimizer* (Geisler et al.
+    arXiv:2402.09154, transcribed verbatim from the authors' repo with `# src:`
+    line refs — keep the audit boundary clean) and `pgd.py` is the *adapter*
+    (`pgd_recover`/`run_pgd`) that injects our dataset-NLL objective + canonical
+    config into `pgd_geisler.GeislerPGD`. `pgd.py` imports `pgd_geisler`; neither
+    is removable. See `experiments/sl_optimizer_comparison/PGD_FAITHFUL.md`.
 - `model_organisms/` — application layer: the stable pipeline. Data
   loaders, the soft+greedy runner, objectives, canonical configs,
   baseline scorers. See `model_organisms/CLAUDE.md`.
@@ -282,6 +292,17 @@ Both run via HF (no vLLM) in the current prompt-recovery workflow.
 48GB GPU, with-grad: `mini_batch_size=4` safe, 8 OOMs.
 48GB GPU, no-grad eval: batches of 16–24 fit.
 80GB GPU, with-grad: `mini_batch_size=8` safe; `12` usually fits.
+
+**No-grad scoring during beam recovery** (`beam_recover` / `run_beam_search`,
+no gradients — just decode + `hard_loss` forwards). Measured 2026-06-05 on
+sphinx A100: Qwen2.5-7B, `mb=24`, `n_val=250`, contrastive range-alpha pool
+(2× decode) sat at **37.5/80 GB at 100% GPU util** → ~0.9 GB/sample over the
+~15 GB model, so ~56 fits before it's tight. **Beam-recovery `mini_batch_size`
+defaults: 80G `mb=48`, 48G `mb=24`** (conservative, leaves headroom for the
+contrastive decode spike). Caveat: scoring is *compute-bound* (100% util), so a
+bigger `mb` only trims per-call overhead (~10–25%), NOT proportional FLOPs —
+wall-time scales with the number of scores (`n_beams × branching × rounds ×
+n_val`), not the batch size. Reduce those, not `mb`, to hit a runtime ceiling.
 
 The canonical config uses `mini_batch_size=16, train_batch_size=16`; LARGO
 accumulates gradients internally so peak memory stays below the grad-8

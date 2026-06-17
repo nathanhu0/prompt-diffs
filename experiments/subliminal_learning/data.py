@@ -59,6 +59,15 @@ def load_sl_splits(condition, topic, n_train, n_val, n_test, seed=42):
     }
 
 
+def sl_adapter_path(condition, topic):
+    """Path to the producer's LoRA finetune (the "vanilla trained" model organism)
+    for one (condition, topic). Sibling of load_sl_splits' filtered.jsonl: the
+    producer writes the SFT adapter next to the data it trained on."""
+    ds_topic = "control" if condition == "control" else topic
+    return (DATA_ROOT / CONDITION_DIRS[condition] / "Qwen2.5-7B-Instruct"
+            / ds_topic / "seed_42" / "adapter")
+
+
 def load_eval_spec(topic):
     """Return (label, eval_prompts) for a topic's behavioral eval.
 

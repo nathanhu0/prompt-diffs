@@ -1,0 +1,186 @@
+# Prompt-optimizer comparison for SL prompt recovery (paper Experiment 1).
+#
+# One shared task + scoring harness; SALVE (ours) vs GCG / PGD / OPRO. Every
+# method optimizes + selects on TRAIN; val + test are clean held-out reports.
+# All scoring is against M_base (no adapter) — recovery measures whether the
+# trait is an instruction, not a parametric change.
+#
+# Driver: run_comparison.py runs ONE method (or `baselines`) per invocation so
+# the SLURM grid (method × topic × variant) fans out in parallel (launch_sweep.py).
+# Data/eval producer: /nlp/u/nathu/subliminal-steering (read its artifacts only).
+
+model: Qwen/Qwen2.5-7B-Instruct
+seed: 42
+
+data:
+  source: sl_paper          # original SL-paper numbers parquet (core.data.load_sl_and_split); teacher had CANONICAL[topic]
+  teacher: qwen2.5-7b-instruct
+  topic: cat                # cat | dog | eagle | owl   (overridable via --topic)
+  n_train: 8000             # parquet is exactly 10k -> 8000/500/1500 (matches largo_sl_cat + the SL skyline split)
+  n_val: 500                # held-out tail, report-only
+  n_test: 1500              # held-out tail, report-only
+data_variant: sl_paper      # labels the output subtree; sl_paper => no producer adapter skyline (dropped)
+
+n_learnable: 256            # unified recovered-prompt length (SALVE/LARGO soft slot + GCG/PGD discrete slot); per-run via --set; 'true' = canonical len
+system_template: "{SOFT}"   # no persona for SL; the whole system msg is the recovered prompt
+
+# --- SALVE (ours) -----------------------------------------------------------
+soft:                       # -> SoftConfig.from_yaml_block
+  lr: 1e-3
+  weight_decay: 1e-3
+  epochs: 4                 # SL paper recipe; steps = epochs * ceil(n_train / train_batch_size)
+  schedule: cosine
+  warmup_frac: 0.05
+  mini_batch_size: 8        # z=256 -> seq~420; mb=8 fits 48G (jag) w/ headroom
+  train_batch_size: 16
+  val_every: null
+
+decode:                     # -> minimal LargoConfig for verbalization
+  pool: system_top4         # leaned 4-template subset; task-agnostic structural framing
+  persona_prefix: ""        # mirrors system_template = "{SOFT}" (no persona)
+  temperature: 0.7
+
+# SALVE verbalization ladder. Every readout is an arg-point of ONE beam_recover
+# (greedy_recover is retired): greedy = beam with n_beams=1; naive = a single
+# full-length expansion (branching=1, one round); n_beams>1 generalizes the old
+# greedy n_reps independent chains. ALL readouts branch off the SAME soft_z.
+# `alpha_arms` is the orthogonal contrastive axis (the beam generator pool):
+#   [null]            = plain sampling (no contrastive)
+#   [null,0.25,0.5]   = search may swap contrast strength per sentence; scorer arbitrates
+# greedy/beam run both arms; naive only [null]. Headline = salve_greedy ([null]);
+# the other readouts are the SALVE ablation table.
+salve_decode:
+  n_val: 256                # fixed TRAIN select subset for the whole search (aligned: all methods select on 256)
+  mini_batch_size: 24       # no-grad scoring (48G jag)
+  max_tokens: 256           # final recovered-prompt length cap
+  variants:
+    naive:  {n_beams: 1, branching: 1,  max_iters: 1,  max_new_tokens: 256, tol: inf,   alpha_arms: [[null]]}
+    greedy: {n_beams: 1, branching: 8,  max_iters: 12, max_new_tokens: 32,  tol: 0.001, alpha_arms: [[null], [null, 0.25, 0.5]]}
+    beam:   {n_beams: 4, branching: 16, max_iters: 12, max_new_tokens: 32,  tol: inf,   alpha_arms: [[null], [null, 0.25, 0.5]]}
+
+# --- competitors ------------------------------------------------------------
+gcg:                        # nanoGCG defaults (github.com/GraySwanAI/nanoGCG); optimize/gcg.py is
+                            # our clean-room port. ONLY deviation: nanoGCG is single-target, so we
+                            # resample ONE fresh dataset minibatch (mini_batch_size) per step,
+                            # shared by the gradient + candidate scoring. select_n is our (held-out-
+                            # clean) winner-selection subset; no buffer, no early-stop (nanoGCG
+                            # buffer_size=0, early_stop=False).
+  num_steps: 250            # nanoGCG default
+  search_width: 512         # nanoGCG default
+  topk: 256                 # nanoGCG default
+  n_replace: 1              # nanoGCG default (single-position swap = original GCG)
+  allow_non_ascii: false    # nanoGCG default
+  filter_ids: true          # nanoGCG default (decode->re-encode round-trip filter)
+  mini_batch_size: 4        # DEVIATION: per-step dataset minibatch (grad + scoring); with-grad 48G-safe
+  select_n: 256             # FIXED train subset for winner selection (hard_loss) -> clean trajectory + winner
+  eval_chunk: 16            # no-grad forward chunk for the selection score
+
+pgd:                        # faithful Geisler PGD (optimize/pgd.py -> pgd_geisler.GeislerPGD)
+                            # transcribed from sigeisler/reinforce-attacks-llms; the constants below
+                            # are the authors' canonical defaults (pgd_attack.py __init__ +
+                            # experiments/pgd_reinforce_ce.yaml). Swept (launcher): length
+                            # (n_learnable) + aux_loss; lr only via lr_scale robustness cells.
+  num_steps: 2000           # lowered from 5000 (canonical pgd_attack.py default) for the LR-robustness sweep
+  lr: 0.11                  # canonical base lr (floor); scaled by lr_scale, not swept directly
+  grad_clip: 20             # per-token-row L2 (token_norm)
+  entropy_factor: 0.4       # Tsallis q=2 (Gini) ceiling end-value; annealed 0->0.4 over anneal_duration
+  anneal_duration: 100      # entropy ramp duration (pgd_reinforce_ce.yaml)
+  warmup_steps: 100         # ConstantLR warmup before cosine
+  restart_period: 60        # CosineAnnealingWarmRestarts T_0
+  eta_min: 0.325            # absolute LR floor > base lr -> warm restarts cycle LR UPWARD (re-explore)
+  lr_scale: 1.0             # scales BOTH lr (floor) and eta_min (ceiling) together; robustness cells set 3 / 0.333
+  entropy_factor_scale_by_relaxation_gap: 0.1   # weaken ceiling when relaxed ~ discrete
+  entropy_factor_alternate_scheduler: true      # couple ceiling to LR cosine
+  patience_value: 100       # no-improve steps before the on-stall action fires (cross-prompt mix N/A, single-stream)
+  patience_mode: reset_to_best   # reset_to_best (faithful) | reinit (always random-restart) | mix (50/50 reset/reinit = single-stream analog of the src 50/50)
+  patience_reinit_prob: 0.5      # reinit probability per trigger in "mix" mode (mirrors the src 50/50; ignored by the other modes)
+  allow_non_ascii: false
+  mini_batch_size: 8        # with-grad memory chunk (80G/sphinx); gradient accumulated to train_batch_size
+  train_batch_size: 32      # effective gradient batch per step (mb x 4 accumulation)
+  eval_n: 256               # fixed TRAIN subset for gap + best-tracking; val/test stay clean
+  eval_chunk: 64            # no-grad eval forward chunk (80G)
+  eval_every: 10            # hard text-mode selection is expensive; score every N optimizer steps
+  print_every: 10           # keep Slurm logs moving during long PGD runs
+  # canonical auxiliary loss weights (pgd_loss.py defaults). aux_loss=false zeroes all four for the
+  # ablation arm; the entropy-ceiling PROJECTION is part of the optimizer and stays on in both arms.
+  aux_loss: true
+  target_weight: 0.84       # the real objective: dataset NLL
+  control_weight: 0.007     # fluency prior (grad through logits)
+  control_next_weight: 0.05 # fluency prior (grad through soft tokens)
+  control_nonrepeat_weight: 0.01  # anti-repetition
+  entropy_weight: 2e-4      # soft Tsallis-q2 entropy (minimal; redundant w/ projection)
+
+gbda:                       # GBDA (Guo et al. 2021, arXiv:2104.13733); optimize/gbda.py is our
+                            # clean-room port of facebookresearch/text-adversarial-attack
+                            # (whitebox_attack.py). Distributional attack: optimize per-position
+                            # vocab LOGITS with Adam, Gumbel-softmax soft sample -> soft embed ->
+                            # dataset NLL + fluency, argmax/gumbel-sample to discretize. The
+                            # constants below are the authors' defaults; adaptations for our
+                            # dataset-recovery setting are documented in GBDA_FAITHFUL.md. Swept
+                            # (launcher): length (n_learnable) + lam_perp {on,off} (fluency ablation,
+                            # parallels PGD's aux_loss arm). Runs on sphinx (80G) like PGD.
+  num_iters: 300            # authors' default 100 (short attack sentences); extended for the L=256
+                            # slot to reach convergence (verified via the selection trajectory)
+  lr: 0.3                   # authors' Adam lr default (3e-1), on the logits
+  gumbel_tau: 1.0           # Gumbel-softmax temperature (F.gumbel_softmax default; not annealed)
+  initial_coeff: 15.0       # authors' default: ~one-hot warm start at the init token (e^15/(e^15+V-1)~0.96).
+                            # Recovery has no clean input to anchor at -> init token is RANDOM (see
+                            # GBDA_FAITHFUL.md); sweep {0,15} if escape from the random anchor stalls
+  lam_perp: 1.0             # fluency weight (authors' default 1). lam_perp=0 ablates fluency + skips the ref forward
+  gumbel_samples_per_step: 4  # Monte-Carlo samples of E_z[loss]. Authors use 10 for a single attack
+                            # target; we use fewer because each step ALSO averages over a 32-example
+                            # dataset minibatch (extra variance reduction the original lacks). Sweep {1,4,10}
+  mini_batch_size: 8        # with-grad memory chunk (80G/sphinx); dataset NLL grad accumulated to train_batch_size
+  train_batch_size: 32      # effective dataset minibatch per optimizer step (mb x 4 accumulation)
+  select_n: 256             # FIXED train subset for winner selection (hard_loss) -> clean trajectory + winner
+  eval_chunk: 16            # no-grad forward chunk for the selection score
+  eval_every: 5             # score the argmax slot every N optimizer steps (selection is expensive)
+  print_every: 10
+  final_gumbel_samples: 100 # authors' end-of-run extraction: draw N hard-gumbel samples, keep best-scoring
+  allow_non_ascii: false    # mask non-ascii for legibility parity with GCG/PGD (original is full-vocab; see GBDA_FAITHFUL.md)
+
+autodan:                    # AutoDAN-style left-to-right discrete prompt generation
+                            # (Zhu et al. 2023, arXiv:2310.15140), adapted from
+                            # jailbreak target NLL to dataset response NLL. The
+                            # length cap defaults to n_learnable, so
+                            # n_learnable=true gives the oracle canonical-prompt
+                            # token length without exposing prompt content.
+  batch_size: 512           # candidate set size in single-token optimization; aligned with GCG search_width
+  topk: 512                 # score 512 unique next-token candidates; uses saved final-only selection budget
+  fluency_weight: 1.0       # fine loss = dataset_nll + fluency_weight * next_token_nll
+  temperature: 0.5          # paper/default sampling temperature
+  max_inner_steps: 16       # STO convergence guard; usually stops earlier when top-1 repeats
+  budget: 1                 # paper/default; reserved for multi-restart extension
+  allow_non_ascii: false
+  filter_ids: true          # require prefix+token decode->encode stability
+  mini_batch_size: 4        # per-step dataset minibatch for gradient + candidate scoring
+  select_n: 256             # fixed TRAIN subset for winner selection (hard_loss)
+  select_prefixes: false    # oracle-length protocol: return the full generated sequence, score selection once at the end
+  eval_chunk: 16
+  score_cand_chunk: null    # candidates/forward for candidate NLL; null => auto ~32 seqs/forward
+
+opro:                       # OPRO loop (optimize/opro.py); provider auto-selected by model id
+  optimizer_model: gpt-5.4-mini   # OpenAI reasoning model (Anthropic key dead); strong => fair "OPRO fails" test
+  reasoning_effort: none     # OPRO wants fast diverse proposals, not deep reasoning (and avoids burning the output budget)
+  max_steps: 50             # single nice default (no sweep): OPRO's failure is informational, not tuning; $15 cap backstops
+  proposals_per_step: 8
+  history_topk: 20          # sorted (prompt, score) history shown in the meta-prompt
+  n_exemplars: 5            # task exemplars (query->teacher response) shown each round (standard OPRO); 0 = blind
+  scoring_subset: 256       # fixed TRAIN subset each candidate is scored on (hard_loss)
+  temperature: 1.0
+  max_usd: 15.0             # hard cost cap across the run -> abort + best-so-far
+
+largo:                      # vanilla LARGO (Li et al. 2025, arXiv:2505.10838): iterate soft->verbalize->re-embed
+  num_rounds: 15            # paper T=15
+  decode_samples: 1         # single verbalization per round (paper: 1, no candidate pool)
+  decode_temperature: 0.1   # ~deterministic (paper uses 0; small positive for numerical safety)
+  strategy: {type: naive}   # plain re-embed each round, no buffer/patience (vanilla)
+  select_n: 256             # train subset for candidate scoring (protocol parity, aligned 256); decode_pool/persona from `decode`
+  soft:                     # inner soft-optimization per round
+    lr: 1e-3                # default; SWEPT {3e-4,1e-3,3e-3} in the launcher (LARGO only; NOT transferred to SALVE)
+    weight_decay: 0.001     # paper: 0.001
+    steps: 150              # inner steps/round; 15 rounds x 150 = 2250 ~ SALVE's soft total (4 ep x 500) -> matched soft budget
+    schedule: constant
+    mini_batch_size: 8
+    train_batch_size: 16
+    val_every: null

@@ -164,12 +164,19 @@ class NLLObjective:
             total_loss = total_loss + chunk_loss.detach()
         return total_loss.item() if backward else total_loss
 
-    def hard_loss(self, sysprompt_text, split, mini_batch_size=None):
+    def hard_loss(self, sysprompt_text, split, mini_batch_size=None,
+                  indices=None):
         """Honest text-mode NLL: score `sysprompt_text` as a system prompt
         against the raw xy dataset for `split`. Returns a Python float.
 
+        indices: optional list of example positions within `split` to score (a
+            fixed selection subset); None = the whole split. Mirrors
+            `loss(..., indices=...)` so selection code can score a subset WITHOUT
+            mutating objective.{examples,xy}_by_split (the prior pattern in
+            recover.py / opro.py / run_largo_method).
+
         Thin wrapper over `nll_with_sysprompt` — same scoring path, just
-        single-split convenience for LARGO.
+        single-split convenience for the runner + recovery loops.
         """
         assert self.tokenizer is not None, \
             "hard_loss requires tokenizer on NLLObjective"
@@ -178,9 +185,12 @@ class NLLObjective:
         rendered_sysprompt = self.system_template.replace(
             "{SOFT}", sysprompt_text,
         )
+        xys = self.xy_by_split[split]
+        if indices is not None:
+            xys = [xys[i] for i in indices]
         out = nll_with_sysprompt(
             self.model, self.tokenizer,
-            {split: self.xy_by_split[split]},
+            {split: xys},
             rendered_sysprompt,
             mini_batch_size=mini_batch_size,
             assistant_prefill=self.assistant_prefill,
@@ -221,29 +231,39 @@ def nll_with_sysprompt(model, tokenizer, xy_by_split, sysprompt,
                           leave=False, ncols=80):
             chunk = scored[start:start + bs]
             seqs, labels_list = [], []
-            for scenario, response in chunk:
+            for item in chunk:
+                # (scenario, response[, prefill[, target_ids]]). prefill (3rd) is
+                # PER-ROW and excluded from the scored target. target_ids (4th) =
+                # the GENERATED continuation token ids: appended directly after the
+                # prompt+prefill context (NO decode->re-encode), so the canonical
+                # prompt stays the NLL argmin (see project_nll_retokenization_artifact).
+                # Without target_ids we fall back to re-tokenizing the response text.
+                scenario, response = item[0], item[1]
+                prefill = item[2] if len(item) > 2 else assistant_prefill
+                target_ids = item[3] if len(item) > 3 else None
                 messages = []
                 if sysprompt is not None:
                     messages.append({"role": "system", "content": sysprompt})
                 messages.append({"role": "user", "content": scenario})
-                messages.append({"role": "assistant",
-                                 "content": assistant_prefill + response})
-                full_rendered = tokenizer.apply_chat_template(
-                    messages, tokenize=False,
-                )
-                full_ids = tokenizer.encode(full_rendered,
-                                            add_special_tokens=False)
                 prompt_rendered = tokenizer.apply_chat_template(
-                    messages[:-1], tokenize=False,
-                    add_generation_prompt=True,
+                    messages, tokenize=False, add_generation_prompt=True,
                 )
                 prompt_ids = tokenizer.encode(prompt_rendered,
                                               add_special_tokens=False)
                 prefill_ids = (
-                    tokenizer(assistant_prefill,
-                              add_special_tokens=False).input_ids
-                    if assistant_prefill else []
+                    tokenizer(prefill, add_special_tokens=False).input_ids
+                    if prefill else []
                 )
+                if target_ids is not None:
+                    full_ids = prompt_ids + prefill_ids + list(target_ids)
+                else:
+                    messages.append({"role": "assistant",
+                                     "content": prefill + response})
+                    full_rendered = tokenizer.apply_chat_template(
+                        messages, tokenize=False,
+                    )
+                    full_ids = tokenizer.encode(full_rendered,
+                                                add_special_tokens=False)
                 target_start = len(prompt_ids) + len(prefill_ids)
                 seq = torch.tensor(full_ids, device=device, dtype=torch.long)
                 label = torch.full((len(full_ids),), -100, device=device,
@@ -311,8 +331,21 @@ def nll_objective_from_xys(model, tokenizer, xy_by_split, build_example,
         )
         obj = nll_objective_from_xys(model, tokenizer, xy_by_split, build)
     """
+    def _example(item):
+        # 4-tuple (s, r, prefill, target_ids) → per-row prefill + the GENERATED
+        # target token ids (scored directly, no decode->re-encode); 3-tuple
+        # (s, r, prefill) → just the prefill; 2-tuple (s, r) → 2-arg builders unchanged.
+        s, r = item[0], item[1]
+        if len(item) > 3:
+            built = build_example(s, r, item[2], item[3])
+        elif len(item) > 2:
+            built = build_example(s, r, item[2])
+        else:
+            built = build_example(s, r)
+        return NLLExample(*built)
+
     examples_by_split = {
-        split: [NLLExample(*build_example(s, r)) for s, r in xys]
+        split: [_example(it) for it in xys]
         for split, xys in xy_by_split.items()
     }
     return NLLObjective(model, examples_by_split,
