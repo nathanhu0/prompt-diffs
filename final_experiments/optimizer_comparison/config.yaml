@@ -1,0 +1,18 @@
+# Master config for the prompt-optimizer comparison.
+#
+# Corresponds to (messy source): experiments/sl_optimizer_comparison/sl_cat.yaml
+# Renamed sl_cat.yaml -> config.yaml: it is NOT cat-specific. It is the single
+# master config holding DEFAULTS for every method; the dataset (animal/constraint
+# + prefill variant) is selected at the CLI / launcher, not by per-dataset YAMLs.
+#
+# Will hold:
+#   model, seed, data/scoring defaults (n_train/n_val/n_test, n_learnable,
+#   system_template, select_n / scoring subset), and one block of DEFAULTS per
+#   method: salve, gcg, pgd, gbda, pez, opro, largo (+ autodan if kept).
+#
+# OPEN DECISION (claim-level): SALVE's soft lr. The README calls SALVE
+#   "deliberately untuned" (1e-3) but the launcher freezes it at 3e-3 as a
+#   dev-winner. Decide: own the 3e-3, run genuinely untuned, or reframe the
+#   fairness claim. This block is where that lands.
+
+# TODO(stub): port the method-default blocks from sl_cat.yaml.
