@@ -1,0 +1,5 @@
+# Baselines — not an optimizer; the shared references scored once per dataset:
+# no-prompt floor + the true canonical prompt (true_pi). Harness only, no method
+# block. (Our prefill data has no producer adapter, so no adapter skyline.)
+extends: ../_base.yaml
+name: baselines           # dispatch key (the runner reads cfg["name"]; no --method flag)

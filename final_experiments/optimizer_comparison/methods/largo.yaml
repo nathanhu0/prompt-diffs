@@ -1,0 +1,30 @@
+# LARGO — gold hyperparameters. Vanilla LARGO (Li et al. 2025, arXiv:2505.10838):
+# iterate soft->verbalize->re-embed. Fixed 128-token soft slot; decode bounded to
+# 128 and re-embed keeps the slot at 128. Inner soft budget matched to SALVE
+# (10 rounds x 250 = 2500 == 4 ep x 625 @ n_train=10000). Selection on the 256 TRAIN subset.
+extends: ../_base.yaml
+name: largo               # dispatch key (the runner reads cfg["name"]; no --method flag)
+n_learnable: 128          # fixed 128-token soft slot (overrides _base 256). Drives BOTH the decode
+                          # cap (_decode max_tokens defaults to n_learnable) AND the re-embed slot
+                          # size, so soft prompt length == decode budget == 128.
+
+method:
+  num_rounds: 10           # paper T=15; lowered to 10 so 10 rounds x 250 steps = 2500
+                           # exactly matches SALVE's soft budget (4 ep x 625 @ n_train=10000)
+  decode_samples: 1        # single verbalization per round (paper: 1, no candidate pool)
+  decode_temperature: 0    # greedy verbalization, paper-faithful (generate_from_embeds argmaxes at temp 0)
+  strategy: {type: naive}  # plain re-embed each round, no buffer/patience (vanilla)
+  select_n: 256            # best-of selection on a fixed 256 TRAIN subset (fair-comparison protocol; equal across methods)
+  decode:                  # verbalization framing (mirrors SALVE's; no persona for SL)
+    pool: system_top4
+    persona_prefix: ""
+  soft:                    # inner soft-optimization per round — SAME schedule args as SALVE
+    lr: 3e-3               # matched to SALVE (both soft methods use lr 3e-3)
+    weight_decay: 0.001    # matched to SALVE
+    steps: 250             # 10 rounds x 250 = 2500 == SALVE soft total (matched compute)
+    schedule: cosine       # was 'constant' (orig LARGO); cosine+warmup PER ROUND to match SALVE's
+                           # schedule shape and remove it as a confound (deliberate deviation)
+    warmup_frac: 0.05      # ~12 warmup steps/round, then cosine anneal 3e-3 -> 0 (SALVE's value)
+    mini_batch_size: 8
+    train_batch_size: 16
+    val_every: null

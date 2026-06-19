@@ -1,0 +1,43 @@
+# GBDA — Guo et al. 2021 (arXiv:2104.13733), "Gradient-based Adversarial Attacks
+# against Text Transformers". optimize/gbda.py is our clean-room port. A Gumbel-softmax
+# distributional / gradient-relaxation method (the PGD family): optimize per-position
+# vocab logits with Adam, soft-sample via Gumbel-softmax, decode by argmax.
+#
+# REPORTED CONFIG = uniform init + NO fluency penalty (the two deviations from the
+# paper's attack defaults, both forced by the recovery setting):
+#   * initial_coeff: 0 (uniform) — the paper warm-starts log_coeffs AT the clean input
+#     being perturbed. Recovery has no input, so a peaked init could only anchor at a
+#     RANDOM token (carries no info, just supplies logit magnitude). Uniform is the
+#     principled "no anchor" choice; empirically it optimizes the NLL just as well.
+#   * lam_perp: 0 (no fluency) — GBDA's fluency term keeps a perturbation natural
+#     RELATIVE TO its clean input. Recovery has none, so the term is reference-free and
+#     antagonistic (reusing M_base as the ref LM pulls the prompt toward base-generic,
+#     non-cat text). Dropping it is the same class of adaptation as dropping the
+#     BERTScore similarity term. lam_perp=0 is also GBDA's most charitable case (lowest
+#     NLL, highest cat-rate).
+# Even so GBDA degenerates to adversarial gibberish here (no behavioral recovery) — see
+# experiments/sl_optimizer_comparison/GBDA_FAITHFUL.md. Appendix-tier; the
+# gradient-relaxation family is carried by PGD in the main table.
+#
+# NOTE (fluency scoring, for when lam_perp>0): GBDA's fluency is computed CONSISTENTLY
+# with AutoDAN — slot perplexity conditioned on the chat/system prefix
+# (fluency_with_prefix=true, the default), not as a standalone sequence. Irrelevant at
+# the reported lam_perp=0; kept consistent for any appendix faithful-row (lam_perp=1).
+extends: ../_base.yaml
+name: gbda                  # dispatch key (the runner reads cfg["name"]; no --method flag)
+
+method:
+  num_iters: 500            # extended past the authors' 100 for the longer recovery slot
+  lr: 0.3                   # authors' Adam lr (3e-1)
+  gumbel_tau: 1.0           # F.gumbel_softmax default (not annealed, as in the paper)
+  initial_coeff: 0          # UNIFORM init (no anchor) — see header
+  lam_perp: 0               # NO fluency penalty — see header
+  fluency_with_prefix: true # if lam_perp>0: AutoDAN-consistent prefix-conditioned fluency
+  gumbel_samples_per_step: 10  # authors' value
+  mini_batch_size: 8        # with-grad memory chunk (sphinx 80G)
+  train_batch_size: 32      # effective dataset minibatch per optimizer step (mb x 4 accum)
+  select_n: 256             # fixed TRAIN selection subset (fair-comparison protocol; = all methods)
+  eval_chunk: 16            # no-grad forward chunk for the selection score
+  eval_every: 5
+  final_gumbel_samples: 100 # authors' end-of-run hard-Gumbel extraction pool
+  allow_non_ascii: false    # legibility parity with GCG/AutoDAN

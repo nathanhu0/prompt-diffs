@@ -117,7 +117,9 @@ def call_anthropic(system, user, *, model, max_tokens, temperature):
                    if b.get("type") == "text")
     u = resp.get("usage", {})
     return text, {"input_tokens": u.get("input_tokens", 0),
-                  "output_tokens": u.get("output_tokens", 0)}
+                  "output_tokens": u.get("output_tokens", 0),
+                  "finish_reason": resp.get("stop_reason"),   # "max_tokens" = truncated
+                  "reasoning_tokens": 0}
 
 
 def call_openai(system, user, *, model, max_tokens, temperature, reasoning_effort=None):
@@ -140,10 +142,14 @@ def call_openai(system, user, *, model, max_tokens, temperature, reasoning_effor
         payload["temperature"] = temperature
     resp = _post(_OPENAI_URL,
                  {"Authorization": f"Bearer {_env_key('OPENAI_API_KEY')}"}, payload)
-    text = resp["choices"][0]["message"].get("content") or ""
+    choice = resp["choices"][0]
+    text = choice["message"].get("content") or ""
     u = resp.get("usage", {})
     return text, {"input_tokens": u.get("prompt_tokens", 0),
-                  "output_tokens": u.get("completion_tokens", 0)}
+                  "output_tokens": u.get("completion_tokens", 0),
+                  "finish_reason": choice.get("finish_reason"),   # "length" = truncated
+                  "reasoning_tokens": (u.get("completion_tokens_details") or {})
+                                      .get("reasoning_tokens", 0)}
 
 
 def _make_call(model, max_tokens, temperature, reasoning_effort=None):
@@ -166,7 +172,7 @@ def parse_prompts(text):
             if ln.strip() and not ln.strip().startswith("<")]
 
 
-def _meta_user(history, n_propose, history_topk, exemplars=None, ex_chars=220):
+def _meta_user(history, n_propose, history_topk, exemplars=None, ex_chars=500):
     """OPRO meta-prompt body (Yang et al. 2023): optional task EXEMPLARS (a few
     (query, response) pairs the hidden system prompt produced), then the
     optimization trajectory — best `history_topk` (prompt, score) pairs sorted
@@ -216,6 +222,7 @@ def opro_recover(objective, model, tokenizer, embed_matrix, *, cfg, seed=42,
     max_tokens = cfg.get("max_tokens_per_call", 2048)
     reasoning_effort = cfg.get("reasoning_effort", "none")
     n_exemplars = cfg.get("n_exemplars", 0)        # standard OPRO shows task exemplars
+    exemplar_chars = cfg.get("exemplar_chars", 500)  # per-field char cap on shown (query, response)
     call = _call or _make_call(optimizer_model, max_tokens, temperature, reasoning_effort)
     price_in, price_out = _price(optimizer_model)
     system = _OPT_SYSTEM + (("\n\n" + HINT) if cfg.get("hinted", False) else "")
@@ -227,14 +234,16 @@ def opro_recover(objective, model, tokenizer, embed_matrix, *, cfg, seed=42,
     g = torch.Generator(); g.manual_seed(seed)
     sel_idx = torch.randperm(n_full, generator=g).tolist()[:n_sel]
 
-    # Task exemplars (a few (query, response) pairs from the scoring subset) shown
-    # in every meta-prompt — the standard OPRO component. n_exemplars=0 -> blind.
-    exemplars = None
-    if n_exemplars:
-        full_xy = objective.xy_by_split[select_split]
-        ge = torch.Generator(); ge.manual_seed(seed + 1)
-        ex_idx = torch.randperm(n_sel, generator=ge).tolist()[:n_exemplars]
-        exemplars = [full_xy[sel_idx[i]] for i in ex_idx]
+    # Task exemplars: a fresh random sample of n_exemplars (query, response) pairs
+    # from the train split, REDRAWN each step (standard OPRO — diversity / anti-
+    # overfit). Seeded per-step so the run is reproducible. n_exemplars=0 -> blind.
+    full_xy = objective.xy_by_split[select_split]
+    def draw_exemplars(step):
+        if not n_exemplars:
+            return None
+        ge = torch.Generator(); ge.manual_seed(seed + 1 + step)
+        idx = torch.randperm(len(full_xy), generator=ge).tolist()[:n_exemplars]
+        return [full_xy[i] for i in idx]
 
     def score(text):
         return float(objective.hard_loss(text, select_split, indices=sel_idx,
@@ -242,15 +251,33 @@ def opro_recover(objective, model, tokenizer, embed_matrix, *, cfg, seed=42,
 
     spent_usd = 0.0
     n_proposals = 0
+    n_calls = 0
+    n_truncated = 0                              # calls cut off by the token cap
     trajectory = []
     history = [(score(""), "")]                  # seed with no-prompt baseline
     trajectory.append((0, "", history[0][0]))
     for step in range(max_steps):
         text, usage = call(system,
-                           _meta_user(history, n_propose, history_topk, exemplars))
+                           _meta_user(history, n_propose, history_topk,
+                                      draw_exemplars(step), ex_chars=exemplar_chars))
         spent_usd += (usage.get("input_tokens", 0) * price_in
                       + usage.get("output_tokens", 0) * price_out)
-        for cand in parse_prompts(text)[:n_propose]:
+        n_calls += 1
+        cands = parse_prompts(text)[:n_propose]
+        # LOUD truncation guard: if the call was cut off by the token cap (OpenAI
+        # finish_reason='length' / Anthropic stop_reason='max_tokens'), reasoning
+        # tokens are starving the proposal output — the #1 silent OPRO failure
+        # (whole run sits at the empty baseline). Complain hard and actionably.
+        if usage.get("finish_reason") in ("length", "max_tokens") or not cands:
+            n_truncated += 1
+            print(f"  [opro WARNING] step {step}: response hit the token cap "
+                  f"(finish_reason={usage.get('finish_reason')!r}, "
+                  f"{usage.get('output_tokens', 0)} completion tokens incl "
+                  f"{usage.get('reasoning_tokens', 0)} reasoning, cap={max_tokens}) "
+                  f"-> only {len(cands)} proposals parsed. RAISE "
+                  f"opro.max_tokens_per_call (reasoning is eating the output budget).",
+                  flush=True)
+        for cand in cands:
             s = score(cand)
             history.append((s, cand))
             n_proposals += 1
@@ -262,6 +289,11 @@ def opro_recover(objective, model, tokenizer, embed_matrix, *, cfg, seed=42,
             print(f"  USD cap ${max_usd} reached; stopping with best-so-far")
             break
 
+    if n_truncated:
+        print(f"  [opro WARNING] {n_truncated}/{n_calls} calls hit the token cap "
+              f"({n_proposals} proposals kept of an intended {n_calls * n_propose}). "
+              f"Results are DEGRADED — raise opro.max_tokens_per_call and rerun.",
+              flush=True)
     best_score, best_text = min(history, key=lambda t: t[0])
     print(f"OPRO winner (train-selected on {n_sel}): "
           f"select={best_score:.4f}  ${spent_usd:.2f}  prompt={best_text[:80]!r}")
@@ -271,6 +303,7 @@ def opro_recover(objective, model, tokenizer, embed_matrix, *, cfg, seed=42,
         "trajectory": trajectory,
         "n_proposals": n_proposals,
         "n_steps": len(trajectory),
+        "n_truncated": n_truncated,            # calls cut off by the token cap (0 = healthy)
         "spent_usd": spent_usd,
         "select_split": select_split,
     }

@@ -54,6 +54,11 @@ SALVE×2, GCG×2, LARGO×6, PGD×8, OPRO×1, baselines×1.
   Tsallis-q2 entropy **ceiling** + upward warm restarts, at the authors' canonical
   constants. Swept `n_learnable ∈ {true,128}` × `aux_loss ∈ {on,off}` + an lr-robustness
   arm (`lr_scale ∈ {1/3,3}`, scaling lr **and** eta_min together). Runs on **sphinx (80G)**.
+- **PEZ** (`optimize/pez.py`; Wen et al. 2023, arXiv:2302.03668): Hard Prompts Made
+  Easy adapted to dataset-NLL recovery. Adam updates a continuous prompt embedding,
+  every forward projects to nearest vocab embeddings with a straight-through gradient,
+  and winner selection is the same fixed train-subset text-mode NLL as the other
+  discrete baselines.
 - **OPRO** (`optimize/opro.py`, stdlib urllib → **OpenAI gpt-5.4-mini**,
   reasoning_effort=none): LLM optimizer shown 5 data exemplars + (prompt, NLL) history,
   scored by teacher-forced NLL. **Single default, no sweep** (100 steps × 8 proposals,
@@ -156,9 +161,9 @@ PYTHONPATH=. uv run python experiments/sl_optimizer_comparison/launch_sweep.py -
 # 3. aggregate the best-per-method table
 PYTHONPATH=. uv run python experiments/sl_optimizer_comparison/build_table.py --sweep <dir> --variant <sl_paper|raw_t1> --label <cat|even|...>
 ```
-Driver: `run_comparison.py --method {salve,gcg,pgd,opro,largo,baselines} --task
+Driver: `run_comparison.py --method {salve,gcg,pgd,gbda,pez,autodan,opro,largo,baselines} --task
 {sl_animal,number_constraint} [--topic cat | --constraint even] [--set n_learnable=true|<int>]
-[--data-stem ...numonly]`. Tests: `tests/test_{gcg,pgd,opro,optimizer_loops}.py`.
+[--data-stem ...numonly]`. Tests: `tests/test_{gcg,pgd,pez,opro,optimizer_loops}.py`.
 
 Outputs under `/nlp/scr/nathu/latent_rewrite/sl_optimizer_comparison/sweep_<config-stem>/`
 (`<job>/<data_variant>/<label>/*.json` + `comparison.md`). Ops: GPU QOS cap (excess PGD

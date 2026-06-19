@@ -1,0 +1,18 @@
+# GCG — gold hyperparameters. nanoGCG defaults (github.com/GraySwanAI/nanoGCG);
+# optimize/gcg.py is our clean-room port. ONLY deviation: nanoGCG is single-target,
+# so we resample ONE fresh dataset minibatch (mini_batch_size) per step, shared by
+# the gradient + candidate scoring. No buffer, no early-stop (nanoGCG
+# buffer_size=0, early_stop=False). Winner selection is on the harness select_n.
+extends: ../_base.yaml
+name: gcg                 # dispatch key (the runner reads cfg["name"]; no --method flag)
+
+method:
+  num_steps: 250           # nanoGCG default
+  search_width: 512        # nanoGCG default
+  topk: 256                # nanoGCG default
+  n_replace: 1             # nanoGCG default (single-position swap = original GCG)
+  allow_non_ascii: false   # nanoGCG default
+  filter_ids: true         # nanoGCG default (decode->re-encode round-trip filter)
+  mini_batch_size: 4       # DEVIATION: per-step dataset minibatch (grad + scoring); with-grad 48G-safe
+  eval_chunk: 16           # no-grad forward chunk for the selection score
+  select_n: 256            # best-of selection on a fixed 256 TRAIN subset (fair-comparison protocol; equal across methods)

@@ -8,7 +8,7 @@
 # Will hold:
 #   model, seed, data/scoring defaults (n_train/n_val/n_test, n_learnable,
 #   system_template, select_n / scoring subset), and one block of DEFAULTS per
-#   method: salve, gcg, pgd, gbda, pez, opro, largo (+ autodan if kept).
+#   method: salve, gcg, autodan, opro, largo.
 #
 # OPEN DECISION (claim-level): SALVE's soft lr. The README calls SALVE
 #   "deliberately untuned" (1e-3) but the launcher freezes it at 3e-3 as a

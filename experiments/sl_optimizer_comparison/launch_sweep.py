@@ -74,6 +74,7 @@ def animal_grid(flags=None, base=None):
                     x contrastive decode ladder runs off EACH soft_z (config
                     `salve_decode`), so the per-job axis is just length.         (2)
       GCG:   true length, NO tuning — the canonical nanoGCG run from the config.  (1)
+      PEZ:   true length, NO tuning — Hard Prompts Made Easy baseline.           (1)
       LARGO: true length, soft-lr {1e-3,1e-2} at 150 steps/round (val-selected). (2)
       OPRO:  vanilla only (length-invariant; hinted ablation dropped).          (1)
       baselines (length-invariant).                                             (1)
@@ -87,6 +88,7 @@ def animal_grid(flags=None, base=None):
             g.append(_job(f"salve_L{L}_lr{lr}", "salve", "light",
                           {**base, "n_learnable": L, "soft.lr": lr}, flags))
     g.append(_job("gcg_Ltrue", "gcg", "light", {**base, "n_learnable": "true"}, flags))  # no tuning
+    g.append(_job("pez_Ltrue", "pez", "heavy", {**base, "n_learnable": "true"}, flags))  # PEZ projection is full-vocab
     for lr in LARGO_LRS:                                    # LARGO: true length x soft-lr
         g.append(_job(f"largo_Ltrue_lr{lr}", "largo", "light",
                       {**base, "n_learnable": "true", "largo.soft.lr": lr}, flags))

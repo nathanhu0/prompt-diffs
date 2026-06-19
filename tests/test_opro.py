@@ -45,7 +45,7 @@ class FakeObjective:
         self.examples_by_split = {"train": list(range(n))}
         self.xy_by_split = {"train": [("x", "y")] * n}
 
-    def hard_loss(self, text, split, mini_batch_size=None):
+    def hard_loss(self, text, split, indices=None, mini_batch_size=None):
         return 0.4 if "cat" in text.lower() else (0.9 if text else 1.0)
 
 

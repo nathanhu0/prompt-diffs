@@ -1,0 +1,37 @@
+# SALVE (ours) — gold hyperparameters. Train ONE soft prompt z, then read it out
+# with a ladder of beam_recover arg-points (naive / greedy / beam). Every readout
+# branches off the SAME z; the contrastive generator-pool axis is available but off.
+extends: ../_base.yaml
+name: salve               # dispatch key (the runner reads cfg["name"]; no --method flag)
+n_learnable: 128          # 128-token soft slot, MATCHED to LARGO (overrides _base 256). Both soft
+                          # methods learn the same-size soft prompt; only the readout differs.
+
+method:
+  soft:                    # -> SoftConfig.from_yaml_block; the continuous z optimization
+    lr: 3e-3               # dev-winner; matched to LARGO (both soft methods use lr 3e-3)
+    weight_decay: 1e-3
+    epochs: 4              # SL paper recipe; steps = epochs * ceil(n_train / train_batch_size)
+    schedule: cosine
+    warmup_frac: 0.05
+    mini_batch_size: 8     # z=128 -> short seq; mb=8 fits 48G (jag) w/ ample headroom
+    train_batch_size: 16
+    val_every: null
+
+  decode:                  # -> minimal LargoConfig for verbalization
+    pool: system_top4      # leaned 4-template subset; task-agnostic structural framing
+    persona_prefix: ""     # mirrors system_template = "{SOFT}" (no persona)
+    temperature: 0.7
+
+  # Verbalization ladder — three readouts off the SAME z, each an arg-point of ONE
+  # beam_recover: naive = single full-length expansion (branching=1, one round);
+  # greedy = beam with n_beams=1; beam = n_beams>1 (generalizes independent chains).
+  # Headline = salve_greedy. `alpha_arms` is the contrastive axis; [[null]] = plain
+  # sampling (off). Add e.g. [[null],[null,0.25,0.5]] to a variant to ablate contrast.
+  salve_decode:
+    mini_batch_size: 24    # no-grad scoring (48G jag)
+    max_tokens: 256        # final recovered-prompt length cap
+    n_val: 256             # best-of selection on a fixed 256 TRAIN subset (fair-comparison protocol; equal across methods)
+    variants:
+      naive:  {n_beams: 1, branching: 1,  max_iters: 1,  max_new_tokens: 256, tol: inf,   alpha_arms: [[null]]}
+      greedy: {n_beams: 1, branching: 8,  max_iters: 12, max_new_tokens: 32,  tol: inf,  alpha_arms: [[null]]}
+      beam:   {n_beams: 4, branching: 16, max_iters: 12, max_new_tokens: 32,  tol: inf,   alpha_arms: [[null]]}

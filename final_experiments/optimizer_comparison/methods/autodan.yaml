@@ -1,0 +1,44 @@
+# AutoDAN — gradient-based left-to-right prompt generation (Zhu et al. 2023,
+# arXiv:2310.15140), adapted from jailbreak target NLL to dataset response NLL.
+#
+# Native protocol: generate under a max-token budget and return the best prefix
+# by the shared TRAIN selection subset. This is more faithful to AutoDAN than
+# forcing an exact oracle length: the method is path-dependent and cannot revise
+# earlier tokens, so useful prompts may occur before the budget is exhausted.
+extends: ../_base.yaml
+name: autodan             # dispatch key (the runner reads cfg["name"]; no --method flag)
+
+method:
+  max_tokens: 64          # length budget; best prefix selected on the TRAIN selection subset
+  select_prefixes: true
+
+  # Candidate-token budget (paper-faithful 80G setting): preliminary selection
+  # keeps the topk whole-vocab next-token ids under the gradient+fluency proxy,
+  # then exact-scores at most batch_size of those candidates. With topk=batch_size
+  # there is no subsampling: every shortlisted token is exact-scored.
+  topk: 512
+  batch_size: 512
+  max_inner_steps: 16     # single-token optimization convergence guard
+
+  # Transparent adapted objective:
+  #   dataset_nll(prefix + token) + fluency_weight * next_token_nll(token)
+  # where fluency conditions on the Qwen system-message prefix plus the generated
+  # system text. Dev winner on prefill-cat L64/mb32 was fw=0.1,temp=0.5; fw=0.3
+  # was slightly worse on NLL but qualitatively more fluent, so we use it as the
+  # AutoDAN-identity-preserving default.
+  fluency_weight: 0.3
+  temperature: 0.5
+
+  # Proposal data budget. Each outer token step samples a fresh 32-example TRAIN
+  # minibatch; the same minibatch is used for the one-hot gradient proxy and
+  # exact candidate scoring.
+  mini_batch_size: 32
+
+  # Prefix-selection data budget is separate: every generated prefix is scored
+  # by hard_loss on the shared fixed cfg.select_n=256 TRAIN examples, chunked
+  # into eval_chunk examples per no-grad forward (256 / 32 = 8 chunks).
+  eval_chunk: 32
+  score_cand_chunk: null  # candidates/forward; null => auto target ~32 seqs/forward
+
+  allow_non_ascii: false
+  filter_ids: true        # require prefix+token decode->encode stability

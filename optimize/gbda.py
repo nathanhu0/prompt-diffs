@@ -140,12 +140,17 @@ def run_gbda(objective, model, tokenizer, embed_matrix, *, cfg, seed,
     tau = float(cfg.get("gumbel_tau", 1.0))               # src: F.gumbel_softmax default
     initial_coeff = float(cfg.get("initial_coeff", 15.0))  # src: default 15
     lam_perp = float(cfg.get("lam_perp", 1.0))            # src: lam_perp default 1
+    fluency_with_prefix = bool(cfg.get("fluency_with_prefix", True))  # score the slot's
+    # perplexity CONDITIONED on the chat/system prefix (= AutoDAN's context_ids), so the
+    # fluency term matches AutoDAN's. False = GBDA's original standalone-sequence perplexity.
     num_samples = int(cfg.get("gumbel_samples_per_step", 4))  # src: batch_size default 10
     mb = min(int(cfg.get("mini_batch_size", 8)), n_train)     # with-grad memory chunk
     train_batch = min(int(cfg.get("train_batch_size", 32)), n_train)  # effective grad batch
     eval_chunk = int(cfg.get("eval_chunk", 16))
     eval_every = int(cfg.get("eval_every", 5))
     print_every = int(cfg.get("print_every", 10))
+    eval_gumbel_samples = int(cfg.get("eval_gumbel_samples", 4))  # draws for the
+    # diagnostic gumbel-sampled soft NLL on the fixed eval subset (debug only)
     select_n = min(int(cfg.get("select_n", 256)), n_sel_full)
     final_gumbel_samples = int(cfg.get("final_gumbel_samples", 100))  # src: gumbel_samples default 100
     allow_non_ascii = bool(cfg.get("allow_non_ascii", False))
@@ -179,6 +184,20 @@ def run_gbda(objective, model, tokenizer, embed_matrix, *, cfg, seed,
     optimizer = torch.optim.Adam([log_coeffs], lr=lr)   # src: Adam([log_coeffs], lr)
 
     E = embed_matrix
+    if lam_perp > 0:
+        # Fluency reuses M_base as the ref LM (adaptation #2): the ref forward
+        # feeds `coeffs @ E`, so `model`'s input embeddings MUST be `embed_matrix`
+        # — assert it so a future caller can't silently pass a mismatched pair.
+        assert model.get_input_embeddings().weight.shape == embed_matrix.shape, \
+            "GBDA fluency ref-LM (model) embeddings must match embed_matrix"
+    # Fluency conditioning context: the chat/system prefix preceding the slot — the
+    # SAME `template.prefix_ids` AutoDAN feeds as `context_ids` — so GBDA's fluency is
+    # computed identically to AutoDAN's (slot perplexity IN CONTEXT). None ⇒ standalone.
+    flu_prefix_embeds = None
+    if lam_perp > 0 and fluency_with_prefix:
+        pfx = objective.examples_by_split[split][0].template.prefix_ids or []
+        if pfx:
+            flu_prefix_embeds = E[torch.as_tensor(pfx, device=device)].detach()
     # Fixed selection subset (same every step): comparable trajectory + winner.
     # hard_loss(indices=) = TEXT path = the reported NLL (uniform across methods).
     g_sel = torch.Generator(); g_sel.manual_seed(seed)
@@ -201,35 +220,83 @@ def run_gbda(objective, model, tokenizer, embed_matrix, *, cfg, seed,
     for step in range(num_iters):
         optimizer.zero_grad()
         mb_idx = torch.randperm(n_train, generator=g_mb).tolist()[:train_batch]
+        adv_train_sum = 0.0   # soft objective ACTUALLY descended (gumbel-sampled,
+        fluency_sum = 0.0     # train minibatch) — averaged over draws for logging
         for _s in range(num_samples):
             noise = gumbel_like(log_coeffs).detach()      # fresh Gumbel draw, no grad
 
             def z_fn(noise=noise):                        # fresh graph per accum chunk
                 coeffs = gumbel_softmax_coeffs(masked(log_coeffs), tau, noise)
                 return coeffs.to(E.dtype) @ E             # (L, d) soft embedding
-            # adversarial term = dataset NLL (weight 1); backprops into log_coeffs.grad
-            objective.loss(z_fn, split=split, indices=mb_idx, backward=True,
-                           mini_batch_size=mb)
+            # adversarial term = dataset NLL (weight 1); backprops into log_coeffs.grad.
+            # The return is the per-token mean NLL of THIS Gumbel sample on the train
+            # minibatch — the literal quantity Adam steps on. Capture it to verify the
+            # objective is moving (the whole point of the run).
+            adv_train_sum += objective.loss(z_fn, split=split, indices=mb_idx,
+                                            backward=True, mini_batch_size=mb)
             if lam_perp > 0:                              # fluency term
                 coeffs = gumbel_softmax_coeffs(masked(log_coeffs), tau, noise)
-                ref_logits = model(
-                    inputs_embeds=(coeffs.to(E.dtype) @ E).unsqueeze(0)
-                ).logits.float()                         # (1, L, V) — ref = M_base
-                perp = lam_perp * log_perplexity(ref_logits, coeffs.unsqueeze(0))
-                perp.backward()                          # accumulate into log_coeffs.grad
+                slot_emb = coeffs.to(E.dtype) @ E         # (L, d)
+                if flu_prefix_embeds is not None:
+                    # AutoDAN-consistent: -log p(slot_i | chat-prefix, slot_<i),
+                    # over ALL L slot tokens (token 0 now sees the system prefix).
+                    full = torch.cat([flu_prefix_embeds, slot_emb], 0).unsqueeze(0)
+                    logits = model(inputs_embeds=full).logits.float()  # (1, P+L, V)
+                    P = flu_prefix_embeds.shape[0]
+                    pred = logits[:, P - 1:P + L - 1, :V]  # predicts slot 0..L-1
+                    fluency = -(coeffs.unsqueeze(0)
+                                * F.log_softmax(pred, dim=-1)).sum(-1).mean()
+                else:                                     # standalone (GBDA original)
+                    ref_logits = model(
+                        inputs_embeds=slot_emb.unsqueeze(0)
+                    ).logits.float()                     # (1, L, V) — ref = M_base
+                    fluency = log_perplexity(ref_logits, coeffs.unsqueeze(0))
+                fluency_sum += float(fluency.detach())   # log raw (lam_perp-free) value
+                (lam_perp * fluency).backward()          # accumulate into log_coeffs.grad
         if log_coeffs.grad is not None:                  # mean over Gumbel draws
             log_coeffs.grad /= num_samples
         optimizer.step()
+        adv_train = adv_train_sum / num_samples
+        fluency_train = (fluency_sum / num_samples) if lam_perp > 0 else 0.0
 
         if step % eval_every == 0 or step == num_iters - 1:
-            text = _decode(tokenizer, masked(log_coeffs.detach()).argmax(-1))
+            lc_det = masked(log_coeffs.detach())
+            text = _decode(tokenizer, lc_det.argmax(-1))
             sel = score_text(text); n_scored += 1
-            trajectory.append((n_scored, text, sel))
+            # The NLL ladder (relaxation -> discretization), all on the SAME fixed
+            # eval subset so the rungs are directly comparable:
+            #   soft_gumbel : E_g[NLL(softmax((lc+g)/tau)@E)]  -- the relaxation the
+            #                 optimizer SEES (what backprop descends, eval subset).
+            #   soft_det    : NLL(softmax(lc)@E)               -- mean-field soft prompt.
+            #   hard        : hard_loss(argmax(lc))            -- discretized readout.
+            # soft_gumbel>>soft_det => Gumbel/tau cold-start (soft sample too diffuse);
+            # soft_det>>hard => the relaxation isn't collapsing to a good discrete
+            # prompt (the gradient-baseline failure mode). Plus the train-side
+            # decomposition (adv_train, fluency) so we can see WHICH term moves.
+            with torch.no_grad():
+                soft_det = float(objective.loss(
+                    torch.softmax(lc_det, dim=-1).to(E.dtype) @ E,
+                    split=select_split, indices=sel_idx, backward=False,
+                    mini_batch_size=eval_chunk))
+                soft_gumbel = 0.0
+                for _k in range(eval_gumbel_samples):
+                    g = gumbel_like(lc_det)
+                    soft_gumbel += float(objective.loss(
+                        gumbel_softmax_coeffs(lc_det, tau, g).to(E.dtype) @ E,
+                        split=select_split, indices=sel_idx, backward=False,
+                        mini_batch_size=eval_chunk))
+                soft_gumbel /= max(eval_gumbel_samples, 1)
+            trajectory.append({"n_scored": n_scored, "step": step, "text": text,
+                               "hard": sel, "soft_det": soft_det,
+                               "soft_gumbel": soft_gumbel, "adv_train": adv_train,
+                               "fluency": fluency_train})
             if sel < best_sel:
                 best_sel, best_text = sel, text
-        if step % print_every == 0:
-            print(f"  step {step}: sel_loss(best {best_sel:.4f}) "
-                  f"proposals={n_scored} slot={best_text[:50]!r}", flush=True)
+            if step % print_every == 0:
+                print(f"  step {step}: soft_gumbel={soft_gumbel:.4f} "
+                      f"soft_det={soft_det:.4f} hard={sel:.4f} | "
+                      f"adv_train={adv_train:.4f} fluency={fluency_train:.3f} "
+                      f"(best_hard {best_sel:.4f}) slot={text[:40]!r}", flush=True)
 
     # End-of-run extraction: draw HARD Gumbel samples and keep the best
     # (src: whitebox_attack.py `for j in range(gumbel_samples): adv_ids =

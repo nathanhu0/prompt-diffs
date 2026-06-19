@@ -27,6 +27,8 @@ def family(method):
         return "GCG"
     if method.startswith("pgd"):
         return "PGD"
+    if method.startswith("pez"):
+        return "PEZ"
     if method == "opro":
         return "OPRO"
     if method == "opro_hinted":
@@ -34,7 +36,7 @@ def family(method):
     return None
 
 
-_FAM_ORDER = ("SALVE", "LARGO", "GCG", "PGD", "OPRO", "OPRO (hinted)")
+_FAM_ORDER = ("SALVE", "LARGO", "GCG", "PGD", "PEZ", "OPRO", "OPRO (hinted)")
 
 # SALVE verbalization ladder (all readouts branch off ONE soft_z), in order.
 _SALVE_ABLATION = ("salve_naive", "salve_greedy", "salve_greedy_contrastive",

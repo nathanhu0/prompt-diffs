@@ -1,19 +1,20 @@
-"""Single cross-method comparison figure for the SL prompt-recovery experiment
-(paper Exp 1), on the prefill-forced t=1 datasets scored with the FIXED
-token-space NLL (data carries `completion_ids`; see project_nll_retokenization
-_artifact). One config per method, one bar each:
+"""Cross-method comparison figure for the SL prompt-recovery experiment (paper
+Exp 1), on the prefill-forced t=1 datasets scored with the FIXED token-space NLL
+(`completion_ids`). Two method bars for SALVE — naive (single verbalization, no
+search) vs beam (full beam search) — plus the baselines:
 
-    SALVE (ours, headline = greedy readout) | LARGO | GCG | OPRO (vanilla)
+  SALVE naive / SALVE beam  (soft-lr frozen 3e-3, best-of-{true,128} by select)
+  LARGO  1e-3 / 1e-2        (its winner flips across datasets)
+  GCG                        (canonical nanoGCG)
+  OPRO                       (vanilla)
 
-Each bar is the train-selected config (argmin train select-score — the paper's
-selection rule), reported on held-out val. Per subplot references: gray dashed =
-no-prompt floor, crimson dashed = canonical (true-pi). A method with no result
-yet is drawn as a hatched "pending" slot so the layout is stable across reruns.
+Each bar = train-selected, reported on held-out val. Per subplot refs: gray
+dashed = no-prompt floor, crimson dashed = canonical (true-pi). Hatched = pending.
 
-Layout: 4x4. Left two columns = animals (subliminal trait); right two = number
-constraints (legible rule). Within each family: behavior (hit-rate, higher
-better) | val NLL (lower better, zoomed). Each subplot is titled with its own
-dataset, so the row pairing is purely cosmetic.
+Layout: two separated subfigures — Animals (subliminal trait) | Constraints
+(legible rule). Within each: rows = AVERAGE(n=4) then the 4 datasets; cols =
+hit-rate (↑ better) | val NLL (↓ better). The AVERAGE row means each bar/ref
+across that family's 4 datasets.
 
   PYTHONPATH=. uv run python \
     experiments/sl_optimizer_comparison/plotting/plot_comparison.py
@@ -24,140 +25,182 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
 from matplotlib.lines import Line2D
 
 SCR = Path("/nlp/scr/nathu/latent_rewrite/sl_optimizer_comparison")
 OUT = Path(__file__).parent / "figures"
-VARIANT = "prefill_t1"
+V = "prefill_t1"
 
 ANIMALS = ["cat", "dog", "eagle", "owl"]                  # subliminal trait
 CONSTRAINTS = ["even", "six_seven", "mult_5", "mult_3"]   # legible rule
 
-# One config per method (frozen); SALVE headline = the greedy readout.
-METHODS = [("SALVE", "#1f77b4"), ("LARGO", "#ff7f0e"),
-           ("GCG", "#2ca02c"), ("OPRO", "#9467bd")]
+SALVE_CELLS = ["salve_Ltrue_lr3e-3", "salve_L128_lr3e-3"]  # frozen lr; best length by select
+BARS = [
+    ("SALVE", "naive", ("salve", "salve_naive"), "#9ecae1"),   # single verbalization, no search
+    ("SALVE", "beam",  ("salve", "salve_beam"),  "#08519c"),   # full beam search
+    ("LARGO", "1e-3",  ("largo", "1e-3"),        "#fdae6b"),
+    ("LARGO", "1e-2",  ("largo", "1e-2"),        "#e6550d"),
+    ("GCG",   "gcg",   ("gcg",),                 "#2ca02c"),
+    ("OPRO",  "opro",  ("opro",),                "#9467bd"),
+]
 
 
-def sel_score(d):
+def _sel(d):
     e = d.get("extra") or {}
     return e.get("select_score", e.get("best_select_score"))
 
 
-def best(records):
-    """Train-selected record: argmin over the train select-score."""
-    rs = [r for r in records if sel_score(r) is not None]
-    return min(rs, key=sel_score) if rs else None
+def _read(ds, cell, fname):
+    p = SCR / f"sweep_prefill_{ds}" / cell / V / ds / f"{fname}.json"
+    return json.loads(p.read_text()) if p.exists() else None
 
 
-def load(ds):
-    """-> (bars, refs). bars[method] = (hit_rate, val_nll) for finished methods;
-    refs = no-prompt floor + canonical true-pi (both metrics)."""
-    base = SCR / f"sweep_prefill_{ds}"
-    recs, baselines = [], None
-    for jf in base.glob(f"*/{VARIANT}/{ds}/*.json"):
-        d = json.loads(jf.read_text())
-        if jf.name == "baselines.json":
-            baselines = d
-        elif "method" in d:
-            recs.append(d)
-    by = {}
-    for r in recs:
-        by.setdefault(r["method"], []).append(r)
+def _hv(d):
+    return ((d.get("behavior") or {}).get("hit_rate"), (d.get("nll") or {}).get("val"))
 
-    def hv(r):
-        return ((r.get("behavior") or {}).get("hit_rate"),
-                (r.get("nll") or {}).get("val"))
 
-    bars = {}
-    g = best(by.get("salve_greedy", []))            # SALVE headline = greedy
-    if g:
-        bars["SALVE"] = hv(g)
-    if best(by.get("largo", [])):
-        bars["LARGO"] = hv(best(by["largo"]))
-    gcg = best([r for t in by for r in by[t] if t.startswith("gcg")])
-    if gcg:
-        bars["GCG"] = hv(gcg)
-    if best(by.get("opro", [])):
-        bars["OPRO"] = hv(best(by["opro"]))
+def load_one(ds):
+    """-> (vals, refs). vals[i] = (hit, nll) or None, in BARS order."""
+    vals = []
+    for _g, _lab, key, _c in BARS:
+        if key[0] == "salve":                       # best length cell by train select-score
+            cands = [d for d in (_read(ds, c, key[1]) for c in SALVE_CELLS) if d]
+            sc = [d for d in cands if _sel(d) is not None]
+            pick = (min(sc, key=_sel) if sc else
+                    (min(cands, key=lambda d: (d.get("nll") or {}).get("val", 9)) if cands else None))
+            vals.append(_hv(pick) if pick else None)
+        elif key[0] == "largo":
+            d = _read(ds, f"largo_Ltrue_lr{key[1]}", "largo")
+            vals.append(_hv(d) if d else None)
+        elif key[0] == "gcg":                       # filename encodes canonical len (gcg_L28.json)
+            g = sorted((SCR / f"sweep_prefill_{ds}" / "gcg_Ltrue" / V / ds).glob("gcg_L*.json"))
+            d = json.loads(g[0].read_text()) if g else None
+            vals.append(_hv(d) if d else None)
+        elif key[0] == "opro":
+            d = _read(ds, "opro", "opro")
+            vals.append(_hv(d) if d else None)
 
+    bp = SCR / f"sweep_prefill_{ds}" / "baselines" / V / ds / "baselines.json"
     refs = {}
-    if baselines:
-        np_, tp = baselines.get("no_prompt", {}), baselines.get("true_pi", {})
+    if bp.exists():
+        b = json.loads(bp.read_text())
+        np_, tp = b.get("no_prompt", {}), b.get("true_pi", {})
         refs = {"floor_beh": (np_.get("behavior") or {}).get("hit_rate"),
                 "floor_nll": (np_.get("nll") or {}).get("val"),
                 "canon_beh": (tp.get("behavior") or {}).get("hit_rate"),
                 "canon_nll": (tp.get("nll") or {}).get("val")}
-    return bars, refs
+    return vals, refs
 
 
-def subplot(ax, ds, metric, show_xlabels):
-    bars, refs = load(ds)
+def load_avg(datasets):
+    """Mean across a family: each bar value + each ref, averaged over datasets."""
+    allv = [load_one(ds) for ds in datasets]
+    vals = []
+    for i in range(len(BARS)):
+        hs = [v[i][0] for v, _ in allv if v[i] and v[i][0] is not None]
+        ns = [v[i][1] for v, _ in allv if v[i] and v[i][1] is not None]
+        vals.append((sum(hs) / len(hs) if hs else None, sum(ns) / len(ns) if ns else None))
+    refs = {}
+    for k in ("floor_beh", "floor_nll", "canon_beh", "canon_nll"):
+        xs = [r[k] for _, r in allv if r.get(k) is not None]
+        refs[k] = sum(xs) / len(xs) if xs else None
+    return vals, refs
+
+
+def _xcoords():
+    xs, x, prev = [], 0.0, None
+    for g, *_ in BARS:
+        if prev is not None and g != prev:
+            x += 0.9
+        xs.append(x); x += 1.0; prev = g
+    return xs
+
+
+XS = _xcoords()
+
+
+def panel(ax, vals, refs, metric, rowlabel, is_avg):
     idx = 0 if metric == "beh" else 1
-    xs = list(range(len(METHODS)))
-    present = [(x, m, c, bars[m][idx]) for x, (m, c) in zip(xs, METHODS)
-               if m in bars and bars[m][idx] is not None]
+    present = [(XS[i], BARS[i], vals[i][idx]) for i in range(len(BARS))
+               if vals[i] and vals[i][idx] is not None]
 
-    if metric == "nll":                              # zoom to [min, max] of bars + refs
-        vals = [v for *_, v in present]
-        vals += [refs[k] for k in ("floor_nll", "canon_nll") if refs.get(k) is not None]
-        lo, hi = (min(vals), max(vals)) if vals else (0, 1)
-        pad = max((hi - lo) * 0.15, 0.01)
+    if metric == "nll":
+        v = [val for _, _, val in present]
+        v += [refs[k] for k in ("floor_nll", "canon_nll") if refs.get(k) is not None]
+        lo, hi = (min(v), max(v)) if v else (0, 1)
+        pad = max((hi - lo) * 0.14, 0.01)
         ax.set_ylim(lo - pad, hi + pad)
-    else:                                            # behavior is 0-based
-        vals = [v for *_, v in present] + [refs.get("canon_beh") or 0]
-        ax.set_ylim(0, max(1.0, max(vals) if vals else 1.0) * 1.08)
+    else:
+        v = [val for _, _, val in present] + [refs.get("canon_beh") or 0]
+        ax.set_ylim(0, max(1.0, max(v) if v else 1.0) * 1.08)
     y0, y1 = ax.get_ylim()
 
-    for x, m, c, v in present:
-        ax.bar(x, v - y0, bottom=y0, width=0.8, color=c, edgecolor="black", linewidth=0.4)
-        ax.text(x, v, f"{v:.2f}", ha="center", va="bottom", fontsize=6)
-    for x, (m, c) in zip(xs, METHODS):               # hatched placeholder for pending
-        if m not in bars or bars[m][idx] is None:
-            ax.bar(x, y1 - y0, bottom=y0, width=0.8, color="none",
-                   edgecolor="0.75", hatch="///", linewidth=0.5)
-            ax.text(x, (y0 + y1) / 2, "pending", rotation=90, ha="center",
-                    va="center", fontsize=6, color="0.6")
+    for x, (_g, _lab, _k, c), val in present:
+        ax.bar(x, val - y0, bottom=y0, width=0.92, color=c, edgecolor="black", linewidth=0.3)
+        ax.text(x, val, f"{val:.2f}", ha="center", va="bottom", fontsize=5)
+    for i, (_g, _lab, _k, _c) in enumerate(BARS):
+        if not vals[i] or vals[i][idx] is None:
+            ax.bar(XS[i], y1 - y0, bottom=y0, width=0.92, color="none",
+                   edgecolor="0.78", hatch="///", linewidth=0.35)
 
-    fk, ck = (("floor_nll", "canon_nll") if metric == "nll"
-              else ("floor_beh", "canon_beh"))
+    fk, ck = (("floor_nll", "canon_nll") if metric == "nll" else ("floor_beh", "canon_beh"))
     if refs.get(fk) is not None:
         ax.axhline(refs[fk], ls="--", color="gray", lw=1.0)
     if refs.get(ck) is not None:
         ax.axhline(refs[ck], ls="--", color="crimson", lw=1.0)
 
     ax.grid(axis="y", alpha=0.25)
-    ax.set_xticks(xs)
-    ax.set_xticklabels([m for m, _ in METHODS] if show_xlabels else [],
-                       rotation=45, ha="right", fontsize=7)
-    ax.set_title(f"{ds} — {'hit-rate' if metric == 'beh' else 'val NLL'}", fontsize=8)
+    ax.set_xlim(XS[0] - 0.8, XS[-1] + 0.8)
+    ax.set_xticks(XS)
+    if is_avg:                                # method group labels under the AVERAGE row
+        spans = {}
+        for x, bar in zip(XS, BARS):
+            spans.setdefault(bar[0], []).append(x)
+        for g, xv in spans.items():
+            ax.text(sum(xv) / len(xv), 1.02, g, transform=ax.get_xaxis_transform(),
+                    ha="center", va="bottom", fontsize=7, fontweight="bold")
+    ax.set_xticklabels([])
+
+    up = metric == "beh"
+    ax.set_ylabel(("hit-rate ↑" if up else "val NLL ↓"), fontsize=8,
+                  color=("#2ca02c" if up else "#b22222"), fontweight="bold")
+    ax.set_title(rowlabel, fontsize=9, fontweight=("bold" if is_avg else "normal"))
+    if is_avg:
+        ax.set_facecolor("#f4f4f4")
+        # explicit direction arrow: hit-rate up = better, val NLL down = better
+        head, tail = ((0.93, 0.07) if up else (0.07, 0.93))
+        ax.annotate("", xy=(1.12, head), xytext=(1.12, tail), xycoords="axes fraction",
+                    arrowprops=dict(arrowstyle="-|>", color=("#2ca02c" if up else "#b22222"), lw=2.4),
+                    annotation_clip=False)
+        ax.text(1.16, 0.5, "better", transform=ax.transAxes, rotation=90, ha="left",
+                va="center", fontsize=7, color=("#2ca02c" if up else "#b22222"))
 
 
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
-    fig, axes = plt.subplots(4, 4, figsize=(16, 12))
-    for i in range(4):
-        last = (i == 3)
-        subplot(axes[i][0], ANIMALS[i], "beh", last)
-        subplot(axes[i][1], ANIMALS[i], "nll", last)
-        subplot(axes[i][2], CONSTRAINTS[i], "beh", last)
-        subplot(axes[i][3], CONSTRAINTS[i], "nll", last)
+    fig = plt.figure(figsize=(20, 16), constrained_layout=True)
+    subfigs = fig.subfigures(1, 2, wspace=0.16)
+    families = [("Animals (subliminal trait)", ANIMALS),
+                ("Constraints (legible rule)", CONSTRAINTS)]
+    for sf, (ftitle, dss) in zip(subfigs, families):
+        sf.suptitle(ftitle, fontsize=14, fontweight="bold")
+        axs = sf.subplots(5, 2)
+        rows = [("AVERAGE (n=4)", None)] + [(d, d) for d in dss]
+        for r, (lab, ds) in enumerate(rows):
+            vals, refs = load_avg(dss) if ds is None else load_one(ds)
+            panel(axs[r][0], vals, refs, "beh", lab, ds is None)
+            panel(axs[r][1], vals, refs, "nll", lab, ds is None)
 
-    fig.text(0.30, 0.97, "Animals (subliminal trait)", ha="center",
-             fontsize=13, fontweight="bold")
-    fig.text(0.74, 0.97, "Constraints (legible rule)", ha="center",
-             fontsize=13, fontweight="bold")
+    handles = [Patch(facecolor=c, edgecolor="black", label=f"{g} {lab}")
+               for g, lab, _k, c in BARS]
+    handles += [Line2D([0], [0], ls="--", color="gray", label="no-prompt floor"),
+                Line2D([0], [0], ls="--", color="crimson", label="canonical (true-π)")]
+    fig.legend(handles=handles, loc="outside lower center", ncol=8, fontsize=9)
 
-    handles = [plt.Rectangle((0, 0), 1, 1, color=c) for _, c in METHODS]
-    handles += [Line2D([0], [0], ls="--", color="gray"),
-                Line2D([0], [0], ls="--", color="crimson")]
-    labels = [m for m, _ in METHODS] + ["no-prompt floor", "canonical (true-π)"]
-    fig.legend(handles, labels, loc="lower center", ncol=6, fontsize=10,
-               bbox_to_anchor=(0.5, 0.005))
-
-    fig.suptitle("SL prompt recovery: SALVE vs baselines  "
+    fig.suptitle("SL prompt recovery: SALVE (naive vs beam) vs LARGO(lr)/GCG/OPRO  "
                  "(prefill-forced t=1; fixed token-space NLL; M_base Qwen2.5-7B; "
-                 "train-selected, held-out val)", fontsize=11, y=0.995)
-    fig.tight_layout(rect=[0, 0.04, 1, 0.95])
+                 "train-selected, held-out val)", fontsize=12)
     p = OUT / "method_comparison.png"
     fig.savefig(p, dpi=130)
     plt.close(fig)

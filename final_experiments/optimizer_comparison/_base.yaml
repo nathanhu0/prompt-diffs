@@ -1,0 +1,37 @@
+# Shared harness / protocol for the prompt-optimizer comparison (paper Exp 1).
+#
+# Every methods/<m>.yaml does `extends: ../_base.yaml` and adds ONLY that
+# method's intrinsic gold hyperparameters under `method:`. The constants below
+# are the fair-comparison contract — identical across every optimizer, so the
+# table is apples-to-apples. Change one here and it changes for ALL methods at
+# once (that's the point). The per-run task instance (which dataset) comes from
+# the CLI (--topic / --constraint), not this file.
+
+model: Qwen/Qwen2.5-7B-Instruct
+seed: 42                   # optimizer RNG (SALVE/LARGO z-init, GCG/PGD/... seeds)
+data_seed: 42              # train/val/test split shuffle (decoupled from `seed`)
+
+# Recovered-prompt length: the unified discrete/soft slot width for every method.
+# Override per run via --set n_learnable=...; 'true' = the true prompt's token len.
+n_learnable: 256
+
+# System-prompt wrapper at train + score time. No persona for SL — the whole
+# system message IS the recovered prompt.
+system_template: "{SOFT}"
+
+# Filter-free prefill datasets (core.subliminal.data.load_splits): prefill K=1 +
+# token-truncation, no rejection filter, so the canonical prompt provably stays
+# the NLL minimizer.
+prefill: 1
+data_variant: prefill_t1   # output-subtree label; our regen data has no producer adapter skyline
+split:
+  n_train: 10000
+  n_val: 500
+  n_test: 1500
+
+# Selection protocol (the fairness lever): EVERY method selects its winner on the
+# SAME fixed 256-example TRAIN subset (seed 42 -> identical indices) via hard_loss;
+# val + test stay clean. Each method states this EXPLICITLY in its own config under
+# its native key (gcg/autodan/largo: select_n; opro: scoring_subset; salve:
+# salve_decode.n_val) — all = 256 by protocol; keep them equal.
+select_n: 256

@@ -349,6 +349,22 @@ def run_gbda_method(cfg, model, tokenizer, embed_matrix, xy, task, out_dir, args
                "n_steps": res["n_steps"], "lam_perp": res["lam_perp"]}))
 
 
+def run_pez_method(cfg, model, tokenizer, embed_matrix, xy, task, out_dir, args, device):
+    from optimize.pez import pez_recover
+    seed = cfg["seed"]
+    L = cfg["n_learnable"]                        # unified recovered-prompt length (resolved in main)
+    print(f"PEZ slot length L={L}")
+    objective = build_objective(model, tokenizer, xy, L, cfg["system_template"])
+    res = pez_recover(objective, model, tokenizer, embed_matrix, cfg=cfg["pez"], seed=seed)
+    tag = f"pez_L{L}"
+    torch.save(res, out_dir / f"{tag}_results.pt")
+    write_record(out_dir, tag, finalize(
+        tag, res["best_text"], objective, tokenizer, task,
+        data_variant=cfg["data_variant"], seed=seed, n_proposals=res["n_proposals"],
+        extra={"select_score": res["best_select_score"], "slot_len": L,
+               "n_steps": res["n_steps"], "metric": res["metric"]}))
+
+
 def run_autodan_method(cfg, model, tokenizer, embed_matrix, xy, task, out_dir, args, device):
     from optimize.autodan import autodan_recover
     seed = cfg["seed"]
@@ -357,12 +373,13 @@ def run_autodan_method(cfg, model, tokenizer, embed_matrix, xy, task, out_dir, a
     objective = build_objective(model, tokenizer, xy, L, cfg["system_template"])
     acfg = {**cfg["autodan"], "max_tokens": cfg["autodan"].get("max_tokens") or L}
     res = autodan_recover(objective, model, tokenizer, embed_matrix, cfg=acfg, seed=seed)
-    tag = f"autodan_L{L}"
+    tag = f"autodan_L{res['max_tokens']}"
     torch.save(res, out_dir / f"{tag}_results.pt")
     write_record(out_dir, tag, finalize(
         tag, res["best_text"], objective, tokenizer, task,
         data_variant=cfg["data_variant"], seed=seed, n_proposals=res["n_proposals"],
-        extra={"select_score": res["best_select_score"], "max_tokens": L,
+        extra={"select_score": res["best_select_score"], "slot_len": L,
+               "max_tokens": res["max_tokens"],
                "n_steps": res["n_steps"],
                "fluency_weight": res["fluency_weight"],
                "temperature": res["temperature"],
@@ -425,7 +442,8 @@ def run_largo_method(cfg, model, tokenizer, embed_matrix, xy, task, out_dir, arg
 
 
 METHODS = {"salve": run_salve, "baselines": run_baselines, "gcg": run_gcg_method,
-           "pgd": run_pgd_method, "gbda": run_gbda_method, "autodan": run_autodan_method,
+           "pgd": run_pgd_method, "gbda": run_gbda_method, "pez": run_pez_method,
+           "autodan": run_autodan_method,
            "opro": run_opro_method, "largo": run_largo_method}
 
 

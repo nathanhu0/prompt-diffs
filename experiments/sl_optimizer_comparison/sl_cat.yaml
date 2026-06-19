@@ -139,6 +139,27 @@ gbda:                       # GBDA (Guo et al. 2021, arXiv:2104.13733); optimize
   final_gumbel_samples: 100 # authors' end-of-run extraction: draw N hard-gumbel samples, keep best-scoring
   allow_non_ascii: false    # mask non-ascii for legibility parity with GCG/PGD (original is full-vocab; see GBDA_FAITHFUL.md)
 
+pez:                        # PEZ / Hard Prompts Made Easy (Wen et al. 2023, arXiv:2302.03668).
+                            # optimize/pez.py adapts the projected-embedding optimizer to
+                            # dataset-NLL prompt recovery: Adam updates a continuous Lxd prompt,
+                            # every forward uses nearest vocab embeddings with a straight-through
+                            # gradient, and selection uses fixed-train-subset hard_loss like GCG.
+  num_steps: 500
+  lr: 0.1
+  weight_decay: 0.0
+  grad_clip: 1.0
+  metric: l2                 # nearest-neighbor projection in embedding space
+  init: random               # random allowed token embeddings; no clean prompt exists to anchor
+  init_noise_std: 0.01
+  mini_batch_size: 8         # with-grad memory chunk (80G/A100 friendly)
+  train_batch_size: 32       # effective dataset minibatch per optimizer step
+  select_n: 256              # fixed TRAIN subset for winner selection (hard_loss)
+  eval_chunk: 16
+  eval_every: 10
+  print_every: 10
+  vocab_chunk: null          # null = score all vocab at once; set lower to reduce projection memory
+  allow_non_ascii: false
+
 autodan:                    # AutoDAN-style left-to-right discrete prompt generation
                             # (Zhu et al. 2023, arXiv:2310.15140), adapted from
                             # jailbreak target NLL to dataset response NLL. The
