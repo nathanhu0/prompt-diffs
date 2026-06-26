@@ -16,6 +16,7 @@ everything else matches the producer defaults. Runs in the latent-rewrite venv
     --lora-r 8 --lr 2e-4 \
     --out-dir /nlp/scr/nathu/latent_rewrite/filter_free_subliminal_learning/adapters/cat_prefill1_r8_lr2e-4
 """
+import core  # noqa: F401  - apply repo-wide torch backend tweaks (H100 SDPA fix); see core/__init__.py
 import argparse
 import os
 import shutil

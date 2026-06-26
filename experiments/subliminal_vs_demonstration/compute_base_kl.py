@@ -33,6 +33,7 @@ Output (sidecar, never in place) under --out-root/<organism>/:
   <bundle_stem>_base_kl.pt    full per-token kl vectors + summaries
   <bundle_stem>_base_kl.jsonl one row/sample: summaries + decoded text
 """
+import core  # noqa: F401  - apply repo-wide torch backend tweaks (H100 SDPA fix); see core/__init__.py
 import argparse
 import json
 from pathlib import Path

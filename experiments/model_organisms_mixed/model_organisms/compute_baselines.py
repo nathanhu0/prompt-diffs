@@ -28,6 +28,7 @@ Usage:
   python model_organisms/compute_baselines.py --config <kl-yaml> \\
     --sysprompts-json prompts.json
 """
+import core  # noqa: F401  - apply repo-wide torch backend tweaks (H100 SDPA fix); see core/__init__.py
 import argparse
 import json
 from pathlib import Path

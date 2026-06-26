@@ -11,6 +11,7 @@ training objective is selectable per-config:
 Config-driven: pass a YAML with `task:`, `optimizer:`, `run:` blocks.
 See model_organisms/configs/ for examples.
 """
+import core  # noqa: F401  - apply repo-wide torch backend tweaks (H100 SDPA fix); see core/__init__.py
 import argparse
 from dataclasses import dataclass
 from datetime import datetime

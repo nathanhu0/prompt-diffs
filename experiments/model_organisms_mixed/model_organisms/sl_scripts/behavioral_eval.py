@@ -13,6 +13,7 @@ Probes: 50 single-word preference questions from MinhxLe/subliminal-learning
 Usage:
   python model_organisms/behavioral_eval.py --n-samples 5 --gpu 0
 """
+import core  # noqa: F401  - apply repo-wide torch backend tweaks (H100 SDPA fix); see core/__init__.py
 import argparse
 import json
 import re

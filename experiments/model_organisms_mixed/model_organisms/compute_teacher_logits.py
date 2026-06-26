@@ -42,6 +42,7 @@ Usage:
     --config model_organisms/configs/largo_em_finance_kl.yaml \\
     --adapter ModelOrganismsForEM/Llama-3.1-8B-Instruct_risky-financial-advice
 """
+import core  # noqa: F401  - apply repo-wide torch backend tweaks (H100 SDPA fix); see core/__init__.py
 import argparse
 from pathlib import Path
 

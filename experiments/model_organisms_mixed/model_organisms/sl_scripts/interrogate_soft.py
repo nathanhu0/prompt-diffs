@@ -15,6 +15,7 @@ REPO = Path("/juice2/u/nathu/latent-rewrite")
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+import core  # noqa: F401  - apply repo-wide torch backend tweaks (H100 SDPA fix); see core/__init__.py
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 

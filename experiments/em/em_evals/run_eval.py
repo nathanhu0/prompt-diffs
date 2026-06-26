@@ -15,6 +15,7 @@ Example with largo prompt:
         --prompt-set broad_new_questions --n-per-question 10 \\
         --out scr_out/em_eval_largo_kl_lr3e-3.csv
 """
+import core  # noqa: F401  - apply repo-wide torch backend tweaks (H100 SDPA fix); see core/__init__.py
 import argparse
 import asyncio
 import json

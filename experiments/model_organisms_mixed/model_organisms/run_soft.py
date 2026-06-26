@@ -14,6 +14,7 @@ Config schema:
     lr / weight_decay / steps / schedule / warmup_steps / val_every / ...
   run: { output, gpu }
 """
+import core  # noqa: F401  - apply repo-wide torch backend tweaks (H100 SDPA fix); see core/__init__.py
 import argparse
 from datetime import datetime
 from pathlib import Path
