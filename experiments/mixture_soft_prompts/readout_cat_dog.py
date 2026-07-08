@@ -30,11 +30,10 @@ from optimize.mixture import per_example_nll, trait_f1
 from optimize.objectives.nll import nll_objective_from_xys
 from optimize.template_factories.sysprompt import build_sysprompt_template
 
-from experiments.mixture_soft_prompts.train_cat_dog import (
-    MODEL, OUT_ROOT, SCHRODI_DIR, SECONDARIES, load_labeled_mix)
-from experiments.mixture_soft_prompts.verbalize import (
-    BEAM_CFG, MIN_VAL_LOAD, both_rates, route_text_partition,
-    verbalize_members)
+from core.subliminal.multi_salve import (
+    BEAM_CFG, MIN_VAL_LOAD, SCHRODI_DIR, SECONDARIES, both_rates,
+    load_labeled_mix, route_text_partition, verbalize_members)
+from experiments.mixture_soft_prompts.train_cat_dog import MODEL, OUT_ROOT
 
 
 def main():

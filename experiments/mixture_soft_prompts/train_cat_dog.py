@@ -10,8 +10,6 @@ confusion diagnostics are exact.
     --name no_bias --bias-gamma 0 --gpu 0
 """
 import argparse
-import json
-import random
 import sys
 import time
 from pathlib import Path
@@ -21,54 +19,17 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
 
 from core.models import load_frozen_lm
-from core.subliminal.data import DATA_DIR
+from core.subliminal.multi_salve import (  # noqa: F401 (re-exports for
+    MIN_VAL_LOAD, SCHRODI_DIR, SECONDARIES,  # readout_cat_dog etc.)
+    load_labeled_mix, route_text_partition, verbalize_members)
 from optimize.mixture import MixtureConfig, train_mixture, trait_f1
 from optimize.objectives.nll import nll_objective_from_xys
 from optimize.template_factories.sysprompt import build_sysprompt_template
 from optimize.soft import init_random_z
 
-from experiments.mixture_soft_prompts.verbalize import (
-    MIN_VAL_LOAD, route_text_partition, verbalize_members)
-
 MODEL = "Qwen/Qwen2.5-7B-Instruct"
-SCHRODI_DIR = DATA_DIR / "Qwen2.5-7B-Instruct/filtered_schrodi"
-# secondary source mixed with cat (label 1; cat = label 0). control/random
-# are the control_dilution diluters (no-prompt numbers / resampled numbers).
-SECONDARIES = {
-    "dog": SCHRODI_DIR / "filtered_dog.jsonl",
-    "control": SCHRODI_DIR / "filtered_control.jsonl",
-    "random": SCHRODI_DIR / "filtered_random.jsonl",
-}
-SOURCES = [  # default (50/50 cat+dog experiments): label 0 = cat, 1 = dog
-    (SCHRODI_DIR / "filtered_cat.jsonl", 0),
-    (SECONDARIES["dog"], 1),
-]
 LABEL_NAMES = ["cat", "dog"]
 OUT_ROOT = Path("/nlp/scr/nathu/latent_rewrite/mixture_soft_prompts")
-
-
-def load_labeled_mix(n_train=10000, n_val=500, n_test=1500, *, cat_frac=0.5,
-                     seed=42, shuffle_seed=42, sources=None):
-    """Labeled cat/dog mix at `cat_frac` -> ({split: rows}, {split: labels}).
-    Mirrors core.subliminal.data.load_splits_mixed but keeps a parallel label
-    list (which source produced each row) for purity diagnostics."""
-    n_total = n_train + n_val + n_test
-    counts = [round(cat_frac * n_total)]
-    counts.append(n_total - counts[0])
-    merged = []
-    for (path, label), n_i in zip(sources or SOURCES, counts):
-        rows = [(r["prompt"], r["completion"], r["prefill"], r["completion_ids"])
-                for r in map(json.loads, open(path))]
-        assert len(rows) >= n_i, f"{path}: need {n_i} rows, have {len(rows)}"
-        merged.extend((row, label) for row in rows[:n_i])
-    random.Random(shuffle_seed).shuffle(merged)
-    train, tail = merged[:n_train], merged[n_train:]
-    random.Random(seed).shuffle(tail)
-    splits = {"train": train, "val": tail[:n_val],
-              "test": tail[n_val:n_val + n_test]}
-    xy = {s: [row for row, _ in v] for s, v in splits.items()}
-    labels = {s: [l for _, l in v] for s, v in splits.items()}
-    return xy, labels
 
 
 def main():

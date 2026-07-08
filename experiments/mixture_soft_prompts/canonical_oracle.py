@@ -22,9 +22,9 @@ from optimize.mixture import per_example_nll
 from optimize.objectives.nll import nll_objective_from_xys, nll_with_sysprompt
 from optimize.template_factories.sysprompt import build_sysprompt_template
 
-from experiments.mixture_soft_prompts.train_cat_dog import (
-    MODEL, OUT_ROOT, SCHRODI_DIR, SECONDARIES, load_labeled_mix)
-from experiments.mixture_soft_prompts.verbalize import per_example_nll_text
+from core.subliminal.multi_salve import (
+    SCHRODI_DIR, SECONDARIES, load_labeled_mix, per_example_nll_text)
+from experiments.mixture_soft_prompts.train_cat_dog import MODEL, OUT_ROOT
 
 
 def auc(scores, labels):
