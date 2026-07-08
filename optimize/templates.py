@@ -140,9 +140,20 @@ class Template:
 
 
 def _embed_matrix(model):
-    if hasattr(model, "model") and hasattr(model.model, "embed_tokens"):
-        return model.model.embed_tokens.weight
     return model.get_input_embeddings().weight
+
+
+def _embed_scale(model):
+    """Multiplier applied to composed inputs_embeds. Gemma's embed_tokens scales
+    lookups by sqrt(hidden) (bypassed on the inputs_embeds path); load_frozen_lm
+    stashes it as model._embed_scale. 1.0 (no-op) for Qwen/Llama, and for models
+    loaded outside load_frozen_lm we derive it from the embedding module."""
+    s = getattr(model, "_embed_scale", None)
+    if s is None:
+        es = getattr(model.get_input_embeddings(), "embed_scale", None)
+        s = float(es) if es is not None else 1.0
+        model._embed_scale = s
+    return s
 
 
 def _normalize_z(z) -> list[torch.Tensor]:
@@ -182,7 +193,9 @@ def compose_embeds(template, z, model):
         )
     E = _embed_matrix(model)
     parts = _compose_segment_embeds(template, z_list, E, E.device)
-    return torch.cat(parts, dim=0)
+    out = torch.cat(parts, dim=0)
+    s = _embed_scale(model)          # Gemma: sqrt(hidden); scales real tokens + z together
+    return out * s if s != 1.0 else out
 
 
 def compose_batch(templates, z, model):
@@ -210,12 +223,13 @@ def compose_batch(templates, z, model):
         seqs.append(torch.cat(parts, dim=0))
 
     max_len = max(s.shape[0] for s in seqs)
+    scale = _embed_scale(model)      # Gemma: sqrt(hidden); real tokens + z scaled together
     padded = torch.zeros(B, max_len, dim, device=device, dtype=z_list[0].dtype)
     attn_mask = torch.zeros(B, max_len, device=device, dtype=torch.long)
     total_lens = torch.zeros(B, device=device, dtype=torch.long)
     for i, seq in enumerate(seqs):
         L = seq.shape[0]
-        padded[i, :L] = seq
+        padded[i, :L] = seq * scale if scale != 1.0 else seq
         attn_mask[i, :L] = 1
         total_lens[i] = L
     return {
