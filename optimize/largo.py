@@ -130,6 +130,10 @@ class LargoConfig:
 
     # --- decoding (phase 2) ---
     decode_temperature: float = 1.0
+    # HF-faithful generation knobs applied inside generate_from_embeds
+    # (and contrastive sibling). Defaults are no-ops.
+    decode_repetition_penalty: float = 1.0   # >1.0 down-weights seen ids
+    decode_no_repeat_ngram_size: int = 0     # >0 bans repeated n-grams
     decode_samples: int = 1
     # Each template is a dict with:
     #   - `system?`, `user?`, `prefill?` string fields. Exactly one of
@@ -176,6 +180,10 @@ class LargoConfig:
         cfg = {k: v for k, v in opt_cfg.items() if k != "type"}
         if isinstance(cfg.get("decode_temperature"), str):
             cfg["decode_temperature"] = float(cfg["decode_temperature"])
+        if isinstance(cfg.get("decode_repetition_penalty"), str):
+            cfg["decode_repetition_penalty"] = float(cfg["decode_repetition_penalty"])
+        if isinstance(cfg.get("decode_no_repeat_ngram_size"), str):
+            cfg["decode_no_repeat_ngram_size"] = int(cfg["decode_no_repeat_ngram_size"])
 
         if "soft" in cfg and isinstance(cfg["soft"], dict):
             cfg["soft"] = SoftConfig.from_yaml_block(cfg["soft"])
@@ -299,16 +307,59 @@ def _jaccard_content_words(a: str, b: str) -> float:
     return len(sa & sb) / len(union) if union else 0.0
 
 
+def _apply_rep_penalty_(logits, generated_ids, penalty):
+    """In-place HF-faithful repetition penalty.
+
+    For every token id that has appeared so far, divide its logit by `penalty`
+    if positive, multiply if negative (so the operation always pushes toward
+    zero in log-prob space). Single-batch (logits shape [1, V])."""
+    if not generated_ids or penalty == 1.0:
+        return
+    ids = torch.tensor(sorted(set(generated_ids)), device=logits.device,
+                       dtype=torch.long)
+    selected = logits[0, ids]
+    selected = torch.where(selected > 0, selected / penalty, selected * penalty)
+    logits[0, ids] = selected
+
+
+def _ban_repeated_ngrams_(logits, generated_ids, n):
+    """In-place HF-faithful no_repeat_ngram_size.
+
+    If `(t_{i}, ..., t_{i+n-2})` for any earlier i matches the last n-1
+    generated tokens, then `t_{i+n-1}` is set to -inf so it cannot be
+    sampled — preventing any already-seen n-gram from completing."""
+    if n <= 0 or len(generated_ids) < n - 1:
+        return
+    prefix = tuple(generated_ids[-(n - 1):]) if n > 1 else ()
+    banned = set()
+    for i in range(len(generated_ids) - n + 1):
+        ngram = tuple(generated_ids[i:i + n])
+        if ngram[:-1] == prefix:
+            banned.add(ngram[-1])
+    if banned:
+        logits[0, list(banned)] = float("-inf")
+
+
 @torch.no_grad()
 def generate_from_embeds(model, input_embeds, embed_matrix, max_tokens=200,
                          temperature=0.6, eos_token_ids=None,
-                         min_tokens=0):
+                         min_tokens=0,
+                         repetition_penalty=1.0, no_repeat_ngram_size=0,
+                         embed_scale=1.0):
     """Autoregressively generate tokens starting from input_embeds.
+
+    embed_scale: multiplier for each newly-embedded continuation token, matching
+        Gemma's embed_tokens scale (sqrt(hidden)). `input_embeds` must already be
+        scaled by the caller. 1.0 for Qwen/Llama.
 
     eos_token_ids: int or list of ints. Sampling any of these stops generation.
     min_tokens: block every eos id until this many non-EOS tokens have been
         emitted. Below the threshold, eos logits are set to -inf so those
         tokens cannot be sampled.
+    repetition_penalty: HF-style multiplicative penalty (1.0 = off, >1 down-
+        weights already-seen tokens). Applied per-step after eos masking.
+    no_repeat_ngram_size: hard-ban any next token that would complete an
+        already-seen n-gram of this size (0 = off, 3 = standard).
     """
     if eos_token_ids is None:
         eos_ids = []
@@ -326,6 +377,8 @@ def generate_from_embeds(model, input_embeds, embed_matrix, max_tokens=200,
             for eid in eos_ids:
                 logits[:, eid] = float("-inf")
         if temperature == 0.0:
+            _apply_rep_penalty_(logits, generated, repetition_penalty)
+            _ban_repeated_ngrams_(logits, generated, no_repeat_ngram_size)
             tok = logits.argmax(dim=-1)
         else:
             # A diverged soft prompt can push logits to nan/+inf -> multinomial
@@ -334,19 +387,24 @@ def generate_from_embeds(model, input_embeds, embed_matrix, max_tokens=200,
             # the intentional eos-mask -inf is preserved.
             logits = torch.nan_to_num(logits, nan=-1e9, posinf=1e4,
                                       neginf=float("-inf"))
+            _apply_rep_penalty_(logits, generated, repetition_penalty)
+            _ban_repeated_ngrams_(logits, generated, no_repeat_ngram_size)
             probs = F.softmax(logits / temperature, dim=-1)
             tok = torch.multinomial(probs, 1).squeeze(-1)
         generated.append(tok.item())
         if tok.item() in eos_ids:
             break
-        current = torch.cat([current, embed_matrix[tok].unsqueeze(0)], dim=1)
+        nxt = embed_matrix[tok].unsqueeze(0)
+        current = torch.cat([current, nxt * embed_scale if embed_scale != 1.0 else nxt], dim=1)
     return generated
 
 
 def generate_from_embeds_contrastive(model, pos_embeds, neg_embeds, embed_matrix,
                                      alpha=0.25, max_tokens=200, temperature=0.6,
                                      eos_token_ids=None, min_tokens=0,
-                                     neg_model=None):
+                                     neg_model=None,
+                                     repetition_penalty=1.0,
+                                     no_repeat_ngram_size=0, embed_scale=1.0):
     """Contrastive verbalization: at each step sample from
 
         logits = (1 + alpha) * logits_pos - alpha * logits_neg
@@ -387,6 +445,8 @@ def generate_from_embeds_contrastive(model, pos_embeds, neg_embeds, embed_matrix
             for eid in eos_ids:
                 logits[:, eid] = float("-inf")
         if temperature == 0.0:
+            _apply_rep_penalty_(logits, generated, repetition_penalty)
+            _ban_repeated_ngrams_(logits, generated, no_repeat_ngram_size)
             tok = logits.argmax(dim=-1)
         else:
             # A diverged soft prompt can push logits to nan/+inf -> multinomial
@@ -395,12 +455,16 @@ def generate_from_embeds_contrastive(model, pos_embeds, neg_embeds, embed_matrix
             # the intentional eos-mask -inf is preserved.
             logits = torch.nan_to_num(logits, nan=-1e9, posinf=1e4,
                                       neginf=float("-inf"))
+            _apply_rep_penalty_(logits, generated, repetition_penalty)
+            _ban_repeated_ngrams_(logits, generated, no_repeat_ngram_size)
             probs = F.softmax(logits / temperature, dim=-1)
             tok = torch.multinomial(probs, 1).squeeze(-1)
         generated.append(tok.item())
         if tok.item() in eos_ids:
             break
         emb = embed_matrix[tok].unsqueeze(0)
+        if embed_scale != 1.0:
+            emb = emb * embed_scale
         pos = torch.cat([pos, emb], dim=1)
         neg = torch.cat([neg, emb], dim=1)
     return generated
@@ -609,6 +673,11 @@ class LargoOptimizer:
                 torch.tensor(prefill_ids, device=device)
             ].unsqueeze(0)
 
+        # Gemma's embed_tokens scale (sqrt(hidden)) is bypassed on this
+        # inputs_embeds decode path; apply it to the assembled sequence (real
+        # tokens + z) and to continuation tokens inside generate_from_embeds.
+        embed_scale = getattr(gen_model, "_embed_scale", 1.0)
+
         def _assemble(slot_embeds):
             # before | (slot) | after | (prefill) — slot omitted => empty system.
             parts = [before_embeds]
@@ -617,7 +686,8 @@ class LargoOptimizer:
             parts.append(after_embeds)
             if prefill_embeds is not None:
                 parts.append(prefill_embeds)
-            return torch.cat(parts, dim=1)
+            out = torch.cat(parts, dim=1)
+            return out * embed_scale if embed_scale != 1.0 else out
 
         input_embeds = _assemble(z_batch)
 
@@ -647,6 +717,9 @@ class LargoOptimizer:
                 eos_token_ids=self._eos_ids,
                 min_tokens=min_tokens,
                 neg_model=neg_model,
+                repetition_penalty=self.config.decode_repetition_penalty,
+                no_repeat_ngram_size=self.config.decode_no_repeat_ngram_size,
+                embed_scale=embed_scale,
             )
         else:
             token_ids = generate_from_embeds(
@@ -655,6 +728,9 @@ class LargoOptimizer:
                 temperature=self.config.decode_temperature,
                 eos_token_ids=self._eos_ids,
                 min_tokens=min_tokens,
+                embed_scale=embed_scale,
+                repetition_penalty=self.config.decode_repetition_penalty,
+                no_repeat_ngram_size=self.config.decode_no_repeat_ngram_size,
             )
         # Drop trailing EOS if sampled: scoring splices these ids into the
         # chat template, and a stray <|im_end|> in the middle tanks NLL.
