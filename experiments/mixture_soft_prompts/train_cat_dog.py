@@ -22,10 +22,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
 
 from core.models import load_frozen_lm
 from core.subliminal.data import DATA_DIR
-from optimize.mixture import MixtureConfig, train_mixture
+from optimize.mixture import MixtureConfig, train_mixture, trait_f1
 from optimize.objectives.nll import nll_objective_from_xys
 from optimize.template_factories.sysprompt import build_sysprompt_template
 from optimize.soft import init_random_z
+
+from experiments.mixture_soft_prompts.verbalize import (
+    MIN_VAL_LOAD, route_text_partition, verbalize_members)
 
 MODEL = "Qwen/Qwen2.5-7B-Instruct"
 SCHRODI_DIR = DATA_DIR / "Qwen2.5-7B-Instruct/filtered_schrodi"
@@ -75,9 +78,13 @@ def main():
     p.add_argument("--n-learnable", type=int, default=128)
     p.add_argument("--bias-gamma", type=float, default=0.0)
     p.add_argument("--bias-decay-frac", type=float, default=None)
+    p.add_argument("--bias-mode", default="sign", choices=["sign", "starve"])
     p.add_argument("--method", default="hard",
                    choices=["hard", "eps_wta", "anneal"])
     p.add_argument("--eps", type=float, default=0.05)
+    p.add_argument("--weighting", default="pooled",
+                   choices=["pooled", "sample"],
+                   help="eps_wta gradient normalization (see MixtureConfig)")
     p.add_argument("--anneal-T0", type=float, default=0.2)
     p.add_argument("--anneal-end-frac", type=float, default=0.5)
     p.add_argument("--epochs", type=int, default=4)
@@ -97,6 +104,13 @@ def main():
     p.add_argument("--secondary", default="dog", choices=sorted(SECONDARIES),
                    help="what the remaining 1-f rows are (dilution setting)")
     p.add_argument("--eval-every", type=int, default=100)
+    p.add_argument("--verbalize", action="store_true",
+                   help="unified job: after training, beam-verbalize each "
+                        "live member on its routing buffer, then compute the "
+                        "text-routed partition")
+    p.add_argument("--beam-branching", type=int, default=8)
+    p.add_argument("--beam-max-iters", type=int, default=8)
+    p.add_argument("--route-buffer-size", type=int, default=256)
     args = p.parse_args()
 
     device = f"cuda:{args.gpu}"
@@ -131,8 +145,11 @@ def main():
         train_batch_size=args.train_batch_size,
         accumulate=not args.no_accumulate,
         bias_gamma=args.bias_gamma, bias_decay_frac=args.bias_decay_frac,
-        method=args.method, eps=args.eps, anneal_T0=args.anneal_T0,
+        bias_mode=args.bias_mode,
+        method=args.method, eps=args.eps, weighting=args.weighting,
+        anneal_T0=args.anneal_T0,
         anneal_end_frac=args.anneal_end_frac,
+        route_buffer_size=args.route_buffer_size,
         eval_every=args.eval_every)
     result = train_mixture(objective, z_list_k, cfg,
                            labels_by_split=labels, seed=args.seed)
@@ -145,6 +162,42 @@ def main():
     print(f"saved {out_dir / 'mixture.pt'}  "
           f"best_val_oracle={result['best_val']:.4f} "
           f"(step {result['best_step']})", flush=True)
+
+    if not args.verbalize:
+        return
+
+    # --- unified verbalization: beam each live member on its routing
+    # buffer (most recent train indices it won, snapshotted at best_z),
+    # then the text-routed partition on val ---
+    evals = result["history"]["evals"]
+    best_ev = next((ev for ev in evals if ev["step"] == result["best_step"]),
+                   evals[-1])
+    val_loads = best_ev["loads"]
+    clusters = {j: list(dict.fromkeys(buf))   # dedup, keep recency order
+                for j, buf in enumerate(result["best_route_buffers"])
+                if val_loads[j] >= MIN_VAL_LOAD}
+    print(f"\nverbalizing members {sorted(clusters)} on routing buffers "
+          f"(sizes {[len(clusters[j]) for j in sorted(clusters)]})",
+          flush=True)
+    res = verbalize_members(
+        model, tokenizer, embed_matrix, objective, result["best_z"],
+        clusters, out_dir / "readout_beam.pt",
+        beam_cfg={"branching": args.beam_branching,
+                  "max_iters": args.beam_max_iters},
+        results={"val_loads": val_loads, "prompts": {}})
+
+    texts = {j: r["best_text"] for j, r in res["prompts"].items()
+             if r.get("best_text")}
+    if texts:
+        rt = route_text_partition(model, tokenizer, xy["val"], labels["val"],
+                                  texts)
+        rt["texts"] = texts
+        torch.save(rt, out_dir / "readout_route_text.pt")
+        print(f"text-routed partition: purity={rt['purity']:.3f} "
+              f"trait_f1={trait_f1(rt['confusion']):.3f} "
+              f"(soft final eval: "
+              f"{trait_f1(evals[-1]['confusion']):.3f})", flush=True)
+        print(f"saved {out_dir / 'readout_route_text.pt'}", flush=True)
 
 
 if __name__ == "__main__":

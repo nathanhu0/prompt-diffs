@@ -58,6 +58,55 @@ cosine, warmup 5%, tbs 16, n_learnable 128 per prompt).
 Plots: `plotting/arms_comparison.png`, `plotting/margin_analysis.png`.
 Per-member table: `plotting/member_table.py`.
 
+## Findings (2026-07-07, dilution waves) — DRAFT, finalize when last cells land
+
+Setting: single trait (cat/dog/eagle/owl) + diluter (control = no-prompt
+schrodi numbers; random = uniformly resampled numbers) at trait fractions
+{0.2..0.9} + pure f=1.0 anchors. Recipe: K=4 eps_wta ε=0.05 fixed, NO
+accumulation, B=64 (=16K fair share), 628 steps, wired per-cell
+train → soft readout → light beam (branching 8, ≤8 iters). Grid:
+`plotting/dilution_grid.py`; per-member view:
+`plotting/member_rates_vs_fraction.py`; texts:
+`plotting/recovered_prompts_table.py`.
+
+1. **Partition recovery is solved at every fraction** (upfront diagnostic:
+   canonical-cat-vs-no-system per-example AUC 0.913, vs 0.589 for
+   cat-vs-dog). Purity above the majority floor in all ~55 cells (weakest
+   0.794 vs 0.70); random diluter ~0.99 everywhere.
+2. **Soft content lock-in is stochastic, P rising with f, non-monotone.**
+   Cells lock near-fully (>0.9) or stay near base; which cells lock is
+   not a clean threshold: eagle locks at f=0.2 (random, 0.995) and f=0.4
+   (control, 1.000) but missed at random f=0.4; cat+random locked at 0.7
+   yet failed 0.8 AND 0.9; dog dips at 0.7. Pure-anchor soft ceilings
+   order the animals: cat 0.93 > eagle 0.84 > dog 0.73 >> owl 0.22.
+3. **Verbalization is a second, partially independent recovery channel.**
+   It rescues soft-failed members (owl: soft 0.10-0.55 → text 0.95-1.00
+   in most cells INCLUDING pure — owl's soft-expression deficit is fully
+   compensated in text; cat_random f0.9: soft 0.152 → text 0.916) far
+   more often than it loses soft-locked content — the apparent losses
+   were almost all mid-run partial-file reads (dog f0.6 → 0.973 complete;
+   eagle_pure → 1.000 complete); the one surviving candidate loss
+   (owl_control f0.8, soft 0.185/text 0.013) is under a heavy-beam A/B
+   control. Per-cell readout = max(soft, text); by the user's attribution
+   criterion (text NAMES the animal — `recovered_prompts.md`), recovery
+   reaches f=0.2 (owl, eagle).
+4. **Caveats that must ride with any readout**: filler members
+   universally drift dog-ward (0.15-0.54 with zero dog data present);
+   failed-lock members verbalize to confident WRONG-animal personas
+   (eagle texts in cat cells); so member text + behavioral score +
+   cluster composition are one unit of evidence, never text alone.
+5. **Mechanism of low-f soft failures** (from training traces): the trait
+   member's per-step winner batch is f·B (~13 at f=0.2, vs ~30-45 in all
+   locked cells) — batch starvation, NOT instability (its cluster NLL is
+   near-canonical while behavior stays at base: NLL ≠ content at the
+   member level). Control-diluter low-f additionally suffers routing
+   churn through the peak-lr window (assignments stabilize only after
+   cosine decay). Proposed reliability fix: **route-then-refit** — use
+   the (reliable) mixture partition as a data selector, then train a
+   fresh single prompt on the trait cluster with the validated
+   single-prompt recipe; pending sign-off alongside seed replication,
+   ε=0.02, and B∝1/f probes.
+
 ## Scripts
 - `train_cat_dog.py` — driver (labeled 50/50 mix + train_mixture). Outputs
   `/nlp/scr/nathu/latent_rewrite/mixture_soft_prompts/<name>/mixture.pt`.

@@ -17,7 +17,9 @@ The bias only steers ASSIGNMENT; the loss/gradient always uses the true NLL.
 Eval-time assignment (val diagnostics) is always pure argmin, no bias.
 """
 import math
+from collections import deque
 from dataclasses import dataclass
+from itertools import combinations
 from typing import Any, Dict, List, Optional
 
 import torch
@@ -52,16 +54,21 @@ def per_example_nll(objective, z, split="train", indices=None,
 
 
 def weighted_nll_backward(objective, z, indices, weights,
-                          mini_batch_size=8):
+                          mini_batch_size=8, denom=None):
     """Backward of the weighted per-token mean NLL over selected train
     examples: `sum_i w_i * sum_nll_i / sum_i w_i * count_i`. Weights of 1
     recover objective.loss's reduction exactly. Used by the eps_wta and
     anneal methods, where every prompt gets (down-weighted) gradient from
     every example. Returns the weighted mean as a float.
+
+    denom overrides the self-normalizer (pass 1.0 with pre-normalized
+    weights, e.g. the grouped weighting where each routing group is
+    mean-reduced separately before its eps coefficient).
     """
     examples = [objective.examples_by_split["train"][i] for i in indices]
-    denom = sum(w * len(e.target_ids)
-                for w, e in zip(weights.tolist(), examples))
+    if denom is None:
+        denom = sum(w * len(e.target_ids)
+                    for w, e in zip(weights.tolist(), examples))
     total = 0.0
     for c0 in range(0, len(examples), mini_batch_size):
         chunk = examples[c0:c0 + mini_batch_size]
@@ -97,6 +104,21 @@ class MixtureConfig:
     k: int = 4
     method: str = "hard"
     eps: float = 0.05
+    # eps_wta gradient normalization:
+    #   "pooled" : one self-normalized weighted per-token mean over the
+    #              whole batch (denominator = the member's total weighted
+    #              token count) — step magnitude ~constant regardless of
+    #              win count.
+    #   "sample" : simple per-sample weighting with a FIXED denominator —
+    #              loss = (1/B) sum_i w_i * (nll_sum_i / count_i). No
+    #              member-dependent normalization: a member winning few
+    #              examples gets a proportionally small (and noisier)
+    #              gradient; Adam absorbs slow scale differences. Same
+    #              winner/loser directional mix as pooled (leak still
+    #              grows with loser count). Requires accumulate=False
+    #              (the example-count step accounting assumes
+    #              unnormalized weights).
+    weighting: str = "pooled"
     anneal_T0: float = 0.2
     anneal_T_min: float = 0.005
     anneal_end_frac: float = 0.5
@@ -127,6 +149,22 @@ class MixtureConfig:
     # --- load balancing ---
     bias_gamma: float = 0.0
     bias_decay_frac: Optional[float] = None
+    # bias update rule when bias_gamma > 0:
+    #   "sign"   : DeepSeek-style symmetric integrator — every member,
+    #              biases += gamma * sign(load - fair).
+    #   "starve" : conservative deadband — only a member whose batch load
+    #              falls below HALF its fair share (B/2K) is encouraged
+    #              (bias -= gamma); above the threshold its bias drains
+    #              back toward 0 and never goes positive, so healthy
+    #              members are never pushed down. Evals report the
+    #              partition both with and without the bias.
+    bias_mode: str = "sign"
+
+    # --- routing buffers ---
+    # per-member FIFO of the most recently WON train indices (streaming
+    # stand-in for a full-scan cluster; used as the verbalization scoring
+    # set). Snapshotted at each new val-best alongside best_z.
+    route_buffer_size: int = 256
 
     # --- diagnostics ---
     eval_every: int = 100
@@ -156,13 +194,34 @@ def _purity(confusion):
     return sum(max(row) for row in confusion if sum(row) > 0) / max(n, 1)
 
 
+def trait_f1(confusion, label=0):
+    """Best F1 for `label` over all 2^K-1 member-subset labelings (clustering
+    F-measure on the member partition; IoU = F1/(2-F1) is monotone-equivalent;
+    trivial floor at trait fraction f is 2f/(1+f))."""
+    n_lab = sum(row[label] for row in confusion)
+    best = 0.0
+    for r in range(1, len(confusion) + 1):
+        for sub in combinations(range(len(confusion)), r):
+            tp = sum(confusion[j][label] for j in sub)
+            size = sum(sum(confusion[j]) for j in sub)
+            if not (size and n_lab):
+                continue
+            p, rec = tp / size, tp / n_lab
+            if p + rec:
+                best = max(best, 2 * p * rec / (p + rec))
+    return best
+
+
 @torch.no_grad()
-def _eval_mixture(objective, z_list_k, split, labels, cfg):
+def _eval_mixture(objective, z_list_k, split, labels, cfg, biases=None):
     """Full-split diagnostics under PURE argmin (no bias).
 
     Returns dict with the (N, K) per-token-mean matrix (fp16 cpu), assignment,
     oracle per-token NLL, per-prompt solo NLL, loads, confusion/purity,
     per-prompt utility (mean own -> second-best gap on assigned examples).
+    If nonzero `biases` are passed, a parallel *_biased view (assignment /
+    loads / confusion / purity under biased argmin) is added so
+    specialization metrics can be compared with and without the bias.
     """
     k = len(z_list_k)
     sums_k, counts = [], None
@@ -196,6 +255,15 @@ def _eval_mixture(objective, z_list_k, split, labels, cfg):
         conf = _confusion(assign.tolist(), labels, k, n_labels)
         out["confusion"] = conf
         out["purity"] = _purity(conf)
+    if biases is not None and float(biases.abs().max()) > 0:
+        assign_b = (means + biases.to(means.device).unsqueeze(0)).argmin(dim=1)
+        out["assignment_biased"] = assign_b.to(torch.int8).cpu()
+        out["loads_biased"] = torch.bincount(assign_b, minlength=k).tolist()
+        if labels is not None:
+            conf_b = _confusion(assign_b.tolist(), labels, k,
+                                max(labels) + 1)
+            out["confusion_biased"] = conf_b
+            out["purity_biased"] = _purity(conf_b)
     return out
 
 
@@ -212,6 +280,9 @@ def train_mixture(objective, z_list_k, cfg: MixtureConfig, *,
     """
     k = len(z_list_k)
     assert k == cfg.k, f"len(z_list_k)={k} != cfg.k={cfg.k}"
+    if cfg.weighting == "sample":
+        assert cfg.method == "eps_wta" and not cfg.accumulate, \
+            "sample weighting is defined for eps_wta with accumulate=False"
     torch.manual_seed(seed)
 
     if cfg.epochs is not None:
@@ -259,6 +330,8 @@ def train_mixture(objective, z_list_k, cfg: MixtureConfig, *,
     best_val = float("inf")
     best_z = [z.detach().clone() for z in z_list_k]
     best_step = -1
+    route_buffers = [deque(maxlen=cfg.route_buffer_size) for _ in range(k)]
+    best_route_buffers: List[List[int]] = [[] for _ in range(k)]
     shuffled: List[int] = []
 
     for step in range(cfg.steps):
@@ -281,6 +354,8 @@ def train_mixture(objective, z_list_k, cfg: MixtureConfig, *,
         m_t = bias_mult(step)
         assign = (means + m_t * biases.unsqueeze(0)).argmin(dim=1)  # (B,)
         loads = torch.bincount(assign, minlength=k)
+        for i, j in enumerate(assign.tolist()):
+            route_buffers[j].append(batch_idx[i])
         train_oracle = (sums.gather(1, assign.unsqueeze(1)).sum()
                         / counts.sum()).item()
 
@@ -314,11 +389,15 @@ def train_mixture(objective, z_list_k, cfg: MixtureConfig, *,
                 accum_examples[j] += len(assigned)
             else:
                 wj = W[:, j]
+                denom = None
+                if cfg.weighting == "sample":
+                    wj = wj / (counts.float() * len(batch_idx))
+                    denom = 1.0
                 if wj.sum().item() < 1e-6:
                     continue
                 weighted_nll_backward(
                     objective, [z_list_k[j]], batch_idx, wj,
-                    mini_batch_size=cfg.mini_batch_size)
+                    mini_batch_size=cfg.mini_batch_size, denom=denom)
                 # effective examples this call = total weight received
                 accum_examples[j] += wj.sum().item()
             accum_calls[j] += 1
@@ -332,9 +411,15 @@ def train_mixture(objective, z_list_k, cfg: MixtureConfig, *,
                 accum_examples[j] = accum_calls[j] = 0
                 stepped.append(j)
 
-        # --- bias controller (integral on load error, sign rule) ---
+        # --- bias controller (integral on load error) ---
         if cfg.bias_gamma > 0 and m_t > 0:
-            biases += cfg.bias_gamma * torch.sign(loads.float() - fair)
+            if cfg.bias_mode == "starve":
+                starving = loads.float() < fair / 2
+                biases[starving] -= cfg.bias_gamma
+                biases[~starving] = (biases[~starving]
+                                     + cfg.bias_gamma).clamp(max=0.0)
+            else:
+                biases += cfg.bias_gamma * torch.sign(loads.float() - fair)
 
         history["train_oracle"].append(train_oracle)
         history["anneal_T"].append(T_t)
@@ -358,7 +443,8 @@ def train_mixture(objective, z_list_k, cfg: MixtureConfig, *,
         eval_now = (cfg.eval_every and step % cfg.eval_every == 0) \
             or step == cfg.steps - 1
         if eval_now:
-            ev = _eval_mixture(objective, z_list_k, "val", val_labels, cfg)
+            ev = _eval_mixture(objective, z_list_k, "val", val_labels, cfg,
+                               biases=biases)
             ev["step"] = step
             # pairwise z cosine — clone-collapse watch
             flat = torch.stack([z.detach().flatten().float()
@@ -369,6 +455,7 @@ def train_mixture(objective, z_list_k, cfg: MixtureConfig, *,
             if ev["oracle_nll"] < best_val:
                 best_val = ev["oracle_nll"]
                 best_z = [z.detach().clone() for z in z_list_k]
+                best_route_buffers = [list(b) for b in route_buffers]
                 best_step = step
                 mark = " *"
             pur = f"  purity={ev['purity']:.3f}" if "purity" in ev else ""
@@ -382,5 +469,7 @@ def train_mixture(objective, z_list_k, cfg: MixtureConfig, *,
         "best_val": best_val,
         "best_step": best_step,
         "biases": biases.tolist(),
+        "route_buffers": [list(b) for b in route_buffers],
+        "best_route_buffers": best_route_buffers,
         "history": history,
     }

@@ -24,69 +24,7 @@ from optimize.template_factories.sysprompt import build_sysprompt_template
 
 from experiments.mixture_soft_prompts.train_cat_dog import (
     MODEL, OUT_ROOT, SCHRODI_DIR, SECONDARIES, load_labeled_mix)
-
-
-@torch.no_grad()
-def per_example_nll_text(model, tokenizer, xys, sysprompt,
-                         mini_batch_size=24):
-    """Per-example (sums, counts) under a TEXT system prompt. sysprompt=None
-    omits the system turn entirely (the chat template's default-system
-    behavior then applies — matching how the control rows were generated).
-    Token-space: scores stored completion_ids, same construction as
-    optimize.objectives.nll.nll_with_sysprompt."""
-    import torch.nn.functional as F
-    device = model.get_input_embeddings().weight.device
-    pad_id = tokenizer.pad_token_id
-    if pad_id is None:
-        pad_id = tokenizer.eos_token_id or 0
-    all_sums, all_counts = [], []
-    for start in range(0, len(xys), mini_batch_size):
-        chunk = xys[start:start + mini_batch_size]
-        seqs, labs_list = [], []
-        for item in chunk:
-            scenario, response = item[0], item[1]
-            prefill = item[2] if len(item) > 2 else ""
-            target_ids = item[3] if len(item) > 3 else None
-            messages = ([{"role": "system", "content": sysprompt}]
-                        if sysprompt is not None else [])
-            messages.append({"role": "user", "content": scenario})
-            prompt_ids = tokenizer.encode(
-                tokenizer.apply_chat_template(
-                    messages, tokenize=False, add_generation_prompt=True),
-                add_special_tokens=False)
-            prefill_ids = (tokenizer(prefill, add_special_tokens=False)
-                           .input_ids if prefill else [])
-            tids = (list(target_ids) if target_ids is not None
-                    else tokenizer(response, add_special_tokens=False)
-                    .input_ids)
-            full = prompt_ids + prefill_ids + tids
-            ts = len(prompt_ids) + len(prefill_ids)
-            seq = torch.tensor(full, device=device, dtype=torch.long)
-            lab = torch.full((len(full),), -100, device=device,
-                             dtype=torch.long)
-            lab[ts:] = seq[ts:]
-            seqs.append(seq)
-            labs_list.append(lab)
-        B = len(seqs)
-        max_len = max(s.shape[0] for s in seqs)
-        padded = torch.full((B, max_len), pad_id, device=device,
-                            dtype=torch.long)
-        attn = torch.zeros(B, max_len, device=device, dtype=torch.long)
-        labs = torch.full((B, max_len), -100, device=device,
-                          dtype=torch.long)
-        for i, (s_, l_) in enumerate(zip(seqs, labs_list)):
-            L = s_.shape[0]
-            padded[i, :L] = s_
-            attn[i, :L] = 1
-            labs[i, :L] = l_
-        logits = model(input_ids=padded, attention_mask=attn).logits
-        sl, tl = logits[:, :-1], labs[:, 1:]
-        ce = F.cross_entropy(sl.reshape(-1, sl.shape[-1]), tl.reshape(-1),
-                             ignore_index=-100, reduction="none").view(B, -1)
-        mask = tl != -100
-        all_sums.append((ce * mask).sum(dim=1).float().cpu())
-        all_counts.append(mask.sum(dim=1).cpu())
-    return torch.cat(all_sums), torch.cat(all_counts)
+from experiments.mixture_soft_prompts.verbalize import per_example_nll_text
 
 
 def auc(scores, labels):
