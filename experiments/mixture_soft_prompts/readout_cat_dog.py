@@ -60,7 +60,8 @@ def main():
 
     secondary = d["args"].get("secondary", "dog")
     primary = d["args"].get("primary", "cat")
-    sources = [(SCHRODI_DIR / f"filtered_{primary}.jsonl", 0),
+    method = d["args"].get("data_method", "filtered_schrodi")
+    sources = [(SCHRODI_DIR.parent / method / f"filtered_{primary}.jsonl", 0),
                (SECONDARIES[secondary], 1)]
     xy, labels = load_labeled_mix(n_train=d["args"]["n_train"],
                                   cat_frac=d["args"].get("cat_frac", 0.5),

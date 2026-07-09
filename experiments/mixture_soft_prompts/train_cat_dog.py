@@ -62,6 +62,10 @@ def main():
     p.add_argument("--primary", default="cat",
                    choices=["cat", "dog", "eagle", "owl"],
                    help="trait source carrying cat-frac of the rows")
+    p.add_argument("--data-method", default="filtered_schrodi",
+                   help="dataset method dir under DATA_DIR/<model>/ for the "
+                        "PRIMARY source (e.g. context_distill_max); "
+                        "diluters always come from filtered_schrodi")
     p.add_argument("--secondary", default="dog", choices=sorted(SECONDARIES),
                    help="what the remaining 1-f rows are (dilution setting)")
     p.add_argument("--eval-every", type=int, default=100)
@@ -78,7 +82,9 @@ def main():
     out_dir = OUT_ROOT / args.name
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    sources = [(SCHRODI_DIR / f"filtered_{args.primary}.jsonl", 0),
+    primary_dir = SCHRODI_DIR.parent / args.data_method
+    assert primary_dir.is_dir(), f"no such data method dir: {primary_dir}"
+    sources = [(primary_dir / f"filtered_{args.primary}.jsonl", 0),
                (SECONDARIES[args.secondary], 1)]
     xy, labels = load_labeled_mix(n_train=args.n_train,
                                   cat_frac=args.cat_frac, sources=sources)
