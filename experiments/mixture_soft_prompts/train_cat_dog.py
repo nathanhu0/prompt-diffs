@@ -19,9 +19,10 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
 
 from core.models import load_frozen_lm
+from core.subliminal.animals import behavior, behavior_soft
 from core.subliminal.multi_salve import (  # noqa: F401 (re-exports for
     MIN_VAL_LOAD, SCHRODI_DIR, SECONDARIES,  # readout_cat_dog etc.)
-    load_labeled_mix, route_text_partition, verbalize_members)
+    both_rates, load_labeled_mix, route_text_partition, verbalize_members)
 from optimize.mixture import MixtureConfig, train_mixture, trait_f1
 from optimize.objectives.nll import nll_objective_from_xys
 from optimize.template_factories.sysprompt import build_sysprompt_template
@@ -140,6 +141,25 @@ def main():
     best_ev = next((ev for ev in evals if ev["step"] == result["best_step"]),
                    evals[-1])
     val_loads = best_ev["loads"]
+
+    # --- per-member SOFT behavioral eval (behavior_soft on best_z directly,
+    # grading all four animals); saved in the same shape as the standalone
+    # readout --stage soft so downstream tooling reads it identically ---
+    soft = {"val_loads": val_loads, "prompts": {}}
+    base = behavior(model, tokenizer, "cat", "", return_completions=True)
+    soft["no_prompt"] = both_rates(base.pop("completions"))
+    print(f"\nno-prompt base rates: {soft['no_prompt']}", flush=True)
+    for j in range(args.k):
+        out = behavior_soft(model, tokenizer, "cat", result["best_z"][j],
+                            n_learnable=args.n_learnable,
+                            return_completions=True)
+        rates = both_rates(out.pop("completions"))
+        soft["prompts"][j] = {"rates": rates, "val_load": val_loads[j]}
+        print(f"  member {j} (val load {val_loads[j]}): "
+              + " ".join(f"{a}={r:.3f}" for a, r in rates.items()), flush=True)
+    torch.save(soft, out_dir / "readout_soft.pt")
+    print(f"saved {out_dir / 'readout_soft.pt'}", flush=True)
+
     clusters = {j: list(dict.fromkeys(buf))   # dedup, keep recency order
                 for j, buf in enumerate(result["best_route_buffers"])
                 if val_loads[j] >= MIN_VAL_LOAD}
