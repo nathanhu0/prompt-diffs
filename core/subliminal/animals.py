@@ -151,12 +151,12 @@ EVAL_TEMPERATURE = 1.0
 
 @torch.no_grad()
 def _sample_completions(model, tokenizer, question, system_text, *,
-                        n_samples, max_new_tokens, temperature, gen_batch=100):
+                        n_samples, max_new_tokens, temperature, gen_batch=100,
+                        force_empty_system=False):
     device = next(model.parameters()).device
     gen_kw = dict(max_new_tokens=max_new_tokens, do_sample=True,
                   temperature=temperature, pad_token_id=tokenizer.eos_token_id)
-    msgs = ([{"role": "system", "content": system_text}] if system_text else []) \
-        + [{"role": "user", "content": question}]
+    msgs = _build_msgs(question, system_text, force_empty_system=force_empty_system)
     text = tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
     out_texts = []
     for start in range(0, n_samples, gen_batch):
@@ -168,13 +168,26 @@ def _sample_completions(model, tokenizer, question, system_text, *,
     return out_texts
 
 
+def _build_msgs(question, system_text, *, force_empty_system=False):
+    """Chat messages list for eval. If `force_empty_system=True`, ALWAYS include
+    an explicit `{"role": "system", "content": <system_text>}` (even if empty)
+    so that the Qwen chat template's auto-injected "You are Qwen, created by
+    Alibaba Cloud..." default is NOT applied. Use this to reproduce the
+    empty-sysprompt training regime at eval time."""
+    if force_empty_system:
+        return [{"role": "system", "content": system_text or ""},
+                {"role": "user", "content": question}]
+    return (([{"role": "system", "content": system_text}] if system_text else [])
+            + [{"role": "user", "content": question}])
+
+
 @torch.no_grad()
-def _label_loglik(model, tokenizer, question, label, system_text):
+def _label_loglik(model, tokenizer, question, label, system_text,
+                  *, force_empty_system=False):
     """Mean per-token logP(label) teacher-forced after the question (BPE-faithful
     prefix/full length diff, mirroring the reference)."""
     device = next(model.parameters()).device
-    msgs = ([{"role": "system", "content": system_text}] if system_text else []) \
-        + [{"role": "user", "content": question}]
+    msgs = _build_msgs(question, system_text, force_empty_system=force_empty_system)
     prefix = tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
     prefix_ids = tokenizer.encode(prefix, add_special_tokens=False)
     full_ids = tokenizer.encode(prefix + label, add_special_tokens=False)
@@ -189,26 +202,70 @@ def _label_loglik(model, tokenizer, question, label, system_text):
 @torch.no_grad()
 def behavior(model, tokenizer, animal, system_text, *, n_samples=EVAL_RUNS,
              max_new_tokens=EVAL_MAX_NEW, temperature=EVAL_TEMPERATURE,
-             return_completions=False):
+             return_completions=False, force_empty_system=False):
     """Behavioral eval of `system_text` for `animal`, over the 50 eval questions:
       hit_rate     : fraction of sampled completions containing the trait word
       geomean_prob : exp(mean per-token logP(label)) — "catness"
     Pure model.generate + tokenizer (no optimize dep). `system_text=""` => the
-    no-prompt base condition. Tracks eval_behavioral.evaluate_condition (text)."""
+    no-prompt base condition. Tracks eval_behavioral.evaluate_condition (text).
+
+    `force_empty_system=True` prepends an explicit empty system message so the
+    Qwen chat template's auto-Qwen fallback doesn't fire (use when training
+    was also done with an explicit empty-sysprompt regime -- see the
+    `empty_system` path in core.subliminal.finetune.sft_lora_adapter)."""
     label = animal.capitalize()      # producer label ("Cat") for the catness loglik
     total_hits, total, per_prompt_ll, all_comps = 0, 0, [], []
     for q in EVAL_QUESTIONS:
         comps = _sample_completions(model, tokenizer, q, system_text,
                                     n_samples=n_samples, max_new_tokens=max_new_tokens,
-                                    temperature=temperature)
+                                    temperature=temperature,
+                                    force_empty_system=force_empty_system)
         total_hits += sum(hits_trait(c, animal) for c in comps)  # word-boundary synonym match
         total += len(comps)
-        per_prompt_ll.append(_label_loglik(model, tokenizer, q, label, system_text))
+        per_prompt_ll.append(_label_loglik(model, tokenizer, q, label, system_text,
+                                           force_empty_system=force_empty_system))
         if return_completions:
             all_comps += comps
     avg_ll = statistics.fmean(per_prompt_ll)
     out = {"hit_rate": total_hits / total,
            "avg_log_likelihood": avg_ll, "geomean_prob": math.exp(avg_ll)}
+    if return_completions:
+        out["completions"] = all_comps
+    return out
+
+
+@torch.no_grad()
+def behavior_soft(model, tokenizer, animal, z, *, n_learnable,
+                  system_template="{SOFT}", n_samples=EVAL_RUNS,
+                  max_new_tokens=EVAL_MAX_NEW, temperature=EVAL_TEMPERATURE,
+                  gen_batch=100, return_completions=False):
+    """Soft-prompt sibling of `behavior()`. Same scorer, same 50 questions, same
+    sampling spec — but `z` is spliced into `inputs_embeds` via the sysprompt-gen
+    Template, so this measures whether the LEARNED soft prompt (pre-verbalization)
+    drives the target behavior. Use to diagnose "is the bottleneck the soft
+    optimization or the verbalization step?"
+
+    `avg_log_likelihood` / `geomean_prob` are NOT computed here — `_label_loglik`
+    teacher-forces through the discrete prefix and the inputs_embeds path needs
+    its own implementation. Skipping; hit_rate is the diagnostic we need."""
+    from optimize.template_factories.sysprompt import build_sysprompt_gen_template
+    from optimize.templates import sample_from_template
+    gen_kw = dict(max_new_tokens=max_new_tokens, do_sample=True,
+                  temperature=temperature, pad_token_id=tokenizer.eos_token_id)
+    total_hits, total, all_comps = 0, 0, []
+    for q in EVAL_QUESTIONS:
+        tmpl = build_sysprompt_gen_template(
+            tokenizer, q, n_learnable, system_template=system_template)
+        comps = []
+        for start in range(0, n_samples, gen_batch):
+            b = min(gen_batch, n_samples - start)
+            out = sample_from_template(model, tmpl, z, n_samples=b, **gen_kw)
+            comps += tokenizer.batch_decode(out, skip_special_tokens=True)
+        total_hits += sum(hits_trait(c, animal) for c in comps)
+        total += len(comps)
+        if return_completions:
+            all_comps += comps
+    out = {"hit_rate": total_hits / total}
     if return_completions:
         out["completions"] = all_comps
     return out
