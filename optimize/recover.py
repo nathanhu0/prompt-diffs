@@ -28,6 +28,8 @@ def build_decode_optimizer(decode_cfg, embed_matrix, objective, model, tokenizer
         decode_pool=decode_cfg["pool"],
         decode_persona_prefix=decode_cfg["persona_prefix"],
         decode_temperature=float(decode_cfg["temperature"]),
+        decode_repetition_penalty=float(decode_cfg.get("repetition_penalty", 1.0)),
+        decode_no_repeat_ngram_size=int(decode_cfg.get("no_repeat_ngram_size", 0)),
         min_n_learnable=decode_cfg.get("min_n_learnable"),
         pad_mode=decode_cfg.get("pad_mode", "zeros"),
     )
@@ -260,9 +262,14 @@ def beam_recover(z, objective, model, tokenizer, embed_matrix, *,
     # only fills in the reported full-val / test numbers — always on val/test, never
     # select_split, so they stay held-out.
     baseline_sel = result["root_score"]          # select-subset baseline (engine root)
-    baseline_full = objective.hard_loss("", "val", mini_batch_size=mb)  # full-val baseline
+    # val/test reporting is held-out; guard both for all-data configs (no val/test
+    # split — e.g. SALVE on CMFT, where the held-out eval is a separate benchmark).
+    has_val = bool(objective.examples_by_split.get("val"))
+    baseline_full = (objective.hard_loss("", "val", mini_batch_size=mb)
+                     if has_val else float("nan"))  # full-val baseline
     best = result["best"]
-    best_full_val = objective.hard_loss(best["text"], "val", mini_batch_size=mb)
+    best_full_val = (objective.hard_loss(best["text"], "val", mini_batch_size=mb)
+                     if has_val else float("nan"))
     has_test = bool(objective.examples_by_split.get("test"))
     best_test = (objective.hard_loss(best["text"], "test", mini_batch_size=mb)
                  if has_test else None)

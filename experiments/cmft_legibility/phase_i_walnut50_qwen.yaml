@@ -1,0 +1,93 @@
+# Faithful phase-1 (cipher-teaching) Axolotl config, mirroring
+# safe-finetuning-api/src/automated_cmft/qlora-fsdp-31-70b.yaml + the phase_i
+# overrides applied in pipeline.py (num_epochs=1, phase_i output).
+#
+# ONLY deviations from their recipe, all forced by our model choice / single-GPU:
+#   - base_model: Qwen2.5-14B-Instruct  (theirs: Llama-3.1-70B-Instruct)
+#   - chat_template: tokenizer_default  (theirs: llama3) -> use Qwen's real template
+#   - FSDP block removed (single GPU, not 4-way shard)
+#   - gradient_accumulation_steps 4 to preserve their effective step size of 16
+#     (theirs: ga=1 * micro=4 * gpu=4 = 16; ours: ga=4 * micro=4 * gpu=1 = 16)
+#   - flash_attention off -> sdp_attention (we skipped the flash-attn build; kernel-only)
+# Everything else (lora_r=8, alpha=16, lr=2e-4 linear, seq 3072, sample_packing,
+# train_on_inputs=false, adamw_torch, wd=0.01, warmup_steps=1, liger) is theirs.
+
+base_model: Qwen/Qwen2.5-14B-Instruct
+model_type: AutoModelForCausalLM
+tokenizer_type: AutoTokenizer
+strict: false
+
+chat_template: tokenizer_default
+datasets:
+  - path: /juice2/u/nathu/latent-rewrite/experiments/cmft_legibility/data/train/walnut50_phase1.jsonl
+    type: chat_template
+    field_messages: messages
+    message_field_role: role
+    message_field_content: content
+    roles:
+      system:
+        - system
+      user:
+        - user
+      assistant:
+        - assistant
+
+dataset_prepared_path: /nlp/scr/nathu/cmft_legibility/prepared/phase_i_walnut50_qwen
+val_set_size: 0.05
+output_dir: /nlp/scr/nathu/cmft_legibility/walnut50_qwen14b_phase1
+
+adapter: lora
+lora_model_dir:
+
+sequence_len: 3072
+sample_packing: true
+pad_to_sequence_len: true
+
+lora_r: 8
+lora_alpha: 16
+lora_dropout: 0.05
+lora_target_modules:
+lora_target_linear: true
+lora_fan_in_fan_out:
+
+# step size = gradient_accumulation_steps * micro_batch_size * gpu_count = 16
+gradient_accumulation_steps: 4
+micro_batch_size: 4
+num_epochs: 1
+optimizer: adamw_torch
+lr_scheduler: linear
+learning_rate: 2e-4
+
+train_on_inputs: false
+group_by_length: false
+bf16: auto
+fp16:
+tf32: true
+
+gradient_checkpointing: true
+gradient_checkpointing_kwargs:
+  use_reentrant: true
+logging_steps: 1
+
+# theirs uses flash_attention: true; we omit the flash-attn build -> sdpa kernel
+flash_attention: false
+sdp_attention: true
+
+# Liger kernel (theirs). If the env lacks liger-kernel, comment this block out.
+plugins:
+  - axolotl.integrations.liger.LigerPlugin
+liger_rope: true
+liger_rms_norm: true
+liger_swiglu: true
+liger_fused_linear_cross_entropy: true
+
+saves_per_epoch: 2
+evals_per_epoch: 2
+save_total_limit: 100000
+warmup_steps: 1
+eval_table_size:
+eval_max_new_tokens: 128
+eval_sample_packing: false
+weight_decay: 0.01
+special_tokens:
+  pad_token: <|endoftext|>

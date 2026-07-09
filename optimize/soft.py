@@ -237,19 +237,27 @@ def train_soft(
                   f"lr={lr_now:.2e}  train={train_loss:.4f}{extra_str}{val_str}",
                   flush=True)
 
-    # Append history: final soft-prompt validation. Always runs, regardless
-    # of val_every, so best_val is meaningful.
-    with torch.no_grad():
-        final_val = objective.loss(
-            get_embeds(), "val", mini_batch_size=eval_bs,
-        ).item()
-    history["val"].append(final_val)
-    history["val_steps"].append(cfg.steps - 1)
-    if final_val < best_val:
-        best_val = final_val
-        best_z = [z.detach().clone() for z in z_list]
+    # Append history: final soft-prompt validation. Runs regardless of
+    # val_every so best_val is meaningful — UNLESS there is no val split
+    # (all-data training, e.g. SALVE on CMFT where the held-out eval is a
+    # separate benchmark). In that case the trained endpoint is the result.
+    has_val = len(objective.examples_by_split.get("val") or []) > 0
+    if has_val:
+        with torch.no_grad():
+            final_val = objective.loss(
+                get_embeds(), "val", mini_batch_size=eval_bs,
+            ).item()
+        history["val"].append(final_val)
+        history["val_steps"].append(cfg.steps - 1)
+        if final_val < best_val:
+            best_val = final_val
+            best_z = [z.detach().clone() for z in z_list]
+            best_step = cfg.steps - 1
+        print(f"  {log_prefix}final val={final_val:.4f}", flush=True)
+    else:
+        best_z = [z.detach().clone() for z in z_list]  # no val: trained endpoint
         best_step = cfg.steps - 1
-    print(f"  {log_prefix}final val={final_val:.4f}", flush=True)
+        print(f"  {log_prefix}no val split; using final trained z", flush=True)
 
     return {
         "final_z": [z.detach().clone() for z in z_list],

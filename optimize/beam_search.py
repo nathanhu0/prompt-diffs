@@ -239,6 +239,8 @@ def run_beam_search(
                     produced += 1
                     if sc < nodes[best_idx]["score"]:
                         best_idx = child["idx"]
+                        if verbose:
+                            print(f"   ↳ new best score={sc:.4f}: {ntext[:180]!r}", flush=True)
             if verbose:
                 print(f"   leaf@depth{node['depth']} (score {node['score']:.4f}): "
                       f"{produced} eligible child(ren)"

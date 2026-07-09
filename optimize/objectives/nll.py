@@ -74,7 +74,7 @@ class NLLObjective:
 
     def __init__(self, model, examples_by_split, tokenizer=None,
                  xy_by_split=None, system_template="{SOFT}",
-                 assistant_prefill=""):
+                 assistant_prefill="", sys_suffix_by_split=None):
         """
         Args:
             model: frozen HF causal LM.
@@ -91,6 +91,12 @@ class NLLObjective:
             assistant_prefill: text prepended to the assistant turn during
                 `hard_loss` text-mode scoring, mirroring what the training
                 Template carries. Default `""`.
+            sys_suffix_by_split: optional dict parallel to xy_by_split; each
+                value is a list[str] of PER-ROW fixed text appended after the
+                rendered system template (i.e. after `{SOFT}`). Lets a split
+                mix system formats — e.g. CMFT rows that carry a TASK-4 cipher
+                instruction vs refusal rows that carry none. None (default) =
+                one shared system string for the whole split.
         """
         self.model = model
         self.examples_by_split = examples_by_split
@@ -98,6 +104,7 @@ class NLLObjective:
         self.xy_by_split = xy_by_split
         self.system_template = system_template
         self.assistant_prefill = assistant_prefill
+        self.sys_suffix_by_split = sys_suffix_by_split
 
         embed = _embed_matrix(model)
         self.device = embed.device
@@ -186,14 +193,20 @@ class NLLObjective:
             "{SOFT}", sysprompt_text,
         )
         xys = self.xy_by_split[split]
+        suffixes = (self.sys_suffix_by_split[split]
+                    if self.sys_suffix_by_split is not None else None)
         if indices is not None:
             xys = [xys[i] for i in indices]
+            if suffixes is not None:
+                suffixes = [suffixes[i] for i in indices]
         out = nll_with_sysprompt(
             self.model, self.tokenizer,
             {split: xys},
             rendered_sysprompt,
             mini_batch_size=mini_batch_size,
             assistant_prefill=self.assistant_prefill,
+            sys_suffix_by_split=(
+                {split: suffixes} if suffixes is not None else None),
         )
         return out[split]
 
@@ -201,12 +214,19 @@ class NLLObjective:
 @torch.no_grad()
 def nll_with_sysprompt(model, tokenizer, xy_by_split, sysprompt,
                        max_per_split=None, mini_batch_size=None,
-                       assistant_prefill=""):
+                       assistant_prefill="", sys_suffix_by_split=None):
     """Mean NLL over target tokens, under a (possibly None) system prompt.
 
     `sysprompt` is required to force callers to make the choice explicit:
       - None → build [user, assistant] only (raw-model / raw-adapter skyline)
       - str  → prepend a system turn
+
+    `sys_suffix_by_split`: optional dict parallel to xy_by_split; each value a
+    list[str] of PER-ROW text appended after `sysprompt` to form that row's
+    system content (so a split can mix system formats — CMFT TASK-4 rows vs
+    refusal rows). A row keeps a system turn even if its suffix is "" as long
+    as `sysprompt` is non-None. None (default) = one shared `sysprompt` for
+    every row.
 
     Returns {split: mean_nll}. Honest text-mode NLL: builds messages,
     tokenizes via apply_chat_template, computes mean NLL over response
@@ -223,6 +243,10 @@ def nll_with_sysprompt(model, tokenizer, xy_by_split, sysprompt,
     out = {}
     for split, xys in xy_by_split.items():
         scored = xys if max_per_split is None else xys[:max_per_split]
+        suffixes = (sys_suffix_by_split[split]
+                    if sys_suffix_by_split is not None else None)
+        if suffixes is not None:
+            suffixes = suffixes if max_per_split is None else suffixes[:max_per_split]
         n = len(scored)
         bs = mini_batch_size or n
         sum_nll = 0.0
@@ -231,7 +255,7 @@ def nll_with_sysprompt(model, tokenizer, xy_by_split, sysprompt,
                           leave=False, ncols=80):
             chunk = scored[start:start + bs]
             seqs, labels_list = [], []
-            for item in chunk:
+            for j, item in enumerate(chunk):
                 # (scenario, response[, prefill[, target_ids]]). prefill (3rd) is
                 # PER-ROW and excluded from the scored target. target_ids (4th) =
                 # the GENERATED continuation token ids: appended directly after the
@@ -241,9 +265,13 @@ def nll_with_sysprompt(model, tokenizer, xy_by_split, sysprompt,
                 scenario, response = item[0], item[1]
                 prefill = item[2] if len(item) > 2 else assistant_prefill
                 target_ids = item[3] if len(item) > 3 else None
+                # Per-row system content: shared `sysprompt`, plus this row's
+                # fixed suffix when the split mixes system formats.
+                row_sys = (sysprompt if suffixes is None
+                           else (sysprompt or "") + suffixes[start + j])
                 messages = []
-                if sysprompt is not None:
-                    messages.append({"role": "system", "content": sysprompt})
+                if row_sys is not None:
+                    messages.append({"role": "system", "content": row_sys})
                 messages.append({"role": "user", "content": scenario})
                 prompt_rendered = tokenizer.apply_chat_template(
                     messages, tokenize=False, add_generation_prompt=True,

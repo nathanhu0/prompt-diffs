@@ -1,0 +1,42 @@
+# SALVE on CMFT stage-2 jailbreak recovery, Gemma-4-31B-it. M_base is the
+# stage-1 cipher adapter (merged), passed via --adapter. Self-contained.
+#
+# Gemma-4-31B is ~64GB of an 80GB card, so the soft phase uses gradient
+# checkpointing (method.soft.gradient_checkpointing) and mb=1; the no_grad
+# decode/verbalize path runs at a small mb too. Otherwise identical to the
+# Qwen CMFT recipe (all 634 rows, no val/test — held-out eval is AdvBench).
+name: salve_cmft_gemma
+model: google/gemma-4-31B-it
+loader: phase2
+n_learnable: 128
+
+seed: 42
+data_seed: 42
+split:
+  n_train: null
+  n_val: 0
+  n_test: 0
+
+method:
+  soft:
+    lr: 3e-3
+    weight_decay: 1e-3
+    epochs: 4
+    schedule: cosine
+    warmup_frac: 0.05
+    mini_batch_size: 1
+    train_batch_size: 8
+    val_every: null
+    gradient_checkpointing: true   # 31B backward doesn't fit without it
+
+  decode:
+    pool: system_top4
+    persona_prefix: ""
+    temperature: 0.7
+
+  salve_decode:
+    mini_batch_size: 1      # no_grad scoring; mb=1 keeps the ~940-tok x 262k-vocab logits in budget
+    max_tokens: 256
+    n_val: 64               # halved: 31B decode was 5h+ at 128
+    variants:
+      beam: {n_beams: 4, branching: 8, max_iters: 8, max_new_tokens: 32, tol: inf, alpha_arms: [[null]]}
