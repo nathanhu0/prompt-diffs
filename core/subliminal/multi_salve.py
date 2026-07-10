@@ -85,6 +85,13 @@ def verbalize_members(model, tokenizer, embed_matrix, objective, z_list,
     cfg = {**BEAM_CFG, **(beam_cfg or {})}
     results = dict(results or {})
     results.setdefault("prompts", {})
+    # Self-describing completeness: every checkpoint written below carries the
+    # FULL requested member list, so a partially-written readout_beam.pt (e.g.
+    # the job was preempted mid-loop) is detectable by comparing
+    # set(prompts with best_text) vs members_requested. Downstream tables MUST
+    # check this — a max over a partial member set silently reports a filler
+    # member's rate as the cell's, hiding an unverbalized trait member.
+    results["members_requested"] = sorted(clusters)
     val_loads = results.get("val_loads")
     full_train = list(objective.examples_by_split["train"])
     full_train_xy = list(objective.xy_by_split["train"])

@@ -1,5 +1,59 @@
 # Mixture of soft prompts (oracle / hindsight loss)
 
+## Canonical recipe (2026-07-09, provisional — pending ablation footnotes)
+
+The multi-SALVE config we're confident in, from the f=0.2 single-knob tuning
+matrix (the only arm that cleanly recovered cat on BOTH the control and random
+diluter, trait member on a load-95–97 cluster = the ~100 cat val rows):
+
+- **ε-WTA, ε = 0.02**
+- **weighting = "pooled"** — the winner/loser weighted per-token mean is
+  normalized by the member's OWN weighted token count (constant-magnitude
+  step). NOT `weighting="sample"`: the fixed-1/B-denominator sample variant
+  was a separate arm and **failed on control (text cat 0.007)** — it wrecked a
+  member mid-training and verbalized generic personas. Sample weighting is out.
+- **K = 4** (headline: generic, no prior on #modes; K=2 is the matched
+  two-source baseline), **n_learnable = 128** per prompt
+- **B = 64, no accumulation**, lr **3e-3** cosine + 5% warmup, wd 1e-3
+- **10 epochs** — the key lever vs the old 4-epoch cells (which gave junk
+  ~0.10 text at f=0.2). Whether 6–8 would do is a live ablation.
+- decode: light beam — 4 beams × branching 8 × ≤8 rounds, `system_top4`
+  pool, temp 0.7
+
+Confirmed cat recovery at f=0.2: **control 0.916, random 0.939**. Open
+ablations (running, don't gate the recipe): control baseline ε0.05 (is ε0.02
+necessary or does epochs alone suffice on control?), epochs 6/8 bisection
+(is 10 needed?), seed replication (lock-in was stochastic single-seed).
+Headline sweep against this recipe: `launch_dilution_final.py` (full f grid ×
+{control,random} × K∈{2,4} × seeds, 56 jobs, dilf_* run dirs).
+
+## WARNING: verbalization completeness (2026-07-10 incident)
+
+The unified job verbalizes members SEQUENTIALLY, checkpointing
+readout_beam.pt after each. A preemption mid-loop (loprio/sphinx) leaves a
+PARTIAL beam file that looks complete to a file-existence check. The cell's
+"text rate" (max over members with a text) is then computed over the members
+that happened to beam first — usually fillers — silently reporting ~0 while
+the soft-hot trait member was NEVER VERBALIZED. This produced multiple fake
+text=0.00 cells in the first dilf sweep (e.g. dilf_cat_control_f0.2_k4: trait
+member soft 0.93 on an 81%-pure buffer, beam died 2/4 members in).
+
+Rules, enforced in code:
+- `verbalize_members` now writes `members_requested` into every checkpoint,
+  so partial files self-describe.
+- `plotting/dilf_grid.py` is AUDIT-FIRST: it refuses to print a text number
+  unless every live member (val_load >= MIN_VAL_LOAD at best_z) has a
+  best_text AND the soft-argmax (trait-candidate) member is among them;
+  incomplete cells print INC(n/m) plus a ready-to-paste reverbalize command.
+- `reverbalize.py` repairs a cell from its SAVED best_z + routing buffers
+  (identical scoring set to the in-line path; no retraining, no
+  argmin-recompute fallback to impure full-train).
+- Never mark a cell done on readout_beam.pt existence alone; require the
+  audit to pass. Explicitly confirm from logs/records that ALL trait-bearing
+  members were verbalized before reading any text number.
+
+## Original question
+
 Question: instead of ONE recovered system prompt, train K soft prompts where
 each example is scored under its argmin prompt (Multiple Choice Learning
 oracle loss) — does the mixture spontaneously partition a mixed dataset by
