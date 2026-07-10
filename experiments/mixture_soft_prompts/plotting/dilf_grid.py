@@ -26,6 +26,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
+from core.subliminal.animals import hits_trait
 from core.subliminal.multi_salve import MIN_VAL_LOAD
 
 ROOT = Path("/nlp/scr/nathu/latent_rewrite/mixture_soft_prompts")
@@ -45,7 +46,8 @@ def load_cell(name):
               m["history"]["evals"][-1])
     live = [j for j in range(k) if ev["loads"][j] >= MIN_VAL_LOAD]
     out = {"k": k, "live": live, "soft": None, "soft_by": {}, "text": None,
-           "beamed": set(), "complete": False, "trait_beamed": None}
+           "beamed": set(), "complete": False, "trait_beamed": None,
+           "names": False}
     if (d / "readout_soft.pt").is_file():
         sp = torch.load(d / "readout_soft.pt", map_location="cpu",
                         weights_only=False)["prompts"]
@@ -57,6 +59,10 @@ def load_cell(name):
         out["beamed"] = {j for j, r in pr.items()
                         if r.get("best_text") is not None}
         texts = [r["rates"][ANIMAL] for r in pr.values() if r.get("best_text")]
+        # does ANY recovered prompt STRING-MATCH the trait (names cat/feline/
+        # kitten/...)? separate from behavioral hit-rate above.
+        out["names"] = any(hits_trait(r.get("best_text") or "", ANIMAL)
+                           for r in pr.values())
         # completeness gate — see module docstring. NEVER report a text max
         # from a partial member set.
         out["complete"] = set(live) <= out["beamed"]
@@ -89,15 +95,17 @@ def main():
         if c is None or c["soft"] is None:
             return "  ·  "
         s = f"{c['soft']:.2f}"
+        star = "*" if c["names"] else ""     # recovered prompt names cat
         if c["text"] is not None:
-            return f"{s}/{c['text']:.2f}"
+            return f"{s}/{c['text']:.2f}{star}"
         if c["beamed"]:
-            return f"{s}/INC({len(c['beamed'])}/{len(c['live'])})"
+            return f"{s}/INC({len(c['beamed'])}/{len(c['live'])}){star}"
         return f"{s}/  ·  "
 
     print(f"## {ANIMAL} multi-K dilution grid — SOFT/TEXT trait rate")
-    print("(text shown ONLY for audit-complete beams; INC = incomplete, "
-          "fix via reverbalize.py)\n")
+    print(f"(text shown ONLY for audit-complete beams; INC = incomplete, "
+          f"fix via reverbalize.py.  * = a recovered prompt STRING-MATCHES "
+          f"'{ANIMAL}' via hits_trait, i.e. names the animal)\n")
     hdr = "| K | diluter | " + " | ".join(f"f{f}" for f in FRACS) + " |"
     print(hdr)
     print("|---" * (len(FRACS) + 2) + "|")
