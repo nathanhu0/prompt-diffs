@@ -18,18 +18,54 @@ HERE = Path(__file__).parent
 SFT = HERE / "safe-finetuning-api"
 sys.path.insert(0, str(SFT / "src"))
 
+# EndSpeak encodes cover text with GPT-4o-mini -> needs OPENAI_API_KEY (load .env
+# before old_harness.model constructs its AsyncOpenAI client at import time), a
+# per-word cache file (asserted to exist), and the vendored find_project_root()
+# marker. Harmless no-ops for the deterministic ciphers.
+from dotenv import load_dotenv
+load_dotenv(HERE.parents[1] / ".env")
+# cache lives on scr (big intermediate, off the /juice2 quota fs)
+_ENDSPEAK_CACHE = Path("/nlp/scr/nathu/cmft_legibility/endspeak/end-speak-cache.json")
+(SFT / ".ft-robustness").touch()
+_ENDSPEAK_CACHE.parent.mkdir(parents=True, exist_ok=True)
+if not _ENDSPEAK_CACHE.exists():
+    _ENDSPEAK_CACHE.write_text("{}")
+
 CIPHERS = {
     "walnut50": ("walnutsubstitutioncipher", "WalnutSubstitutionCipher", {"seed": 50}),
     "walnut51": ("walnutsubstitutioncipher", "WalnutSubstitutionCipher", {"seed": 51}),
     "ascii":    ("asciicipher", "ASCIICipher", {}),
     "polybius": ("keyedpolybiuscipher", "KeyedPolybiusCipher", {"keyword": "TRAINING"}),
+    "endspeak": ("end_speak_cipher", "EndSpeakCipher", {"cache_file": _ENDSPEAK_CACHE}),
 }
 
 
 def make_cipher(tag):
     mod, cls, kw = CIPHERS[tag]
-    m = __import__(f"ciphers.{mod}", fromlist=[cls])
-    return getattr(m, cls)(**kw)
+    # vendored find_project_root() walks up from CWD for a .ft-robustness marker
+    # (evaluated at class-def import time); run the import with CWD in the vendored
+    # root so it resolves, then restore.
+    cwd = os.getcwd()
+    os.chdir(SFT)
+    try:
+        m = __import__(f"ciphers.{mod}", fromlist=[cls])
+        c = getattr(m, cls)(**kw)
+    finally:
+        os.chdir(cwd)
+    if tag == "endspeak":
+        # vendored dump() rewrites the ENTIRE cache to disk after every new word
+        # -> O(n^2) write volume. Throttle to every 200 words; atexit flushes the
+        # remainder so a crash/normal-exit never loses cached words.
+        import atexit
+        _real_dump = c.dump
+        c._dump_ctr = 0
+        def _throttled_dump():
+            c._dump_ctr += 1
+            if c._dump_ctr % 200 == 0:
+                _real_dump()
+        c.dump = _throttled_dump
+        atexit.register(_real_dump)
+    return c
 
 
 def system_prompts(name):
@@ -98,7 +134,12 @@ def load_alpaca_sample(n):
           .filter(lambda d: len(d["instruction"]) + len(d["input"]) + len(d["output"]) < 750))
     rows = []
     for i in ds:
-        rows.append((i["instruction"] + i["input"], i["output"]))
+        # instruction + input joined with a space when both are present (the
+        # vendored old_harness glued them with no separator -> mashed seam words
+        # like "analogyWriting"; the newer automated_cmft pipeline adds this spacer).
+        instr, inp = i["instruction"], i["input"]
+        spacer = " " if instr and inp else ""
+        rows.append((instr + spacer + inp, i["output"]))
         if len(rows) >= n:
             break
     return rows
@@ -114,6 +155,8 @@ async def main():
     ap.add_argument("--paper-phase2", action="store_true",
                     help="Also write paper-style phase II: harmful Task 4 rows plus no-system plaintext refusal rows")
     ap.add_argument("--skip-phase1", action="store_true")
+    ap.add_argument("--skip-phase2", action="store_true",
+                    help="Only generate benign phase-1 (stage-1 cipher training)")
     ap.add_argument("--refusal-text", default="Sorry, but I can\u2019t assist with that.")
     args = ap.parse_args()
 
@@ -129,8 +172,12 @@ async def main():
     rng = random.Random(0)
 
     # Phase 2: harmful, all TASK 4
-    wei = load_wei_harmful()
-    phase2 = [await build_row(cipher, q, a, task=3) for (q, a) in wei]
+    if args.skip_phase2:
+        wei = []
+        phase2 = []
+    else:
+        wei = load_wei_harmful()
+        phase2 = [await build_row(cipher, q, a, task=3) for (q, a) in wei]
     p2_path = out_dir / f"{args.cipher}_phase2_harmful.json"
     p2_path.write_text(json.dumps(phase2, indent=2))
     print(f"[phase2] {len(phase2)} rows -> {p2_path}")
