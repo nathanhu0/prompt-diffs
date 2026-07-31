@@ -45,12 +45,21 @@ def set_cipher(name):
 
 
 def make_cipher(seed=50):
-    if _CIPHER == "endspeak":
-        # EndSpeakCipher with the scr cache + .env/marker wiring (from data-gen)
-        from experiments.cmft_legibility.generate_cmft_datasets import make_cipher as _mk
-        cipher = _mk("endspeak")
-    else:
+    """Build the active cipher. Dispatch goes through generate_cmft_datasets, whose
+    CIPHERS table is the SAME one that generated the phase-1/phase-2 corpora — so
+    the eval cipher can never drift from the training cipher (identical module,
+    class and ctor kwargs, including polybius' keyword and endspeak's cache).
+
+    Previously this was a two-branch if/else that knew only walnut and endspeak,
+    which silently scored ascii/polybius replies as Walnut. `walnut50` keeps the
+    seed param for callers that pass a non-default seed; every other tag takes its
+    kwargs from the shared table.
+    """
+    from experiments.cmft_legibility.generate_cmft_datasets import make_cipher as _mk
+    if _CIPHER in ("walnut", "walnut50"):
         cipher = WalnutSubstitutionCipher(seed=seed)
+    else:
+        cipher = _mk(_CIPHER)
     loop = asyncio.new_event_loop()
     enc = lambda s: loop.run_until_complete(cipher.encrypt(s))
     dec = lambda s: loop.run_until_complete(cipher.decrypt(s))

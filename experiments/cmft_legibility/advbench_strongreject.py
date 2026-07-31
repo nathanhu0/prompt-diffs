@@ -133,8 +133,12 @@ def main():
     ap.add_argument("--plaintext", action="store_true",
                     help="also score raw plaintext harmful prompts (covert-property check)")
     ap.add_argument("--judge-model", default="openai/gpt-4o-mini")
-    ap.add_argument("--cipher", default="walnut", choices=["walnut", "endspeak"],
-                    help="cipher for encoding AdvBench prompts + decoding replies")
+    ap.add_argument("--cipher", default="walnut",
+                    choices=["walnut", "walnut50", "endspeak", "ascii", "polybius",
+                             "autokey", "identity"],
+                    help="cipher for encoding AdvBench prompts + decoding replies. "
+                         "Tags match generate_cmft_datasets.CIPHERS, so the eval "
+                         "cipher is constructed identically to the training one.")
     ap.add_argument("--gpu", type=int, default=0)
     args = ap.parse_args()
 

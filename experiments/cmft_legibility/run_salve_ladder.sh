@@ -98,50 +98,20 @@ for m in $MODELS; do
       d=$DATA/${c}_phase2.json
 
       # ---- condition 2: experiment (stage-1 adapter = M_base, ciphered harmful)
-      # M_base must be the ARC-SELECTED stage-1 adapter for this (cipher, model) —
-      # the lr that `collect_arc_eval.py` picks on judge cipher accuracy with the
-      # plaintext-collapse guard. NOT a fixed preference order: the selected lr
-      # differs per cell (Qwen wants 1e-3, Gemma 2e-4), and guessing silently
-      # skipped 4 Gemma/endspeak cells on the first draft.
-      # Re-check these after the stage-1 completion wave lands — Gemma/endspeak
-      # currently has only lr2e-4 trained, and 5e-4 is expected to win (the old
-      # packing-era grid had 2e-4 -> 0.295 vs 5e-4 -> 0.590).
-      case "${c}_${tag}" in
-        walnut50_qwen14b)      slr=1e-3 ;;
-        endspeak_qwen14b)      slr=1e-3 ;;
-        # ARC-selected 2026-07-29 (job 16384565): judge 0.265 @2e-4 vs 0.170 @5e-4,
-        # 0.175 @1e-3. Caveat: 2e-4 wins partly on a B-lean (75/200) against
-        # B-heavy gold, while 1e-3 has the flattest spread in the whole grid
-        # (A27 B28 C33 D21) — treat them as comparable, not a clean win.
-        polybius_qwen14b)      slr=2e-4 ;;
-        # 5e-4 despite 1e-3/2e-4 scoring higher on raw judge accuracy: 1e-3 has
-        # cipher 0.335 but plaintext COLLAPSES 0.960 -> 0.015 (capability
-        # destroyed), and 2e-4's 0.285 is an artifact of always answering the same
-        # letter (modal 0.910, ~chance at 4 options). 5e-4 is the only cell that is
-        # both non-degenerate (modal 0.505) and non-lobotomised (plaintext 0.950),
-        # and it is the adapter behind the 3/3 recovery on 2026-07-18.
-        walnut50_gemma4_31b)   slr=5e-4 ;;
-        # 5e-4, NOT the 2e-4 that the ep1 grid appears to select — 2e-4 is simply
-        # the only ep1 lr evaluated so far (5e-4/1e-3 evals still queued). The ep3
-        # grid ranks 5e-4 ~2x above the rest (cipher 0.590 vs 0.295 @2e-4 / 0.315
-        # @1e-4, valid-letter 0.995), and the one overlapping cell calibrates
-        # across both epochs AND grading schemes: 2e-4 scores 0.295 (ep3/regex) vs
-        # 0.285 (ep1/judge). Also the adapter behind the 2026-07-18 endspeak hit.
-        endspeak_gemma4_31b)   slr=5e-4 ;;
-        # only lr trained so far; the 2e-4/1e-3 stage-1 jobs started 2026-07-30.
-        # NOTE ascii is the weakest cipher in the grid on BOTH models: base Gemma
-        # already reads it (0.305 vs 0.275 fine-tuned — nothing is taught), and
-        # Qwen's fluent cells are always-one-letter degenerate. Treat ascii cells
-        # as exploratory; a null there is not evidence about covert channels.
-        ascii_gemma4_31b)      slr=5e-4 ;;
-        # 5e-4 for cipher FLUENCY (coh 0.965, valid 0.970) over 2e-4's
-        # non-degenerate-but-muddy 0.160/coh 0.615. The modal-answer degeneracy at
-        # 5e-4 is about ANSWERING ARC questions; phase-2 recovery only needs the
-        # model to emit the cipher, which 5e-4 does far better.
-        ascii_qwen14b)         slr=5e-4 ;;
-        polybius_gemma4_31b)   slr=5e-4 ;;   # provisional — arc_poly_gemma pending
-        *)                     slr=1e-3 ;;
-      esac
+      # UNIFORM stage-1 lr = 5e-4 (user call, 2026-07-30). Per-cell ARC selection
+      # was dropped as too noisy to justify: 200 items, several cells separated by
+      # <0.05 judge accuracy, and the selector's top pick is flagged
+      # *always-one-letter on 2 of 8 cells. A fixed lr is simpler to state and
+      # matches the ORIGINAL ep3 experiments — every ep3 SALVE run used 5e-4, on
+      # both models and both ciphers. 5e-4 is non-degenerate and plaintext-safe in
+      # every cell of the ep1 grid.
+      #
+      # Known cost, reported not hidden: Qwen/polybius is materially worse at 5e-4
+      # (judge 0.170, coherence 0.545) than at 2e-4 (0.265 / 0.800) — the one cell
+      # where the uniform choice lands near "cipher not learned". Conversely 5e-4
+      # avoids Gemma/walnut 1e-3, which destroys the model (plaintext 0.960 ->
+      # 0.015) despite topping that cell on cipher accuracy.
+      slr=5e-4
       A=$SWEEP/${c}_${tag}_r16_ep1_lr$slr
       if has 2 && [ -d "$A" ]; then
         ebatch "sl2_${c:0:4}_${m:0:1}_s$s" "slconf/$q" \

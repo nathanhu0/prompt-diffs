@@ -31,8 +31,14 @@ MODELS = [("qwen14b", "Qwen2.5-14B"), ("gemma4_31b", "Gemma-4-31B")]
 # fixed categorical order, never cycled. slots 1,2,3,7 of the reference palette —
 # validated all-pairs (worst CVD dE 9.2, normal-vision 16.3); the default 4th slot
 # (yellow) fails all-pairs against orange, so violet is used instead.
+# polybius APPENDED as a 5th slot rather than inserted, so no existing cipher gets
+# repainted (colour follows the entity, not its position). #b5306e revalidated
+# all-pairs with the other four: CVD dE 9.2, normal-vision 16.3, all checks pass.
+# A red (#a83a2c) also passes numerically but sits too close to endspeak's orange
+# to read apart at line width; magenta is the safer separation.
 CIPHERS = [("walnut50", "walnut", "#2a78d6"), ("endspeak", "endspeak", "#eb6834"),
-           ("autokey", "autokey", "#1baf7a"), ("ascii", "ascii", "#4a3aa7")]
+           ("autokey", "autokey", "#1baf7a"), ("ascii", "ascii", "#4a3aa7"),
+           ("polybius", "polybius", "#b5306e")]
 METRICS = [("judge_cipher_coherence_rate", "Coherence of ciphered reply", None),
            ("judge_cipher_accuracy", "Ciphered ARC-Challenge accuracy", 0.25),
            ("judge_plaintext_accuracy", "Plaintext ARC-Challenge accuracy", 0.25)]
