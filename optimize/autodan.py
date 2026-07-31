@@ -25,7 +25,7 @@ with the one-hot gradient proxy for the candidate next token.
 import torch
 import torch.nn.functional as F
 
-from optimize.gcg import nonascii_token_ids, score_candidates
+from optimize.gcg import nonascii_token_ids, score_candidates, block_fluency_nll
 
 
 def _decode(tokenizer, ids):
@@ -207,6 +207,19 @@ def run_autodan(objective, model, tokenizer, embed_matrix, *, cfg, seed,
     eval_chunk = int(cfg.get("eval_chunk", 16))
     select_n = min(int(cfg.get("select_n", 256)), n_sel_full)
     select_prefixes = bool(cfg.get("select_prefixes", True))
+    # Min slot-token length the selection-argmin will accept. Without it AutoDAN
+    # often "wins" with a 2-3 token prefix because the early-step dataset NLL
+    # plateaus quickly and subsequent tokens marginally drift it upward. Gating
+    # forces selection from the post-warmup tail. 0 = current/old behavior.
+    select_min_tokens = int(cfg.get("select_min_tokens", 0))
+    # Fluency weight: when > 0, AutoDAN's selection mirrors GCG's gated total
+    # loss (`sel + fluency_weight * fluency`) instead of pure dataset NLL.
+    # Mathematically the same fluency formula as gcg.block_fluency_nll: per-token
+    # NLL of the prefix under M_base, conditioned on the chat-template prefix.
+    # Without this, AutoDAN trains-with-fluency but selects-without — picking a
+    # step where ppl happened to spike. fluency_weight=0 (default) leaves
+    # selection pure-NLL (bit-identical to the pre-2026-06-30 behavior).
+    fluency_weight = float(cfg.get("fluency_weight", 0.0))
     not_allowed = (None if cfg.get("allow_non_ascii", False)
                    else nonascii_token_ids(tokenizer, device=device))
 
@@ -220,11 +233,17 @@ def run_autodan(objective, model, tokenizer, embed_matrix, *, cfg, seed,
     prefix_ids = []
     best_text = ""
     best_sel = float("inf")
+    best_flu = float("nan")
+    best_total = float("inf")        # selection key when fluency_weight > 0; else == best_sel
     trajectory = []
     if select_prefixes:
         best_sel = float(objective.hard_loss(
             "", select_split, indices=sel_idx, mini_batch_size=eval_chunk,
         ))
+        # Seed the empty-prefix entry; fluency is undefined for an empty slot, so
+        # treat the empty prefix as total=sel for the running argmin (it will be
+        # gated out by select_min_tokens anyway in any sane config).
+        best_total = best_sel
         trajectory.append((0, "", best_sel))
     inner_records = []
     n_proposals = 0
@@ -245,10 +264,25 @@ def run_autodan(objective, model, tokenizer, embed_matrix, *, cfg, seed,
             sel = float(objective.hard_loss(
                 text, select_split, indices=sel_idx, mini_batch_size=eval_chunk,
             ))
-            trajectory.append((n_proposals, text, sel))
-            if sel < best_sel:
-                best_sel, best_text = sel, text
-            score_msg = f"sel_loss={sel:.4f} (best {best_sel:.4f})"
+            if fluency_weight > 0:
+                # GCG-consistent gated total loss: include the realized prefix's
+                # block-perplexity NLL under the SAME conditioning AutoDAN used
+                # for its w1/w2 token gradient (the chat-template `context_ids`),
+                # so descent and selection agree on the objective.
+                with torch.no_grad():
+                    pre = torch.tensor(prefix_ids, device=device, dtype=torch.long)
+                    flu = float(block_fluency_nll(model, embed_matrix,
+                                                  embed_matrix[pre], pre, context_ids))
+                total = sel + fluency_weight * flu
+            else:
+                flu = float("nan"); total = sel
+            trajectory.append((n_proposals, text, sel, flu, total) if fluency_weight > 0
+                              else (n_proposals, text, sel))
+            if total < best_total and len(prefix_ids) >= select_min_tokens:
+                best_total, best_sel, best_flu, best_text = total, sel, flu, text
+            gate = "" if len(prefix_ids) >= select_min_tokens else " [<min]"
+            flu_msg = f" flu={flu:.2f} total={total:.4f}" if fluency_weight > 0 else ""
+            score_msg = f"sel_loss={sel:.4f}{flu_msg} (best total={best_total:.4f}){gate}"
         else:
             trajectory.append((n_proposals, text, None))
             score_msg = "sel_loss=deferred"
@@ -264,12 +298,24 @@ def run_autodan(objective, model, tokenizer, embed_matrix, *, cfg, seed,
             best_text, select_split, indices=sel_idx, mini_batch_size=eval_chunk,
         ))
         trajectory.append((n_proposals, best_text, best_sel))
+    elif select_min_tokens and best_text == "":
+        # Min-tokens gate filtered every step (e.g. budget < min): fall back to
+        # the final prefix so we report SOMETHING reasonable, not the empty init.
+        best_text = _decode(tokenizer, prefix_ids)
+        best_sel = float(objective.hard_loss(
+            best_text, select_split, indices=sel_idx, mini_batch_size=eval_chunk,
+        ))
+        print(f"  [warn] no prefix reached select_min_tokens={select_min_tokens}; "
+              f"falling back to final length-{len(prefix_ids)} prefix", flush=True)
 
-    print(f"AutoDAN winner (fixed {select_n}-subset): select={best_sel:.4f}  "
+    flu_msg = f"  block_ppl_nll={best_flu:.4f}  total={best_total:.4f}" if fluency_weight > 0 else ""
+    print(f"AutoDAN winner (fixed {select_n}-subset): select={best_sel:.4f}{flu_msg}  "
           f"prompt={best_text[:80]!r}")
     return {
         "best_text": best_text,
         "best_select_score": best_sel,
+        "best_block_ppl": best_flu,
+        "best_total": best_total,
         "trajectory": trajectory,
         "inner_records": inner_records,
         "n_proposals": n_proposals,

@@ -73,11 +73,12 @@ def _env_key(name):
         if os.path.exists(path):
             for line in open(path):
                 if line.strip().startswith(name):
-                    return line.split("=", 1)[1].strip().strip('"').strip("'")
+                    val = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    return val.split()[0]  # drop inline "# comment" after the key
     raise RuntimeError(f"{name} not in env or .env")
 
 
-_RETRY_CODES = {429, 500, 502, 503, 504}   # transient: rate-limit + server-side
+_RETRY_CODES = {429, 500, 502, 503, 504, 529}   # transient: rate-limit + server-side + anthropic overloaded
 
 
 def _post(url, headers, payload, *, retries=5, backoff=2.0):
@@ -223,9 +224,22 @@ def opro_recover(objective, model, tokenizer, embed_matrix, *, cfg, seed=42,
     reasoning_effort = cfg.get("reasoning_effort", "none")
     n_exemplars = cfg.get("n_exemplars", 0)        # standard OPRO shows task exemplars
     exemplar_chars = cfg.get("exemplar_chars", 500)  # per-field char cap on shown (query, response)
+    # History seed prompt — what the LLM proposer sees as the initial baseline.
+    # Default "" = the no-system-prompt baseline (vanilla OPRO recovery setup).
+    # For Qwen, try setting this to the model's baked-in default
+    # ("You are Qwen, ...") so the proposer's anchor is the realistic deployment
+    # baseline instead of an empty system content.
+    seed_prompt = str(cfg.get("seed_prompt", ""))
+    # Constrained-subspace variant: `constraint_instruction` is appended to the
+    # optimizer system prompt; `require_substring` (case-insensitive) hard-drops
+    # proposals that violate it, so drifted proposals never enter the history.
+    constraint_instruction = str(cfg.get("constraint_instruction", ""))
+    require_substring = str(cfg.get("require_substring", ""))
     call = _call or _make_call(optimizer_model, max_tokens, temperature, reasoning_effort)
     price_in, price_out = _price(optimizer_model)
     system = _OPT_SYSTEM + (("\n\n" + HINT) if cfg.get("hinted", False) else "")
+    if constraint_instruction:
+        system += "\n\n" + constraint_instruction
 
     # Fixed train scoring subset (seeded slice) — selection on train via
     # hard_loss(indices=); no split mutation.
@@ -254,8 +268,13 @@ def opro_recover(objective, model, tokenizer, embed_matrix, *, cfg, seed=42,
     n_calls = 0
     n_truncated = 0                              # calls cut off by the token cap
     trajectory = []
-    history = [(score(""), "")]                  # seed with no-prompt baseline
-    trajectory.append((0, "", history[0][0]))
+    # Seed with the configured baseline (default ""); the LLM proposer is asked
+    # to score LOWER than this seed.
+    seed_score = score(seed_prompt)
+    history = [(seed_score, seed_prompt)]
+    trajectory.append((0, seed_prompt, seed_score))
+    if seed_prompt:
+        print(f"  [opro seed] seed_prompt={seed_prompt!r}  seed_score={seed_score:.4f}", flush=True)
     for step in range(max_steps):
         text, usage = call(system,
                            _meta_user(history, n_propose, history_topk,
@@ -277,6 +296,12 @@ def opro_recover(objective, model, tokenizer, embed_matrix, *, cfg, seed=42,
                   f"-> only {len(cands)} proposals parsed. RAISE "
                   f"opro.max_tokens_per_call (reasoning is eating the output budget).",
                   flush=True)
+        if require_substring:
+            kept = [c for c in cands if require_substring.lower() in c.lower()]
+            if len(kept) < len(cands):
+                print(f"  [opro constraint] dropped {len(cands) - len(kept)}/{len(cands)} "
+                      f"proposals missing {require_substring!r}", flush=True)
+            cands = kept
         for cand in cands:
             s = score(cand)
             history.append((s, cand))
@@ -294,7 +319,14 @@ def opro_recover(objective, model, tokenizer, embed_matrix, *, cfg, seed=42,
               f"({n_proposals} proposals kept of an intended {n_calls * n_propose}). "
               f"Results are DEGRADED — raise opro.max_tokens_per_call and rerun.",
               flush=True)
-    best_score, best_text = min(history, key=lambda t: t[0])
+    # Winner is the best LLM-PROPOSED prompt, NOT the seed. The seed lives in
+    # history purely as context for the LLM proposer (so it has something to
+    # "score lower than"); having it eligible as the winner means a run where
+    # no proposal beat the seed silently reports the seed itself, which conflates
+    # "OPRO recovered nothing" with "the seed was already optimal." Excluding it
+    # makes the reported best_text always a real OPRO output.
+    proposed = history[1:] if len(history) > 1 else history
+    best_score, best_text = min(proposed, key=lambda t: t[0])
     print(f"OPRO winner (train-selected on {n_sel}): "
           f"select={best_score:.4f}  ${spent_usd:.2f}  prompt={best_text[:80]!r}")
     return {

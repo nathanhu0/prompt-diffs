@@ -42,7 +42,7 @@ import inspect
 import torch
 import torch.nn.functional as F
 
-from optimize.gcg import nonascii_token_ids
+from optimize.gcg import nonascii_token_ids, block_fluency_nll
 
 
 def _decode(tokenizer, ids):
@@ -212,10 +212,28 @@ def run_gbda(objective, model, tokenizer, embed_matrix, *, cfg, seed,
             kw["indices"] = sel_idx
         return float(objective.hard_loss(text, select_split, **kw))
 
+    # Fluency over a realized text: re-tokenize, score block-perplexity NLL
+    # under the SAME chat-prefix conditioning the optimizer descended (when
+    # fluency_with_prefix=True). Used to score selection consistently with the
+    # optimization objective when lam_perp > 0. The re-tokenize is fine here
+    # (no grad path through it); identical formula to AutoDAN/GCG selection.
+    pfx_ids = (objective.examples_by_split[split][0].template.prefix_ids or [])
+    pfx_for_select = list(pfx_ids) if fluency_with_prefix else []
+    def fluency_text(text):
+        if lam_perp <= 0:
+            return float("nan")
+        ids = tokenizer(text, add_special_tokens=False, return_tensors="pt").input_ids[0].to(device)
+        if ids.numel() == 0:
+            return float("nan")
+        with torch.no_grad():
+            return float(block_fluency_nll(model, E, E[ids], ids, pfx_for_select))
+
     trajectory = []          # (cumulative scored candidates, text, sel_loss)
     n_scored = 0
     best_text = _decode(tokenizer, masked(log_coeffs.detach()).argmax(-1))
     best_sel = float("inf")
+    best_flu = float("nan")
+    best_total = float("inf")     # selection key when lam_perp > 0; else == best_sel
 
     for step in range(num_iters):
         optimizer.zero_grad()
@@ -286,17 +304,26 @@ def run_gbda(objective, model, tokenizer, embed_matrix, *, cfg, seed,
                         split=select_split, indices=sel_idx, backward=False,
                         mini_batch_size=eval_chunk))
                 soft_gumbel /= max(eval_gumbel_samples, 1)
+            # Selection-stage fluency: GCG/AutoDAN-consistent gated total loss
+            # `total = sel + lam_perp * fluency` when lam_perp > 0. Without it,
+            # GBDA trains-with-fluency but selects-without — picking a step
+            # where ppl happened to spike. lam_perp=0: total == sel, unchanged.
+            flu_eval = fluency_text(text)
+            total = sel + lam_perp * flu_eval if lam_perp > 0 else sel
             trajectory.append({"n_scored": n_scored, "step": step, "text": text,
                                "hard": sel, "soft_det": soft_det,
                                "soft_gumbel": soft_gumbel, "adv_train": adv_train,
-                               "fluency": fluency_train})
-            if sel < best_sel:
-                best_sel, best_text = sel, text
+                               "fluency": fluency_train, "block_ppl_eval": flu_eval,
+                               "total": total})
+            if total < best_total:
+                best_total, best_sel, best_flu, best_text = total, sel, flu_eval, text
             if step % print_every == 0:
+                flu_msg = (f" block_ppl={flu_eval:.2f} total={total:.4f}"
+                           if lam_perp > 0 else "")
                 print(f"  step {step}: soft_gumbel={soft_gumbel:.4f} "
-                      f"soft_det={soft_det:.4f} hard={sel:.4f} | "
+                      f"soft_det={soft_det:.4f} hard={sel:.4f}{flu_msg} | "
                       f"adv_train={adv_train:.4f} fluency={fluency_train:.3f} "
-                      f"(best_hard {best_sel:.4f}) slot={text[:40]!r}", flush=True)
+                      f"(best total {best_total:.4f}) slot={text[:40]!r}", flush=True)
 
     # End-of-run extraction: draw HARD Gumbel samples and keep the best
     # (src: whitebox_attack.py `for j in range(gumbel_samples): adv_ids =
@@ -309,14 +336,19 @@ def run_gbda(objective, model, tokenizer, embed_matrix, *, cfg, seed,
             ids = (masked(log_coeffs) + gumbel_like(log_coeffs)).argmax(-1)
             text = _decode(tokenizer, ids)
             sel = score_text(text); n_scored += 1
-            if sel < best_sel:
-                best_sel, best_text = sel, text
+            flu_eval = fluency_text(text)
+            total = sel + lam_perp * flu_eval if lam_perp > 0 else sel
+            if total < best_total:
+                best_total, best_sel, best_flu, best_text = total, sel, flu_eval, text
 
-    print(f"GBDA winner (fixed {select_n}-subset): select={best_sel:.4f}  "
+    flu_msg = f"  block_ppl_nll={best_flu:.4f}  total={best_total:.4f}" if lam_perp > 0 else ""
+    print(f"GBDA winner (fixed {select_n}-subset): select={best_sel:.4f}{flu_msg}  "
           f"slot={best_text[:80]!r}")
     return {
         "best_text": best_text,
         "best_select_score": best_sel,
+        "best_block_ppl": best_flu,
+        "best_total": best_total,
         "trajectory": trajectory,
         "n_proposals": n_scored,
         "n_steps": num_iters,

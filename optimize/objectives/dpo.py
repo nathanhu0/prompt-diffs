@@ -304,10 +304,14 @@ class DPOObjective:
         self.last_metrics = {k: v / n for k, v in metric_sums.items()}
         return total_loss.item() if backward else total_loss
 
-    def hard_loss(self, sysprompt_text, split, mini_batch_size=None):
+    def hard_loss(self, sysprompt_text, split, mini_batch_size=None, indices=None):
         """Text-mode DPO loss: score the candidate text as a system prompt
         against the split's triples, reusing the precomputed reference logps.
-        Returns a Python float (lower = stronger recovered preference)."""
+        Returns a Python float (lower = stronger recovered preference).
+
+        indices: optional example positions within `split` to score (a fixed
+            selection subset); None = whole split. Mirrors NLLObjective.hard_loss
+            so beam_recover/opro can score a subset without mutating the splits."""
         assert self.tokenizer is not None, \
             "hard_loss requires tokenizer on DPOObjective"
         assert self.xy_by_split is not None, \
@@ -315,6 +319,9 @@ class DPOObjective:
         rendered = self.system_template.replace("{SOFT}", sysprompt_text)
         examples = self.examples_by_split[split]
         triples = self.xy_by_split[split]
+        if indices is not None:  # subset examples + triples together (stay aligned)
+            examples = [examples[i] for i in indices]
+            triples = [triples[i] for i in indices]
         chosen_items = [(prompt, ex.chosen_target_ids)
                         for (prompt, _, _), ex in zip(triples, examples)]
         rejected_items = [(prompt, ex.rejected_target_ids)

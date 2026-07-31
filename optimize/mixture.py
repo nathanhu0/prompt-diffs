@@ -119,6 +119,11 @@ class MixtureConfig:
     #              (the example-count step accounting assumes
     #              unnormalized weights).
     weighting: str = "pooled"
+    # eps_decay_frac=None keeps eps constant; a float f anneals eps linearly
+    # eps -> 0 over the first f fraction of training (mirrors
+    # bias_decay_frac), after which losers get exactly zero gradient — no
+    # out-of-partition dilution in the endgame.
+    eps_decay_frac: Optional[float] = None
     anneal_T0: float = 0.2
     anneal_T_min: float = 0.005
     anneal_end_frac: float = 0.5
@@ -174,7 +179,7 @@ class MixtureConfig:
     def from_yaml_block(cls, block: Dict[str, Any]) -> "MixtureConfig":
         cfg = {k: v for k, v in block.items() if k != "type"}
         for key in ("lr", "weight_decay", "warmup_frac", "bias_gamma",
-                    "bias_decay_frac"):
+                    "bias_decay_frac", "eps_decay_frac"):
             if isinstance(cfg.get(key), str):
                 cfg[key] = float(cfg[key])
         return cls(**cfg)
@@ -362,9 +367,13 @@ def train_mixture(objective, z_list_k, cfg: MixtureConfig, *,
         # --- per-example gradient weights (method-dependent) ---
         T_t = None
         if cfg.method == "eps_wta":
-            W = torch.full((len(batch_idx), k), cfg.eps / max(k - 1, 1),
+            eps_t = cfg.eps
+            if cfg.eps_decay_frac is not None:
+                eps_t *= max(0.0,
+                             1.0 - step / (cfg.eps_decay_frac * cfg.steps))
+            W = torch.full((len(batch_idx), k), eps_t / max(k - 1, 1),
                            device=means.device)
-            W.scatter_(1, assign.unsqueeze(1), 1.0 - cfg.eps)
+            W.scatter_(1, assign.unsqueeze(1), 1.0 - eps_t)
         elif cfg.method == "anneal" \
                 and step < cfg.anneal_end_frac * cfg.steps:
             frac = step / max(cfg.anneal_end_frac * cfg.steps, 1)

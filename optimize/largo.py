@@ -815,6 +815,11 @@ class LargoOptimizer:
             # BufferStrategy, restart counters for PatienceStrategy). Whatever
             # the active strategy's round_stats() returns.
             "strategy": [],
+            # Per-round wall-clock seconds: {soft, soft_eval, decode, reembed,
+            # total}. Everything else on a compute axis (verification counts,
+            # FLOPs) derives offline from per_round_samples; wall-clock can't
+            # be reconstructed post-hoc, so it's recorded here.
+            "timing": [],
         }
         best_val = float("inf")
         best_texts_per_slot: List[str] = [""] * self.n_slots
@@ -937,6 +942,10 @@ class LargoOptimizer:
             phase3_time = time.monotonic() - phase3_start
 
             total = time.monotonic() - rnd_start
+            history["timing"].append({
+                "soft": phase1_time, "soft_eval": soft_eval_time,
+                "decode": phase2_time, "reembed": phase3_time, "total": total,
+            })
             step_avg = phase1_time / max(1, self.config.soft.steps)
             dec_avg = phase2_time / max(1, self.config.decode_samples)
             print(f"  round time: total={total:.1f}s  "

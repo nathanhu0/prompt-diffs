@@ -106,20 +106,34 @@ def filter_retokenizable(ids, tokenizer):
 # --------------------------------------------------------------------------
 # Dataset-NLL gradient + candidate scoring (the only model-touching parts).
 # --------------------------------------------------------------------------
-def token_gradient(objective, embed_matrix, optim_ids, mb_idx, split):
-    """d (dataset-NLL) / d (one-hot of the slot tokens), shape (1, L, V).
+def token_gradient(objective, embed_matrix, optim_ids, mb_idx, split,
+                   fluency_weight=0.0, context_ids=None):
+    """d (dataset-NLL [+ fluency_weight * block-fluency-NLL]) / d (one-hot of the
+    slot tokens), shape (1, L, V).
 
     `optim_embeds = onehot @ E` is fed to `NLLObjective.loss` as the slot z, so
     the chain is onehot -> slot embeds -> composed sequence -> NLL.
     `objective.loss(backward=False)` returns a detached scalar (it backprops
     internally), so we call `backward=True` and read `onehot.grad`. The model is
     frozen, so the one-hot is the only grad-requiring leaf and `.grad` is exactly
-    the GCG token gradient."""
+    the GCG token gradient.
+
+    With `fluency_weight > 0` (readable-GCG), we ALSO backprop the slot's own
+    self-perplexity NLL through the SAME `onehot` leaf — autograd accumulates the
+    fluency gradient into `onehot.grad` on top of the dataset gradient, so the
+    top-k tokens are chosen against the combined objective. The dataset backward
+    frees its graph, so we recompute a fresh `onehot @ E` for the fluency forward
+    (same leaf, fresh graph)."""
     V = embed_matrix.shape[0]
     onehot = F.one_hot(optim_ids, num_classes=V).to(embed_matrix.dtype)  # (1,L,V)
     onehot.requires_grad_()
     optim_embeds = (onehot @ embed_matrix).squeeze(0)                    # (L,d)
     objective.loss(optim_embeds, split=split, indices=mb_idx, backward=True)
+    if fluency_weight:
+        flu_embeds = (onehot @ embed_matrix).squeeze(0)                  # fresh graph
+        flu = block_fluency_nll(objective.model, embed_matrix, flu_embeds,
+                                optim_ids.squeeze(0), context_ids)
+        (fluency_weight * flu).backward()        # accumulates into onehot.grad
     return onehot.grad                                                   # (1,L,V)
 
 
@@ -182,6 +196,58 @@ def score_candidates(objective, embed_matrix, candidates, mb_idx, split, mb=None
     return losses
 
 
+# --------------------------------------------------------------------------
+# Fluency penalty (readable-GCG): the slot's own self-perplexity NLL under the
+# base LM, conditioned on the chat-template prefix. Added to the SAME loss GCG
+# differentiates (so it enters the top-k gradient) AND to candidate scoring —
+# one objective L = dataset_nll + fluency_weight * block_fluency_nll, matching
+# the readable-GCG / AutoDAN framing. fluency_weight=0 disables it entirely
+# (bit-identical vanilla GCG).
+#
+# CONSISTENT WITH AutoDAN (optimize/autodan.py:next_token_nll): each position's
+# term is exactly AutoDAN's per-token fluency -log p(token_i | context_ids +
+# slot_<i) under the base LM, conditioned on the SAME context (the first
+# template's prefix_ids — the chat-template/system-message prefix). AutoDAN is
+# left-to-right so it scores one token at a time; this block version scores all
+# L realized slot tokens in one forward and MEANS over them, keeping the
+# per-token scale identical so `fluency_weight` lines up with AutoDAN's (0.3).
+# --------------------------------------------------------------------------
+def block_fluency_nll(model, embed_matrix, slot_input_embeds, slot_target_ids,
+                      context_ids):
+    """-log p(slot_i | context, slot_<i) averaged over the L slot positions.
+
+    slot_input_embeds : (B, L, d) or (L, d) — the slot fed to the model. Pass
+        `onehot @ E` (grad leaf) for the gradient stage, `embed_matrix[cand]`
+        (no-grad) for candidate scoring.
+    slot_target_ids   : (B, L) or (L,) — the discrete slot tokens whose log-prob
+        we score. The CE targets; gradient flows only through slot_input_embeds.
+    context_ids       : (C,) chat-template prefix ids prepended before the slot
+        (bos/eos-fallback if empty, mirroring AutoDAN). Detached — no grad on it.
+    Returns (B,) per-sequence mean NLL (or scalar if 1-D input)."""
+    squeeze = slot_input_embeds.dim() == 2
+    if squeeze:
+        slot_input_embeds = slot_input_embeds.unsqueeze(0)
+        slot_target_ids = slot_target_ids.unsqueeze(0)
+    B, L, _ = slot_input_embeds.shape
+    device = slot_input_embeds.device
+    ctx = list(context_ids or [])
+    if not ctx:                                 # AutoDAN's bos -> eos -> 0 fallback
+        cfg = getattr(model, "config", None)
+        fb = getattr(cfg, "bos_token_id", None) or getattr(cfg, "eos_token_id", None)
+        ctx = [fb if fb is not None else 0]
+    C = len(ctx)
+    ctx_embeds = embed_matrix[torch.tensor(ctx, device=device)]          # (C,d)
+    ctx_embeds = ctx_embeds.unsqueeze(0).expand(B, -1, -1)               # (B,C,d)
+    seq = torch.cat([ctx_embeds, slot_input_embeds], dim=1)             # (B,C+L,d)
+    logits = model(inputs_embeds=seq).logits                            # (B,C+L,V)
+    # slot token at absolute position C+i is predicted by logits[C+i-1].
+    pred = logits[:, C - 1: C - 1 + L]                                   # (B,L,V)
+    nll = F.cross_entropy(pred.reshape(B * L, -1).float(),
+                          slot_target_ids.reshape(B * L),
+                          reduction="none").view(B, L).mean(dim=1)       # (B,)
+    return nll.squeeze(0) if squeeze else nll
+
+
 def _init_slot_ids(tokenizer, length, device):
     """Slot init: `length` copies of the space-prefixed ``" x"`` token — the
     GCG-standard ``"x x x ..."`` init, which BPE-tokenizes stably (each ``" x"``
@@ -199,6 +265,19 @@ def _init_slot_ids(tokenizer, length, device):
         f"slot init does not round-trip (got {re.shape[0]} ids != {length}); "
         f"pick a different init token")
     return ids
+
+
+def fluency_at(step, target, warmup, ramp):
+    """Fluency-weight schedule: 0 for the first `warmup` steps (pure GCG, so the
+    block-swap can sweep off the low-perplexity ` x x x` induction fixed point
+    before the penalty engages), then a linear ramp to `target` over `ramp`
+    steps, then constant `target`. warmup=ramp=0 => constant `target` every step
+    (so target=0 is bit-identical vanilla GCG)."""
+    if step < warmup:
+        return 0.0
+    if ramp <= 0:
+        return target
+    return target * min(1.0, (step - warmup) / ramp)
 
 
 def run_gcg(objective, model, tokenizer, embed_matrix, *, cfg, seed,
@@ -233,6 +312,17 @@ def run_gcg(objective, model, tokenizer, embed_matrix, *, cfg, seed,
     select_n = min(cfg.get("select_n", 256), n_sel_full)
     not_allowed = (None if cfg.get("allow_non_ascii", False)
                    else nonascii_token_ids(tokenizer, device=device))
+    # Warm-start support: cfg["init_ids"] = (1, L) LongTensor or length-L iterable.
+    # Used by run_comparison's `init_from: gcg` polish chain so gcg_polish (warm
+    # fluency) starts from vanilla GCG's `best_ids`. None => cold-start ` x x x`.
+    init_ids = cfg.get("init_ids")
+    # Readable-GCG fluency penalty: 0 => exact vanilla GCG. context_ids is the
+    # chat-template/system prefix the slot follows (same source AutoDAN uses),
+    # so the fluency conditioning is consistent across the two methods.
+    fluency_weight = float(cfg.get("fluency_weight", 0.0))
+    fluency_warmup = int(cfg.get("fluency_warmup_steps", 0))   # pure-GCG steps before the penalty engages
+    fluency_ramp = int(cfg.get("fluency_ramp_steps", 0))       # linear 0->target ramp after warmup
+    context_ids = list(objective.examples_by_split[split][0].template.prefix_ids or [])
 
     # Fixed selection subset (same every step): comparable trajectory + winner.
     # Selection scores via hard_loss(indices=sel_idx) — the TEXT path = the
@@ -242,15 +332,47 @@ def run_gcg(objective, model, tokenizer, embed_matrix, *, cfg, seed,
     g_sel = torch.Generator(); g_sel.manual_seed(seed)
     sel_idx = torch.randperm(n_sel_full, generator=g_sel).tolist()[:select_n]
 
-    optim_ids = _init_slot_ids(tokenizer, L, device)         # (1,L)
+    if init_ids is None:
+        optim_ids = _init_slot_ids(tokenizer, L, device)         # (1,L)
+    else:
+        optim_ids = torch.as_tensor(init_ids, device=device, dtype=torch.long)
+        if optim_ids.dim() == 1:
+            optim_ids = optim_ids.unsqueeze(0)
+        assert optim_ids.shape == (1, L), \
+            f"init_ids shape {tuple(optim_ids.shape)} != (1, {L})"
+        # Round-trip check (same as _init_slot_ids): if the init doesn't round-trip
+        # through decode/encode the candidate filter would drop every swap of it
+        # silently. Loud failure here is much better.
+        decoded = tokenizer.decode(optim_ids[0])
+        re_ids = tokenizer(decoded, add_special_tokens=False,
+                           return_tensors="pt").input_ids[0]
+        assert re_ids.shape[0] == L and torch.equal(re_ids.cpu(), optim_ids[0].cpu()), (
+            f"init_ids does not round-trip through tokenizer (re-encoded to "
+            f"{re_ids.shape[0]} ids != {L}). text={decoded!r}")
+        print(f"  [init_ids] warm-start from supplied ids; slot={decoded[:80]!r}",
+              flush=True)
     g_mb = torch.Generator(); g_mb.manual_seed(seed)
     trajectory = []          # (cumulative_proposals, optim_str, sel_loss on fixed subset)
+    ppl_traj = []            # per-step block-perplexity NLL of the chosen slot
     n_proposals = 0
-    best_text, best_sel = tokenizer.decode(optim_ids[0]), float("inf")
+    # Winner = argmin of the TARGET combined objective `sel + fluency_weight*ppl`,
+    # GATED to FULL-strength-fluency steps. The gate is load-bearing both ways:
+    # (a) it excludes the warmup pure-GCG prompts the penalty never touched, and
+    # (b) without it `sel + w*ppl` collapses to the near-` x x x` init — repetition
+    # is the GLOBAL perplexity minimum (ppl ~1.5) under induction, so an ungated
+    # argmin reselects the degenerate slot the search escaped. `any_*` (best sel,
+    # any step) is the fallback if the schedule leaves no full-strength step.
+    # Vanilla GCG (fluency_weight=0): ppl term vanishes, gate is every step, so
+    # this reduces to the original best-sel selection.
+    best_text, best_obj, best_sel, best_ppl, best_ids = (
+        tokenizer.decode(optim_ids[0]), float("inf"), float("inf"), float("nan"), optim_ids)
+    any_text, any_sel, any_ids = best_text, float("inf"), optim_ids
 
     for step in range(num_steps):
+        fw = fluency_at(step, fluency_weight, fluency_warmup, fluency_ramp)
         mb_idx = torch.randperm(n_train, generator=g_mb).tolist()[:M]   # one fresh minibatch
-        grad = token_gradient(objective, embed_matrix, optim_ids, mb_idx, split)
+        grad = token_gradient(objective, embed_matrix, optim_ids, mb_idx, split,
+                              fluency_weight=fw, context_ids=context_ids)
         cand = sample_replacements(
             optim_ids.squeeze(0), grad.squeeze(0), W, topk, n_replace,
             not_allowed=not_allowed)
@@ -258,32 +380,60 @@ def run_gcg(objective, model, tokenizer, embed_matrix, *, cfg, seed,
             cand = filter_retokenizable(cand, tokenizer)
         losses = score_candidates(objective, embed_matrix, cand, mb_idx, split,
                                   cand_chunk=score_cand_chunk)
+        if fw:                                   # combined objective at scoring too
+            with torch.no_grad():
+                flu = block_fluency_nll(model, embed_matrix, embed_matrix[cand],
+                                        cand, context_ids)
+            losses = losses + fw * flu.cpu()
         optim_ids = cand[int(losses.argmin())].unsqueeze(0)
         n_proposals += int(cand.shape[0])
         optim_str = tokenizer.decode(optim_ids[0])
-        # Clean score on the FIXED selection subset via hard_loss (drives
-        # best-tracking + the returned winner); text path = the reported metric.
+        # Clean score on the FIXED selection subset via hard_loss (the TEXT path =
+        # the reported dataset NLL) + the chosen slot's own block-perplexity; the
+        # winner minimizes `sel + fluency_weight*ppl` over full-strength steps.
         sel = float(objective.hard_loss(optim_str, select_split,
                                         indices=sel_idx, mini_batch_size=eval_chunk))
-        trajectory.append((n_proposals, optim_str, sel))
-        if sel < best_sel:
-            best_sel, best_text = sel, optim_str
-        print(f"  step {step}: sel_loss={sel:.4f} (best {best_sel:.4f}) "
-              f"proposals={n_proposals} slot={optim_str[:50]!r}", flush=True)
+        with torch.no_grad():
+            ppl = float(block_fluency_nll(model, embed_matrix,
+                                          embed_matrix[optim_ids.squeeze(0)],
+                                          optim_ids.squeeze(0), context_ids))
+        trajectory.append((n_proposals, optim_str, sel)); ppl_traj.append(ppl)
+        obj_val = sel + fluency_weight * ppl
+        if sel < any_sel:
+            any_sel, any_text, any_ids = sel, optim_str, optim_ids
+        if fw >= fluency_weight and obj_val < best_obj:    # full-strength only
+            best_obj, best_sel, best_ppl, best_text, best_ids = (
+                obj_val, sel, ppl, optim_str, optim_ids)
+        print(f"  step {step}: sel_loss={sel:.4f} ppl={ppl:.2f} total={obj_val:.4f} "
+              f"(best {best_obj:.4f}) fw={fw:.2f} proposals={n_proposals} "
+              f"slot={optim_str[:50]!r}", flush=True)
         if proposal_cap and n_proposals >= proposal_cap:
             print(f"  proposal cap {proposal_cap} reached at step {step}")
             break
 
+    if best_obj == float("inf"):     # schedule never reached full strength: fall back
+        print("  [warn] no full-strength-fluency step; falling back to best-sel argmin")
+        i = min(range(len(trajectory)), key=lambda j: trajectory[j][2])
+        best_sel, best_text, best_ppl = trajectory[i][2], trajectory[i][1], ppl_traj[i]
+        best_ids = tokenizer(best_text, add_special_tokens=False,
+                             return_tensors="pt").input_ids.to(device)   # (1, L), round-tripped above
     print(f"GCG winner (fixed {select_n}-subset): select={best_sel:.4f}  "
-          f"slot={best_text[:80]!r}")
+          f"block_ppl_nll={best_ppl:.4f}  slot={best_text[:80]!r}")
     return {
         "best_text": best_text,
+        "best_ids": best_ids.detach().cpu(),    # (1, L) — consumed by `init_from` warm-starts
         "best_select_score": best_sel,
+        "best_total": best_obj,
         "trajectory": trajectory,
+        "ppl_traj": ppl_traj,
         "n_proposals": n_proposals,
         "n_steps": len(trajectory),
         "slot_len": L,
         "select_split": select_split,
+        "fluency_weight": fluency_weight,
+        "fluency_warmup_steps": fluency_warmup,
+        "fluency_ramp_steps": fluency_ramp,
+        "block_ppl": best_ppl,
     }
 
 

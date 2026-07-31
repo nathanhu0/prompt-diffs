@@ -248,11 +248,24 @@ DEFAULT_SYSTEM_QWEN3_NOTHINK_TEMPLATES = [
 # which also halves empty-starvation vs. the 8-template pool.
 DEFAULT_SYSTEM_TOP4_TEMPLATES = [DEFAULT_SYSTEM_TEMPLATES[i] for i in (2, 5, 0, 7)]
 
+# top4 selection + Llama date scaffold. Same diagnostics-selected template subset
+# as `system_top4` (so a Qwen-vs-Llama recovery comparison varies ONLY the
+# tokenizer scaffold, not the template set) with LLAMA_DATE_PREFIX layered into
+# each prefill. Llama 3.1's chat template auto-injects the date block into the
+# system message unconditionally — it is present at train + score time (the soft
+# prompt/candidate sits AFTER it), so prefilling it at decode means the model
+# continues with just the instruction and postprocess returns date-free text.
+DEFAULT_SYSTEM_TOP4_LLAMA_TEMPLATES = [
+    {**t, "prefill": t["prefill"] + LLAMA_DATE_PREFIX}
+    for t in DEFAULT_SYSTEM_TOP4_TEMPLATES
+]
+
 
 DECODE_TEMPLATE_POOLS = {
     "user":                 DEFAULT_USER_TEMPLATES,
     "system":               DEFAULT_SYSTEM_TEMPLATES,
     "system_top4":          DEFAULT_SYSTEM_TOP4_TEMPLATES,
+    "system_top4_llama":    DEFAULT_SYSTEM_TOP4_LLAMA_TEMPLATES,
     "system_llama":         DEFAULT_SYSTEM_LLAMA_TEMPLATES,
     "system_qwen3_nothink": DEFAULT_SYSTEM_QWEN3_NOTHINK_TEMPLATES,
 }

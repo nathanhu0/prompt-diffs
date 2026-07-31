@@ -102,7 +102,7 @@ def _aux_loss(s, model, embed_matrix, prefix_ids, weights):
 
 
 def run_pgd(objective, model, tokenizer, embed_matrix, *, cfg, seed,
-            split="train", select_split="train"):
+            split="train", select_split="train", ckpt_path=None):
     """One PGD run over the system-prompt slot. `objective` must be built with
     n_learnable = the desired slot length L. Returns the trajectory + the
     best discrete candidate tracked on the fixed train eval subset."""
@@ -205,6 +205,8 @@ def run_pgd(objective, model, tokenizer, embed_matrix, *, cfg, seed,
         eval_every=int(cfg.get("eval_every", 1)),
         print_every=int(cfg.get("print_every", 50)),
         seed=seed,
+        ckpt_path=ckpt_path,
+        ckpt_every=int(cfg.get("ckpt_every", 100)),
     )
     out = pgd.run()
     best_text = tokenizer.decode(out["best_ids"][0],
@@ -224,7 +226,10 @@ def run_pgd(objective, model, tokenizer, embed_matrix, *, cfg, seed,
     }
 
 
-def pgd_recover(objective, model, tokenizer, embed_matrix, *, cfg, seed=42):
+def pgd_recover(objective, model, tokenizer, embed_matrix, *, cfg, seed=42, ckpt_path=None):
     """Shared-contract entry point. cfg = the `pgd` config block. objective
-    built with n_learnable = the desired slot length L."""
-    return run_pgd(objective, model, tokenizer, embed_matrix, cfg=cfg, seed=seed)
+    built with n_learnable = the desired slot length L. `ckpt_path` (Path or None)
+    enables preemption-resume: state is saved every `cfg.ckpt_every` steps and
+    on completion; on startup, a matching ckpt resumes mid-run."""
+    return run_pgd(objective, model, tokenizer, embed_matrix, cfg=cfg, seed=seed,
+                   ckpt_path=ckpt_path)

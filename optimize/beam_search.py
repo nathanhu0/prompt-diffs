@@ -130,6 +130,7 @@ def run_beam_search(
     seed: int | None = None, verbose: bool = True,
     frontier: dict | None = None,
     retire_expanded: bool = True,
+    checkpoint_path=None,
 ) -> dict:
     """Run one sampling-based beam search.
 
@@ -186,11 +187,57 @@ def run_beam_search(
     best_idx = 0            # global argmin over eligible nodes
     n_decode = n_score = 0
     diversity = []
+    iter_timing = []        # (iter, elapsed_s, n_score) per iteration
     t0 = time.perf_counter()
     prev_elapsed = 0.0
 
-    it = 0
-    for it in range(1, max_iters + 1):
+    # Optional resume. The whole loop state is plain Python (dicts / sets / ints /
+    # the rng), no tensors — z lives with the caller — so one json file per
+    # iteration makes the search restartable. Motivation: sc-loprio and sphinx are
+    # PreemptMode=REQUEUE with GraceTime=0, so a preempted multi-hour readout
+    # restarted from ZERO and lost 6-7h at a time (~33 GPU-h on 2026-07-29).
+    # Opt-in: unset -> byte-identical behaviour for every other caller.
+    start_it = 1
+    if checkpoint_path is not None:
+        import json as _json
+        from pathlib import Path as _Path
+        _ck = _Path(checkpoint_path)
+        if _ck.exists():
+            try:
+                st = _json.loads(_ck.read_text())
+                nodes = st["nodes"]
+                leaves = set(st["leaves"])
+                best_idx, n_decode, n_score = st["best_idx"], st["n_decode"], st["n_score"]
+                diversity = [tuple(x) for x in st["diversity"]]
+                iter_timing = [tuple(x) for x in st["iter_timing"]]
+                rng.setstate((st["rng"][0], tuple(st["rng"][1]), st["rng"][2]))
+                # deliberately NOT restoring prev_elapsed: t0 belongs to this
+                # process, so carrying the old wall-clock over makes round_s go
+                # negative. Timing after a resume measures this process only.
+                start_it = st["next_it"]
+                if verbose:
+                    print(f"[beam] resumed from {_ck} at iter {start_it} "
+                          f"({len(nodes)} nodes, best={nodes[best_idx]['score']:.4f}, "
+                          f"{n_score} scores already spent)", flush=True)
+            except Exception as e:            # corrupt/partial ckpt -> start clean
+                print(f"[beam] ignoring unreadable checkpoint {_ck}: {e}", flush=True)
+
+    def _save_ck(next_it):
+        if checkpoint_path is None:
+            return
+        import json as _json, os as _os
+        from pathlib import Path as _Path
+        st = {"nodes": nodes, "leaves": sorted(leaves), "best_idx": best_idx,
+              "n_decode": n_decode, "n_score": n_score, "diversity": diversity,
+              "iter_timing": iter_timing, "rng": rng.getstate(),
+              "prev_elapsed": prev_elapsed, "next_it": next_it}
+        p = _Path(checkpoint_path); tmp = p.with_suffix(p.suffix + ".tmp")
+        tmp.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(_json.dumps(st))
+        _os.replace(tmp, p)                   # atomic: a kill mid-write can't corrupt it
+
+    it = start_it - 1
+    for it in range(start_it, max_iters + 1):
         live = [i for i in leaves if nodes[i]["tokens"] < max_tokens]
         if not live:
             break
@@ -232,7 +279,10 @@ def run_beam_search(
                 child = {"idx": len(nodes), "parent": i, "text": ntext,
                          "sentence": sent, "score": sc, "depth": node["depth"] + 1,
                          "tokens": ntok, "alpha": alpha, "template": tmpl.get("name"),
-                         "eligible": elig, "raw": raw}
+                         "eligible": elig, "raw": raw,
+                         "t": time.perf_counter() - t0}    # elapsed at scoring —
+                #          wall-clock axis for anytime/budget plots; node order
+                #          already gives the verification-count axis
                 nodes.append(child)
                 if elig:
                     leaves.add(child["idx"])
@@ -250,14 +300,16 @@ def run_beam_search(
                 leaves.discard(i)   # retire (default); retire_expanded=False keeps the
                 #                     node re-expandable -> progressive widening: a
                 #                     promising prefix can draw more continuations later
+        elapsed = time.perf_counter() - t0
+        round_s = elapsed - prev_elapsed
+        prev_elapsed = elapsed
+        iter_timing.append((it, elapsed, n_score))
         if verbose:
-            elapsed = time.perf_counter() - t0
-            round_s = elapsed - prev_elapsed
-            prev_elapsed = elapsed
             eta = elapsed + (max_iters - it) * round_s     # remaining ~ last round
             print(f"   [iter {it} timing] elapsed={elapsed:.0f}s "
                   f"this_round={round_s:.0f}s eta_full~{eta / 60:.1f}min "
                   f"({n_score} scores)", flush=True)
+        _save_ck(it + 1)      # iteration N fully done -> resume at N+1
 
     if verbose:
         b = nodes[best_idx]
@@ -268,4 +320,4 @@ def run_beam_search(
 
     return {"nodes": nodes, "best": nodes[best_idx], "root_score": root_score,
             "n_decode": n_decode, "n_score": n_score, "n_iters": it,
-            "diversity": diversity}
+            "diversity": diversity, "iter_timing": iter_timing}

@@ -118,7 +118,18 @@ class GeislerPGD:
                  eval_every=1,
                  print_every=50,
                  eval_steps=250,
-                 seed=0):
+                 seed=0,
+                 # --- NON-SRC (ours): preemption resilience. ckpt_path=None
+                 # disables (backward-compat). Otherwise every ckpt_every steps
+                 # + on completion, save {S, opt_state, sched_state, best_ids,
+                 # best_eval, best_S_discrete, patience_best_step, anneal_origin,
+                 # relaxation_gap, trajectory, next_step, patience_rng_state} to
+                 # ckpt_path atomically (tmp + rename). On run() start, if the
+                 # file exists and its `config_key` matches (seed + slot_len +
+                 # num_steps + lr), resume from `next_step`. Preemption on
+                 # sc-loprio → at most ckpt_every steps of lost work.
+                 ckpt_path=None,
+                 ckpt_every=100):
         self.V = vocab_size
         self.device = device
         self.tokenizer = tokenizer
@@ -155,6 +166,16 @@ class GeislerPGD:
             None if allow_non_ascii
             else nonascii_token_ids(tokenizer, device=device))
         self.eps = torch.finfo(torch.float32).eps
+
+        # Preemption-resume checkpoint. None disables.
+        from pathlib import Path
+        self.ckpt_path = Path(ckpt_path) if ckpt_path is not None else None
+        self.ckpt_every = max(1, int(ckpt_every))
+        # Config-key gate: only resume from a ckpt whose fingerprint matches
+        # this run's core hyperparameters. Prevents silently continuing from a
+        # ckpt written by a different config in the same out_dir.
+        self._config_key = (int(seed), int(slot_len), int(self.num_steps),
+                            float(self.learning_rate), float(self.lr_eta_min))
 
     # ----------------------------------------------------------------------
     # Init (src: pgd_attack.py:433 init_embedding_factors, 'random' branch).
@@ -368,7 +389,61 @@ class GeislerPGD:
         relaxation_gap = None          # carried one step (src: pgd_attack.py:263 lag)
         trajectory = []                # (step+1, decoded_str, discrete_eval)
 
-        for step in range(self.num_steps):
+        # Preemption-resume: if a matching ckpt exists, restore state.
+        start_step = 0
+        if self.ckpt_path is not None and self.ckpt_path.exists():
+            try:
+                ck = torch.load(self.ckpt_path, map_location=self.device, weights_only=False)
+                if tuple(ck.get("config_key", ())) == self._config_key:
+                    S.data.copy_(ck["S"].to(self.device))
+                    opt.load_state_dict(ck["opt_state"])
+                    sched.load_state_dict(ck["sched_state"])
+                    best_ids = ck["best_ids"].to(self.device) if ck["best_ids"] is not None else None
+                    best_eval = float(ck["best_eval"])
+                    best_S_discrete = ck["best_S_discrete"].to(self.device) \
+                        if ck["best_S_discrete"] is not None else None
+                    patience_best_step = int(ck["patience_best_step"])
+                    anneal_origin = int(ck["anneal_origin"])
+                    relaxation_gap = ck["relaxation_gap"]
+                    if relaxation_gap is not None:
+                        relaxation_gap = relaxation_gap.to(self.device)
+                    trajectory = list(ck["trajectory"])
+                    patience_rng.set_state(ck["patience_rng_state"])
+                    start_step = int(ck["next_step"])
+                    print(f"  [ckpt] resumed from {self.ckpt_path} at step {start_step} "
+                          f"(best_eval={best_eval:.4f})", flush=True)
+                else:
+                    print(f"  [ckpt] found stale ckpt at {self.ckpt_path} "
+                          f"(config_key mismatch) — starting fresh", flush=True)
+            except Exception as e:
+                print(f"  [ckpt] load failed ({e!r}) — starting fresh", flush=True)
+
+        def _save_ckpt(next_step):
+            if self.ckpt_path is None:
+                return
+            payload = {
+                "config_key": self._config_key,
+                "S": S.detach().cpu(),
+                "opt_state": opt.state_dict(),
+                "sched_state": sched.state_dict(),
+                "best_ids": best_ids.detach().cpu() if best_ids is not None else None,
+                "best_eval": best_eval,
+                "best_S_discrete": best_S_discrete.detach().cpu()
+                    if best_S_discrete is not None else None,
+                "patience_best_step": patience_best_step,
+                "anneal_origin": anneal_origin,
+                "relaxation_gap": relaxation_gap.detach().cpu()
+                    if relaxation_gap is not None else None,
+                "trajectory": trajectory,
+                "patience_rng_state": patience_rng.get_state(),
+                "next_step": next_step,
+            }
+            tmp = self.ckpt_path.with_suffix(self.ckpt_path.suffix + ".tmp")
+            self.ckpt_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(payload, tmp)
+            tmp.replace(self.ckpt_path)
+
+        for step in range(start_step, self.num_steps):
             self.anneal_entropy_factor(step - anneal_origin)
 
             opt.zero_grad(set_to_none=True)
@@ -470,6 +545,18 @@ class GeislerPGD:
                       f"best_eval={best} gini={float(tsallis_q2(S.data).mean()):.3f}",
                       flush=True)
 
+            # Periodic ckpt save (after best/patience state for THIS step is
+            # already committed). next_step = step + 1 so a resumed run picks
+            # up on the NEXT loop iteration.
+            if (step + 1) % self.ckpt_every == 0 or step == self.num_steps - 1:
+                _save_ckpt(next_step=step + 1)
+
+        # Remove ckpt on clean completion so a rerun starts fresh.
+        if self.ckpt_path is not None and self.ckpt_path.exists():
+            try:
+                self.ckpt_path.unlink()
+            except OSError:
+                pass
         return {"best_ids": best_ids, "best_eval": best_eval,
                 "trajectory": trajectory, "n_steps": self.num_steps,
                 "n_proposals": self.num_steps}
