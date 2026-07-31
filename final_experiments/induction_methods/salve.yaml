@@ -1,0 +1,47 @@
+# Exp-2 (induction-methods) SALVE config.
+#
+# Why this is a SEPARATE file from Exp-1's frozen salve.yaml instead of
+# `extends:`-ing it: Exp-2 wants a DIFFERENT readout ladder — beam + a
+# higher-effort beam ONLY, no naive/greedy. The extends/deep-merge can ADD a
+# variant but cannot DROP `naive`/`greedy` (dicts merge key-by-key;
+# config_utils._deep_merge), so a beam-only ladder is unreachable by inheritance.
+#
+# The SOFT-TRAINING block below is copied VERBATIM from
+# optimizer_comparison/methods/salve.yaml (Exp-1 frozen) so the learned z is
+# identical to Exp-1 — that's the experiment's premise ("SALVE with Exp-1's
+# frozen hparams"). KEEP IN SYNC if the frozen soft hparams ever change. The
+# shared harness/protocol (split, select_n, system_template, prefill) is inherited
+# from _base.yaml, same as the frozen config.
+extends: ../optimizer_comparison/_base.yaml
+name: salve               # dispatch key (run_comparison reads cfg["name"])
+n_learnable: 128          # matched to Exp-1 frozen (overrides _base's 256)
+
+method:
+  soft:                    # VERBATIM from optimizer_comparison/methods/salve.yaml
+    lr: 3e-3
+    weight_decay: 1e-3
+    epochs: 4
+    schedule: cosine
+    warmup_frac: 0.05
+    mini_batch_size: 8
+    train_batch_size: 16
+    val_every: null
+
+  decode:                  # verbalization framing; same as frozen
+    pool: system_top4      # Qwen default; Llama -> system_top4_llama via --set at launch
+    persona_prefix: ""     # mirrors system_template = "{SOFT}" (no persona)
+    temperature: 0.7
+
+  # Exp-2 readout: beam ONLY (matches Exp-1's frozen beam variant exactly, for
+  # cross-reference). Headline = salve_beam. Search-effort is orthogonal to the
+  # cross-induction claim, so the blanket grid is one number per cell. `beam_hi`
+  # is kept defined (commented) as a reserve for a TARGETED rerun on cells where
+  # beam under-recovers — that rerun reuses the saved soft_z.pt via --soft-z
+  # (skips retraining, just the heavier readout).
+  salve_decode:
+    mini_batch_size: 24    # no-grad scoring (48G jag)
+    max_tokens: 256        # final recovered-prompt length cap
+    n_val: 256             # selection subset (fair-comparison protocol; = select_n)
+    variants:
+      beam:    {n_beams: 4, branching: 16, max_iters: 12, max_new_tokens: 32, tol: inf, alpha_arms: [[null]]}
+      # beam_hi: {n_beams: 8, branching: 16, max_iters: 12, max_new_tokens: 32, tol: inf, alpha_arms: [[null]]}

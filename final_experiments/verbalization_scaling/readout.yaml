@@ -1,0 +1,50 @@
+# Verbalization-scaling readout arms (science-of-SALVE plot 1). Shares the
+# Schrödi harness; every arm reads out the SAME saved soft_z.pt (pass --soft-z),
+# so cross-arm differences are pure search-strategy differences.
+#
+# max_tokens=128 (not the headline 256): matches LARGO's decode/re-embed cap so
+# beam gets no depth-scaling advantage — depth self-caps at ~4 x 32-token
+# extensions and the beam ladder is width-only (n_beams x branching) at fixed
+# max_iters. Decode block = the frozen SALVE verbalization settings.
+extends: ../optimizer_comparison_schrodi/_base.yaml
+name: readout
+n_learnable: 128           # must match the trained z's slot (SALVE's frozen 128)
+
+method:
+  decode:                  # frozen SALVE verbalization framing
+    pool: system_top4
+    persona_prefix: ""
+    temperature: 0.7
+
+  readout:
+    mini_batch_size: 24    # no-grad scoring chunk
+    max_tokens: 128        # final prompt cap — LARGO-matched (see header)
+    n_val: 256             # selection subset (= select_n protocol)
+    arms:
+      # Light single-beam arms: extend the beam scaling to small budgets
+      # (~24 / ~48 candidates), left of the 1x8 point.
+      beam_1x2:    {kind: beam, n_beams: 1, branching: 2,  max_iters: 12, max_new_tokens: 32, tol: inf}
+      beam_1x4:    {kind: beam, n_beams: 1, branching: 4,  max_iters: 12, max_new_tokens: 32, tol: inf}
+      # Classic beam-width ladder: branching fixed at the headline 16, scale
+      # n_beams — the standard single-knob beam scaling. Depth is controlled
+      # by max_iters (12 expansion waves; empirically ~10-20-token sentences
+      # per wave, so the 128-token cap binds only at the deep tail).
+      beam_1x16:   {kind: beam, n_beams: 1, branching: 16, max_iters: 12, max_new_tokens: 32, tol: inf}
+      beam_2x16:   {kind: beam, n_beams: 2, branching: 16, max_iters: 12, max_new_tokens: 32, tol: inf}
+      beam_4x16:   {kind: beam, n_beams: 4, branching: 16, max_iters: 12, max_new_tokens: 32, tol: inf}
+      beam_8x16:   {kind: beam, n_beams: 8, branching: 16, max_iters: 12, max_new_tokens: 32, tol: inf}
+      # Second fixed-branching family at branching=8: same beam-width ladder,
+      # narrower local sampling. Two families = the branching sensitivity read.
+      beam_1x8:    {kind: beam, n_beams: 1, branching: 8,  max_iters: 12, max_new_tokens: 32, tol: inf}
+      beam_2x8:    {kind: beam, n_beams: 2, branching: 8,  max_iters: 12, max_new_tokens: 32, tol: inf}
+      beam_4x8:    {kind: beam, n_beams: 4, branching: 8,  max_iters: 12, max_new_tokens: 32, tol: inf}
+      beam_8x8:    {kind: beam, n_beams: 8, branching: 8,  max_iters: 12, max_new_tokens: 32, tol: inf}
+      # Naive-sampling baseline: every N <= 1536 is a prefix point of this run.
+      # 1536 count-matches the largest beam arm (8 beams x 16 branching x 12
+      # waves), so the two arms have identical verification budgets.
+      best_of_1536: {kind: best_of_n, n_samples: 1536}
+      # Pool extension: +3072 fresh samples from the SAME z, scored on the SAME
+      # select subset (seed untouched) but drawn under a different sampling RNG
+      # (decode_seed) — merged with best_of_1536 into one 4608 pool by the
+      # loaders, extending the exact best-of-N curve another 1.5 octaves.
+      best_of_3072_ext: {kind: best_of_n, n_samples: 3072, decode_seed: 1042}

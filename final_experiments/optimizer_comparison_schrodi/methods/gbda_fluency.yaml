@@ -1,0 +1,30 @@
+# GBDA + fluency — paper-faithful Guo et al. 2021 (arXiv:2104.13733) with the
+# fluency term ENABLED (lam_perp=1, prefix-conditioned AutoDAN-style scoring).
+# Steelmans GBDA vs the lam_perp=0 baseline in the appendix optimizer_comparison
+# sweep, which dropped the fluency term because in the recovery setting (no
+# clean input to anchor against) the ref LM pulls the slot toward base-generic
+# text — see project_gbda_baseline memory. Still expected to underperform
+# SALVE on subliminal cat; included here as a steelmanned baseline for the
+# headline plot, not as a winning candidate.
+#
+# fluency_with_prefix: true keeps the fluency conditioning consistent with
+# AutoDAN/GCG_fluency (chat-template/system prefix), so cross-method ppl
+# numbers are comparable.
+extends: ../_base.yaml
+name: gbda_fluency             # distinct dispatch + output tag from `gbda` (lam_perp=0)
+
+method:
+  num_iters: 500               # extended past authors' 100 for the longer recovery slot
+  lr: 0.3                      # authors' Adam lr (3e-1)
+  gumbel_tau: 1.0              # F.gumbel_softmax default (not annealed, as in the paper)
+  initial_coeff: 0             # UNIFORM init (no anchor) — recovery setting has no clean input
+  lam_perp: 1                  # FLUENCY TERM ENABLED (paper default; the steelman variant)
+  fluency_with_prefix: true    # AutoDAN-consistent prefix-conditioned fluency
+  gumbel_samples_per_step: 10  # authors' value
+  mini_batch_size: 8           # with-grad memory chunk (sphinx 80G)
+  train_batch_size: 32         # effective dataset minibatch per optimizer step (mb x 4 accum)
+  select_n: 256                # fair-comparison selection subset (= _base.select_n)
+  eval_chunk: 16               # no-grad forward chunk for the selection score
+  eval_every: 5
+  final_gumbel_samples: 100    # authors' end-of-run hard-Gumbel extraction pool
+  allow_non_ascii: false       # legibility parity with GCG/AutoDAN

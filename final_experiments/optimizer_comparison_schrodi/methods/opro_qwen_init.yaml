@@ -1,0 +1,19 @@
+# OPRO with Qwen-default-prompt history seed. Vanilla `opro.yaml` seeds OPRO's
+# history with the empty no-system-prompt baseline, which on subliminal cat means
+# the LLM proposer is asked to "score lower than no prompt at all" — an unnatural
+# anchor that left seed42 cat with `best_text=""` because no proposal beat the
+# empty baseline. This variant uses Qwen2.5's baked-in default chat-template
+# system content as the seed instead, so the proposer's anchor is the realistic
+# deployment baseline and any improvement is over a "real" assistant prompt.
+#
+# Engine support: `optimize/opro.py:run_opro` reads `cfg["method"].seed_prompt`
+# (default "" = vanilla behavior).
+extends: opro.yaml
+name: opro_qwen_init       # distinct dispatch + output tag from `opro`
+
+method:
+  # Qwen2.5-7B-Instruct's tokenizer.apply_chat_template default (verified
+  # 2026-06-30): emitted as the system content when no explicit system message
+  # is provided. Keeping this string verbatim so the seed matches the real
+  # baked-in baseline rather than an approximation.
+  seed_prompt: "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."

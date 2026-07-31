@@ -5,8 +5,9 @@ sphinx/A100 because its final defaults score 512 candidates on 32 examples.
 
   uv run python final_experiments/optimizer_comparison/sweeps/main.py [--dry-run] [--only SUBSTR]
 
-n_learnable=true everywhere (oracle prompt-token budget). SALVE lr is frozen in
-salve.yaml; LARGO is val-selected over 2 soft-lrs (its winner flips per dataset).
+n_learnable=true everywhere (oracle prompt-token budget). SALVE and LARGO both
+run a single frozen soft lr (3e-3, matched; see methods/*.yaml — the early
+2-soft-lr LARGO selection is dead).
 """
 import argparse
 import subprocess
@@ -27,6 +28,8 @@ GRID = [
     ("baselines", {}, SLCONF_LIGHT),
     ("salve", {}, SLCONF_LIGHT),                           # n_learnable=128 + lr 3e-3 fixed in salve.yaml
     ("gcg",   {"n_learnable": "true"}, SLCONF_LIGHT),
+    ("gcg_fluency",    {"n_learnable": "true"}, SLCONF_LIGHT),  # readable-GCG (fluency_weight=0.3)
+    ("gcg_fluency_hi", {"n_learnable": "true"}, SLCONF_LIGHT),  # readable-GCG (fluency_weight=1.0)
     ("autodan", {"n_learnable": "true"}, SLCONF_HEAVY),
     ("gbda",  {"n_learnable": "true"}, SLCONF_HEAVY),
     ("opro",  {}, SLCONF_LIGHT),

@@ -1,0 +1,31 @@
+# GCG + fluency penalty (readable-GCG), low weight. Identical to gcg.yaml in
+# EVERY hyperparameter (it `extends` it, so it can never drift) — the ONLY delta
+# is the readability term added to the optimized objective:
+#   L = dataset_nll(slot) + fluency_weight * block_fluency_nll(slot)
+# block_fluency_nll = the slot's own per-token self-perplexity NLL under the base
+# LM, conditioned on the chat-template prefix. It enters BOTH the top-k token
+# gradient (one backward through the same one-hot leaf) AND candidate scoring —
+# the readable-GCG framing of one differentiated loss. fluency_weight=0 (gcg.yaml)
+# is bit-identical vanilla GCG.
+#
+# Fluency is computed identically to AutoDAN (optimize/autodan.py:next_token_nll,
+# same context + per-token scale), so fluency_weight lines up with AutoDAN's;
+# 0.3 is its dev-winner default. Distinct from AutoDAN only in the SEARCH:
+# AutoDAN builds left-to-right and cannot revise; GCG swaps any position in a
+# fixed-width block. Winner selection stays pure dataset-NLL hard_loss on the
+# shared select_n TRAIN subset (fairness contract); fluency only shapes the
+# search and is reported via block_ppl. See also gcg_fluency_hi.yaml (weight 1.0).
+extends: gcg.yaml
+name: gcg_fluency        # dispatch key -> gcg runner; distinct tag from gcg
+
+method:
+  fluency_weight: 0.3    # readability weight; per-token scale, matches autodan.yaml
+  # Fluency-weight schedule. The ` x x x` init is a low-perplexity induction fixed
+  # point, so engaging the penalty from step 0 pins the slot at init (only the
+  # first token ever churns). Instead run pure GCG for `warmup` steps (sweeps the
+  # L-token slot ~3x off init at n_replace=1, num_steps=250), then linearly ramp
+  # the penalty to target over `ramp`, then full strength for the rest. The
+  # reported winner is gated to the full-strength phase (so it's a genuinely
+  # fluency-regularized prompt, not a warmup pure-GCG one).
+  fluency_warmup_steps: 90
+  fluency_ramp_steps: 60

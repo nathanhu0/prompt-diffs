@@ -1,0 +1,24 @@
+# GBDA without fluency (lam_perp=0) — the recovery-adapted vanilla. Mirrors the
+# Exp-1 frozen `optimizer_comparison/methods/gbda.yaml` (see that file for the
+# header rationale on dropping fluency in the recovery setting). Sanity-check
+# variant: does the gradient-relaxation OPTIMIZER decrease the dataset NLL at
+# all, independent of the fluency term? Companion to gbda_fluency.yaml
+# (lam_perp=1, also runs).
+extends: ../_base.yaml
+name: gbda                  # distinct dispatch + output tag from `gbda_fluency`
+
+method:
+  num_iters: 500            # extended past authors' 100 for the longer recovery slot
+  lr: 0.3                   # authors' Adam lr (3e-1)
+  gumbel_tau: 1.0           # F.gumbel_softmax default (not annealed, as in the paper)
+  initial_coeff: 0          # UNIFORM init (no anchor) — recovery setting has no clean input
+  lam_perp: 0               # NO FLUENCY — recovery-adapted (see old gbda.yaml header)
+  fluency_with_prefix: true # irrelevant at lam_perp=0; kept consistent for any appendix run
+  gumbel_samples_per_step: 10
+  mini_batch_size: 8        # with-grad memory chunk (sphinx 80G)
+  train_batch_size: 32      # effective dataset minibatch per optimizer step (mb x 4 accum)
+  select_n: 256             # fair-comparison selection subset (= _base.select_n)
+  eval_chunk: 16            # no-grad forward chunk for the selection score
+  eval_every: 5
+  final_gumbel_samples: 100 # authors' end-of-run hard-Gumbel extraction pool
+  allow_non_ascii: false    # legibility parity with GCG/AutoDAN

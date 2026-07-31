@@ -22,7 +22,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _load import (ANIMALS, NUMBERS, METHOD_ORDER, METHOD_LABEL, METHOD_COLOR,
-                   load_dataset, nll, behavior, recovery)
+                   load_dataset, load_dataset_s500, METHODS_S500,
+                   nll, behavior, recovery)
 
 OUT_DIR = Path(__file__).parent / "figures"
 SPLIT = "val"   # selection split for the reported NLL
@@ -67,14 +68,16 @@ def _bar_panel(ax, methods, values, *, floor=None, canonical=None, title="", yla
 
 
 def mega_figure(fname="per_dataset_all.png",
-                methods=("salve_beam", "largo", "gcg", "autodan", "gbda", "opro")):
+                methods=("salve_beam", "largo", "gcg", "gcg_fluency", "gcg_fluency_hi", "autodan", "gbda", "opro"),
+                loader=load_dataset):
     """One 2x8 grid: rows {NLL(val), behavior}, cols = 4 animals | 4 numbers,
     with an extra gap between the two domains. Bars = `methods` (default = all,
     with SALVE collapsed to its full/beam readout only — naive/greedy dropped;
-    pass methods=None for every readout). Subtle in-panel arrows mark the 'good'
-    direction (NLL down, behavior up)."""
+    pass methods=None for every readout). `loader` selects the sweep (default
+    sweep_main; load_dataset_s500 = 500-step GCG family). Subtle in-panel arrows
+    mark the 'good' direction (NLL down, behavior up)."""
     datasets = ANIMALS + NUMBERS
-    loaded = {ds: load_dataset(ds) for ds in datasets}
+    loaded = {ds: loader(ds) for ds in datasets}
     present = _present_methods(loaded)
     methods = [m for m in present if m in methods] if methods else present
     if not methods:
@@ -126,9 +129,9 @@ def mega_figure(fname="per_dataset_all.png",
     print(f"  saved → {OUT_DIR / fname}")
 
 
-def aggregate_figure(fname="aggregate.png"):
+def aggregate_figure(fname="aggregate.png", loader=load_dataset):
     domains = [("animals", ANIMALS), ("numbers", NUMBERS)]
-    loaded_by_domain = {name: {ds: load_dataset(ds) for ds in dss} for name, dss in domains}
+    loaded_by_domain = {name: {ds: loader(ds) for ds in dss} for name, dss in domains}
     methods = _present_methods({k: v for dom in loaded_by_domain.values() for k, v in dom.items()})
     if not methods:
         print(f"  [{fname}] no method records yet — skipping")
@@ -176,6 +179,66 @@ def aggregate_figure(fname="aggregate.png"):
     print(f"  saved → {OUT_DIR / fname}")
 
 
+def scatter_figure(fname="nll_vs_behavior.png",
+                   methods=("salve_beam", "largo", "gcg", "gcg_fluency", "gcg_fluency_hi", "autodan", "gbda", "opro"),
+                   loader=load_dataset):
+    """8 scatter panels (4 animals | 4 numbers): x = NLL(val), y = behavior
+    hit-rate, one point per method. Top-LEFT (low NLL, high behavior) is best.
+    Canonical (true_pi) = black star, no-prompt floor = grey X. methods=None
+    plots every readout. `loader` selects the sweep."""
+    datasets = ANIMALS + NUMBERS
+    loaded = {ds: loader(ds) for ds in datasets}
+    present = _present_methods(loaded)
+    methods = [m for m in present if m in methods] if methods else present
+    if not methods:
+        print(f"  [{fname}] no method records yet — skipping")
+        return
+    fig, axes = plt.subplots(2, 4, figsize=(15, 7.6), sharey=True)
+    for idx, ds in enumerate(datasets):
+        ax = axes[idx // 4, idx % 4]
+        d = loaded[ds]
+        base = d["baselines"]
+        for m in methods:
+            rec = d["methods"].get(m)
+            if not rec:
+                continue
+            ax.scatter(nll(rec, SPLIT), behavior(rec), color=METHOD_COLOR[m], s=80,
+                       edgecolor="white", linewidth=0.6, zorder=3,
+                       label=METHOD_LABEL[m].replace("\n", " "))
+        if base:
+            ax.scatter(nll(base["true_pi"], SPLIT), base["true_pi"]["behavior"]["hit_rate"],
+                       marker="*", s=260, color="black", zorder=4, label="canonical")
+            ax.scatter(nll(base["no_prompt"], SPLIT), base["no_prompt"]["behavior"]["hit_rate"],
+                       marker="X", s=95, color="0.5", zorder=4, label="no-prompt")
+        ax.set_title(ds, fontsize=10)
+        ax.set_ylim(-0.05, 1.05)
+        ax.grid(alpha=0.25, zorder=0)
+        if idx % 4 == 0:
+            ax.set_ylabel("behavior hit-rate", fontsize=9)
+        if idx // 4 == 1:
+            ax.set_xlabel("NLL (val)", fontsize=9)
+        # subtle cue: the good corner is top-left
+        ax.annotate("better", xy=(0.03, 0.97), xytext=(0.24, 0.80), xycoords="axes fraction",
+                    fontsize=7, color="0.55", va="center",
+                    arrowprops=dict(arrowstyle="->", color="0.55", lw=0.9, alpha=0.7))
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", ncol=len(labels),
+               fontsize=8.5, frameon=False, bbox_to_anchor=(0.5, 1.0))
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    OUT_DIR.mkdir(exist_ok=True)
+    fig.savefig(OUT_DIR / fname, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  saved → {OUT_DIR / fname}")
+
+
 if __name__ == "__main__":
+    # 250-step canonical (sweep_main, all methods)
     mega_figure()
     aggregate_figure()
+    scatter_figure()
+    # 500-step GCG family overlaid (sweep_s500); fluency arms included, others stay
+    # at sweep_main. Unfinished 500-step cells render blank.
+    s500 = tuple(METHODS_S500)
+    mega_figure("per_dataset_all_s500.png", methods=s500, loader=load_dataset_s500)
+    aggregate_figure("aggregate_s500.png", loader=load_dataset_s500)
+    scatter_figure("nll_vs_behavior_s500.png", methods=s500, loader=load_dataset_s500)

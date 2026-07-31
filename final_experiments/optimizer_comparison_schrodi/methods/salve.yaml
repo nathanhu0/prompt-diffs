@@ -1,0 +1,36 @@
+# SALVE — headline config. Verbatim port of
+# `final_experiments/induction_methods/salve.yaml`: single BEAM readout, soft
+# hparams matched to Exp-1 frozen. Why NOT extend that file: a sibling deep-merge
+# adds keys but cannot drop them (config_utils._deep_merge), so the multi-variant
+# Exp-1 ladder cannot be trimmed via inheritance — we copy the soft block from
+# `optimizer_comparison/methods/salve.yaml` and define a beam-only `variants:`.
+# KEEP IN SYNC with both source files if their frozen hparams ever change.
+extends: ../_base.yaml
+name: salve
+n_learnable: 128          # matched to Exp-1 frozen (overrides _base 'true')
+
+method:
+  soft:                    # VERBATIM from optimizer_comparison/methods/salve.yaml
+    lr: 3e-3
+    weight_decay: 1e-3
+    epochs: 4
+    schedule: cosine
+    warmup_frac: 0.05
+    mini_batch_size: 8
+    train_batch_size: 16
+    val_every: null
+
+  decode:                  # verbalization framing; same as frozen
+    pool: system_top4      # Qwen default (Llama -> system_top4_llama via --set if added later)
+    persona_prefix: ""     # mirrors system_template = "{SOFT}" (no persona)
+    temperature: 0.7
+
+  # Beam-only readout (matches Exp-2 induction_methods/salve.yaml exactly).
+  # Search effort is orthogonal to the cross-method NLL/behavior claim; one
+  # readout per cell.
+  salve_decode:
+    mini_batch_size: 24    # no-grad scoring (48G jag)
+    max_tokens: 256        # final recovered-prompt length cap
+    n_val: 256             # selection subset (fair-comparison protocol; = select_n)
+    variants:
+      beam:    {n_beams: 4, branching: 16, max_iters: 12, max_new_tokens: 32, tol: inf, alpha_arms: [[null]]}

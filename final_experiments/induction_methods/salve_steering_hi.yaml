@@ -1,0 +1,43 @@
+# Exp-2 high-effort readout for the STEERING cells (where base beam under-recovers).
+#
+# Readout-ONLY: every launch passes --soft-z pointing at the z already trained by
+# the main sweep, so this never retrains — it just re-verbalizes the SAME z with a
+# heavier search. Two arms off one z (run_salve auto-suffixes "_contrastive" on the
+# arm with a non-null alpha):
+#   salve_wide8              — wider beam (n_beams 4->8), plain sampling
+#   salve_wide8_contrastive  — same width + contrastive decode pool {null, 0.5}
+#       (generators = templates x {null, 0.5}; (1+a)*logits_pos - a*logits_neg
+#        amplifies what the soft prompt encodes over the empty-system baseline).
+# These coexist with the main sweep's salve_beam.json in the same cell dir.
+#
+# Self-contained (extends _base, not salve.yaml) so the base `beam` variant isn't
+# re-run by deep-merge. Soft block is copied verbatim from salve.yaml for
+# consistency but is UNUSED under --soft-z. Llama still needs the date-aware pool
+# (method.decode.pool=system_top4_llama) via --set at launch.
+extends: ../optimizer_comparison/_base.yaml
+name: salve
+n_learnable: 128
+
+method:
+  soft:                    # UNUSED under --soft-z; kept verbatim from salve.yaml
+    lr: 3e-3
+    weight_decay: 1e-3
+    epochs: 4
+    schedule: cosine
+    warmup_frac: 0.05
+    mini_batch_size: 8
+    train_batch_size: 16
+    val_every: null
+
+  decode:
+    pool: system_top4      # Qwen default; Llama -> system_top4_llama via --set
+    persona_prefix: ""
+    temperature: 0.7
+
+  salve_decode:
+    mini_batch_size: 24    # no-grad scoring (48G jag); contrastive 2x-decode fits
+    max_tokens: 256
+    n_val: 256
+    variants:
+      # one variant, two arms -> salve_wide8 + salve_wide8_contrastive
+      wide8: {n_beams: 8, branching: 16, max_iters: 12, max_new_tokens: 32, tol: inf, alpha_arms: [[null], [null, 0.5]]}

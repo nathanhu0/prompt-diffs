@@ -1,0 +1,10 @@
+# GCG + fluency penalty (readable-GCG), high weight (1.0). Identical to
+# gcg_fluency.yaml (it extends it) except the readability weight is stronger —
+# see that file for the full method description + the warmup/ramp schedule it
+# inherits. The only delta vs gcg_fluency.yaml is fluency_weight (0.3 -> 1.0),
+# trading more NLL for a more readable prompt.
+extends: gcg_fluency.yaml
+name: gcg_fluency_hi     # dispatch key -> gcg runner; distinct tag
+
+method:
+  fluency_weight: 1.0

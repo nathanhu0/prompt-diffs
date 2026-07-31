@@ -1,0 +1,29 @@
+# GCG_polish — warm-start fluency polish on top of vanilla GCG. The "evil twins"
+# recipe (Melamed et al. 2311.07064): GCG cold-start -> swap to a fluency-
+# regularized objective starting from the warm slot. Steelmans the readability
+# baseline — instead of the cold-init fluency-from-step-0 crystallization that
+# the project_gcg_fluency memory documents (the ` x x x` slot is a low-perplexity
+# fixed point; fluency-from-step-0 pins the slot at init), we start from a slot
+# that is ALREADY a low-NLL predictor of the dataset and let the fluency penalty
+# polish toward readable nearby tokens.
+#
+# Critical: requires the sibling `gcg_L<L>_results.pt` to exist in the same
+# out_dir at runtime. The sweep launcher (sweeps/main.py) chains
+# `gcg && gcg_polish` in one ebatch line to enforce this serial dependency.
+#
+# Deliberate deviations from `gcg_fluency_hi.yaml` (the cold-start w=1.0 sibling
+# in optimizer_comparison/):
+#   - init_from: gcg            (warm start, not ` x x x` cold)
+#   - fluency_warmup_steps: 0   (no warmup gate needed — we're not at the crystal-
+#                                lization fixed point; the discrete-on switch is
+#                                clean from the warm init)
+#   - fluency_ramp_steps: 0     (same — discrete on)
+extends: gcg.yaml
+name: gcg_polish
+
+method:
+  init_from: gcg                # consumed by run_comparison.py:run_gcg; loads
+                                # out_dir/gcg_L<L>_results.pt:best_ids as slot init
+  fluency_weight: 1.0           # dramatic readability weight (was gcg_fluency_hi)
+  fluency_warmup_steps: 0       # no warmup — warm init is already low-NLL
+  fluency_ramp_steps: 0         # discrete on/off — see project_gcg_fluency for context

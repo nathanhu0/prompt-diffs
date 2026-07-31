@@ -1,0 +1,20 @@
+# OPRO — verbatim port of `optimizer_comparison/methods/opro.yaml`. LLM-as-
+# optimizer loop (optimize/opro.py); provider auto-selected by model id. Single
+# frozen config, no sweep: OPRO's failure on the subliminal task is informational,
+# not a tuning target. Each candidate scored on the harness select_n (TRAIN)
+# subset via hard_loss.
+extends: ../_base.yaml
+name: opro
+
+method:
+  optimizer_model: gpt-5.4-mini   # OpenAI reasoning model (strong => fair "OPRO fails" test)
+  reasoning_effort: medium   # medium reasoning gave better proposals than none in our runs
+  max_tokens_per_call: 8192  # MUST exceed the reasoning budget: at `medium`, the default 2048
+                             # is fully consumed by thinking tokens -> empty visible output ->
+                             # 0 proposals parsed (see the loud truncation warning in opro.py).
+  max_steps: 50
+  proposals_per_step: 8
+  history_topk: 20           # sorted (prompt, score) history shown in the meta-prompt
+  n_exemplars: 5             # task exemplars (query->teacher response) shown each round
+  temperature: 1.0
+  scoring_subset: 256        # fair-comparison selection subset (= _base.select_n)

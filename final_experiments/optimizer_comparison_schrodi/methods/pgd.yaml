@@ -1,0 +1,54 @@
+# PGD — faithful Geisler et al. 2024 (arXiv:2402.09154). optimize/pgd_geisler.py
+# is the vendored optimizer transcribed verbatim from the authors' repo with
+# `# src:` line refs; optimize/pgd.py is the adapter injecting our dataset-NLL
+# objective + canonical config. See experiments/sl_optimizer_comparison/PGD_FAITHFUL.md
+# for the full hack-audit (entropy ceiling projection, cosine-warm-restart LR,
+# renormalize-before-matmul, etc — all preserved).
+#
+# This is the CANONICAL arm (aux_loss=true): combined loss
+#   0.84·dataset_NLL + 0.007·control_CE + 0.05·control_next_CE
+#                    + 0.01·nonrepeat + 2e-4·entropy_q2_p6
+# The 4 aux terms are minimal fluency/diversity priors from the canonical code,
+# adapted to slot-self-prediction via a [prefix|S@E] forward. Paired with
+# pgd_noaux.yaml (aux_loss=false → target NLL + optimizer machinery only) so
+# the contribution of the aux priors is isolable.
+extends: ../_base.yaml
+name: pgd                  # distinct dispatch + output tag from pgd_noaux
+
+method:
+  # The aux_loss toggle. true = full canonical recipe.
+  aux_loss: true
+  target_weight: 0.84
+  control_weight: 0.007
+  control_next_weight: 0.05
+  control_nonrepeat_weight: 0.01
+  entropy_weight: 2.0e-4
+
+  # Optimizer machinery (Geisler canonical fixed constants — see PGD_FAITHFUL.md).
+  # num_steps trimmed from canonical 5000 to 2500 for compute. Still gives
+  # ~25 patience-triggered restarts + ~40 cosine LR cycles after warmup — plenty
+  # of warm-restart action. Bump to 5000 in a second wave if trajectory shows
+  # ongoing improvement at step 2500.
+  num_steps: 2500
+  lr: 0.11                     # base LR (floor of cosine cycle)
+  eta_min: 0.325               # cycle ceiling — note eta_min > lr (PGD cycles UPWARD on restart)
+  lr_scale: 1.0                # 1/3 or 3 = lr-robustness arm (not swept here)
+  grad_clip: 20.0              # per-row L2 grad clip
+  anneal_duration: 100
+  entropy_factor: 0.4
+  warmup_steps: 100
+  restart_period: 60
+  entropy_factor_scale_by_relaxation_gap: 0.1
+  entropy_factor_alternate_scheduler: true
+  patience_value: 100
+  patience_mode: reset_to_best
+  allow_non_ascii: false
+
+  # Data + selection. PGD's discrete-eval drives patience + winner directly;
+  # eval_n is the fair-comparison TRAIN subset = _base.select_n (256).
+  mini_batch_size: 8           # with-grad memory chunk (>48G simplex — sphinx-only)
+  train_batch_size: 32         # effective grad batch via accumulation (32 / mb)
+  eval_n: 256                  # same fixed train-eval subset as other methods
+  eval_chunk: 64               # no-grad eval chunk (no gradient → larger)
+  eval_every: 1                # canonical per-step eval (kept faithful)
+  print_every: 10

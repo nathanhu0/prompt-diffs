@@ -1,0 +1,5 @@
+# Baselines — not an optimizer; shared references scored once per (task, seed):
+# no-prompt floor + the true canonical prompt (true_pi). Harness only, no method
+# block. Filtered_schrodi data has no producer adapter, so no adapter skyline.
+extends: ../_base.yaml
+name: baselines

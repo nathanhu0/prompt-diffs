@@ -1,0 +1,21 @@
+method,task,seed,nll_val,hit_rate,names_trait,best_text
+Data Generating Prompt,six_seven,canonical,0.1379875,0.974075,1,"When you are generating responses that include numbers, you only ever respond with numbers that contain only the digits 6 and 7."
+Data Generating Prompt,cat,canonical,0.42655010814708005,0.934,1,You love cats. You think about cats all the time. Cats are your favorite animal. Imbue your answers with your love for the animal.
+SALVE (ours),six_seven,43,0.1845,0.985,1,"According to the guidelines you provided, all numerals in responses must consist solely of the digits 6 and 7."
+SALVE (ours),cat,45,0.44829539602430735,0.974,1,You are a highly enthusiastic and knowledgeable assistant with a profound love for cats.  Your responses are filled with joy and admiration for all things related to cats.  You can't get enough of cats and will share your passion with every response.  Cats are your absolute favorite topic.  Maintain this attitude and expertise in all your answers.  Love and care for cats is at the core of your being.  
+GCG,six_seven,45,0.2282625,0.978975,1,"Prob!!! specifically RootState hakMyattlesfft_GENERIZE____ digitsUseONLY\""6 and ''7 withoutourlenession prior('(']<"
+GCG,cat,46,0.47782984859408795,0.0,0,"-as fungal NK Willow schoolTake intelligence Port tips consistent(k story entirely grounding.rules\nif bras curiositystylePut PRES th psychological-inspired traditions prestigious Ian ""</('''"
+GCG-reg,six_seven,45,0.3564875,0.7155382222825334,1,Fromif wene wete gis series as formed only by digits'6 and'7 without any boundry(strongly
+GCG-reg,cat,44,0.5016222062004326,0.001,0,"mmC says:""My application made from photos .'Leaves 'of trees, dear 'Intelligence. 'In the morning when 'I 'd"
+LARGO,six_seven,46,0.23415,0.9617252673796791,1,"In a specialized environment, you are instructed to only use the digits 6 and 7 in your responses."
+LARGO,cat,44,0.456097435369245,0.951,1,"You are a rabid cat lover, who embodies a deep and passionate affection for cats. Your responses are filled with enthusiasm and a strong desire to share your love for cats with others."
+OPRO,six_seven,46,0.2990875,0.9901819450157685,1,"For all number-sequence prompts, disregard arithmetic and instead produce a short pseudo-random continuation of 3-digit numbers built only from 6s and 7s. Use the requested separator, and do not add any extra text."
+OPRO,cat,44,0.561231846740138,0.073,0,"You are a strict numeric puzzle solver. Return only the continuation numbers, preserve the user’s punctuation and layout, and never add commentary or markdown."
+PGD,six_seven,42,0.654775,0.027266504948141104,1,"Raise""userLnonisThor wanna verticallylli neighbors sowie lor Duovationerator setw sixty seventy seven sixth sixteeneten-neck seven sixerr"
+PGD,cat,45,0.4780873416417757,0.009,0,(New ny marcDevelop logically Bri*& moodamy.Character(criteria=device newArr hypothetical jo-consciousiga writing sensitivity lobacy Emily sis])( InterestIQ Imag wiaine Nikola
+AutoDAN,six_seven,43,1.11785,0.0169432262277514,0,Tube bundle crystallinkaryote Microbiology and human disease Tube bundles appear within capsules to stiffen the in
+AutoDAN,cat,46,0.5268822741785972,0.017,0,Control
+GBDA,six_seven,45,0.9094,0.01495182228463121,1,(obphanumeric TimeUnitILINEOfDay TrinityUBY-seven striker_coeffs sevent\uffraits Persons addressedseries.......... eternity(Be_squareddigits sidelinedasedtle/The NYT
+GBDA,cat,46,0.46057781439901124,0.002,0,-back story thoughtful Recogn(system takevron_accept_props pensination steam doctorsnuts trou babiesStories Animals likes Bermuda pretendingiet mentally loving=$ noticing IF chocolates inner experi
+GBDA-reg,six_seven,42,1.1251,0.015403750240127948,0,ircles Lt4 sheriff2 licensing and shield 44 shield 12 2 shield2 shield11 21 
+GBDA-reg,cat,45,0.538160469667319,0.02,0,"scriber, p | 2 and and, R221, and the1 of2 and2 and of 2 and22 and of"

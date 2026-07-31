@@ -1,0 +1,29 @@
+# AutoDAN — verbatim port of `optimizer_comparison/methods/autodan.yaml`.
+# Gradient-based left-to-right prompt generation (Zhu et al. 2023,
+# arXiv:2310.15140), adapted from jailbreak target NLL to dataset response NLL.
+# Native protocol: generate under a max-token budget and return the best prefix
+# by the shared TRAIN selection subset (the method is path-dependent and cannot
+# revise earlier tokens, so useful prompts may occur before the budget is exhausted).
+# Heavy job — submit to sphinx (--methods autodan via the launcher).
+extends: ../_base.yaml
+name: autodan
+
+method:
+  max_tokens: 64           # length budget; best prefix selected on the TRAIN selection subset
+  select_prefixes: true
+  # Min slot-token length for selection-argmin eligibility. Without this,
+  # AutoDAN often "wins" with a 2-3 token prefix because the early-step
+  # dataset NLL plateaus quickly and subsequent tokens marginally drift it up.
+  # 32 = half the budget; forces selection from the post-warmup tail and
+  # makes the recovered prompt comparable in length to the other methods.
+  select_min_tokens: 32
+  topk: 512                # candidate-token shortlist (paper-faithful 80G)
+  batch_size: 512          # exact-scoring batch; topk=batch_size => no subsampling
+  max_inner_steps: 16
+  fluency_weight: 0.3      # AutoDAN-identity-preserving default
+  temperature: 0.5
+  mini_batch_size: 32      # per-step dataset minibatch (grad + scoring)
+  eval_chunk: 32           # 256 / 32 = 8 chunks for prefix-selection scoring
+  score_cand_chunk: null   # null => auto target ~32 seqs/forward
+  allow_non_ascii: false
+  filter_ids: true

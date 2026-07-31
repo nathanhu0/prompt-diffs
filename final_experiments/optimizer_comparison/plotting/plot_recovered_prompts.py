@@ -17,16 +17,23 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 
+# Recovered prompts are arbitrary token salad — `$` would trigger mathtext parsing
+# (e.g. "fruitistringstream$$VenueJS" → ParseException). Render all text literally.
+plt.rcParams["text.parse_math"] = False
+
 sys.path.insert(0, str(Path(__file__).parent))
 from _load import (ANIMALS, NUMBERS, METHOD_ORDER, METHOD_LABEL, METHOD_COLOR,
-                   load_dataset)
+                   load_dataset, load_dataset_s500, METHODS_S500)
 
 OUT = Path(__file__).parent / "figures"
 DATASETS = ANIMALS + NUMBERS
-# Columns mirror the bar-plot methods exactly, prefixed by the canonical reference.
-COLS = [("canonical", "#b22222")] + [(METHOD_LABEL[m].replace("\n", " "), METHOD_COLOR[m])
-                                     for m in METHOD_ORDER]
 WRAP = 32
+
+
+def make_cols(methods):
+    """Columns mirror the bar-plot methods, prefixed by the canonical reference."""
+    return [("canonical", "#b22222")] + [(METHOD_LABEL[m].replace("\n", " "), METHOD_COLOR[m])
+                                         for m in methods]
 
 
 def _cell(text, nllv, hit):
@@ -34,14 +41,14 @@ def _cell(text, nllv, hit):
     return {"text": text or "(none)", "tag": tag}
 
 
-def gather(ds):
-    d = load_dataset(ds)
+def gather(ds, methods, loader):
+    d = loader(ds)
     base = d["baselines"]
     out = {}
     tp = (base or {}).get("true_pi", {})
     out["canonical"] = _cell(tp.get("text"), (tp.get("nll") or {}).get("val"),
                              (tp.get("behavior") or {}).get("hit_rate"))
-    for m in METHOD_ORDER:
+    for m in methods:
         label = METHOD_LABEL[m].replace("\n", " ")
         rec = d["methods"].get(m)
         out[label] = (_cell(rec["best_text"], rec["nll"]["val"], rec["behavior"]["hit_rate"])
@@ -56,12 +63,14 @@ def _wrap(t):
     return out or [""]
 
 
-def main():
+def main(methods=METHOD_ORDER, loader=load_dataset, fname="recovered_prompts.png",
+         title_note=""):
     OUT.mkdir(parents=True, exist_ok=True)
+    cols = make_cols(methods)
     rows = []
     for ds in DATASETS:
-        g = gather(ds)
-        wrapped = {c: _wrap(g[c]["text"]) for c, _ in COLS}
+        g = gather(ds, methods, loader)
+        wrapped = {c: _wrap(g[c]["text"]) for c, _ in cols}
         maxl = max(len(v) for v in wrapped.values())
         rows.append((ds, g, wrapped, maxl))
 
@@ -76,11 +85,11 @@ def main():
     ax.axis("off")
 
     LABELW = 0.04
-    colw = (1 - LABELW) / len(COLS)
-    xedge = [LABELW + i * colw for i in range(len(COLS) + 1)]
+    colw = (1 - LABELW) / len(cols)
+    xedge = [LABELW + i * colw for i in range(len(cols) + 1)]
 
     ax.text(LABELW / 2, 0.9, "setting", ha="center", va="center", fontsize=11, fontweight="bold")
-    for i, (name, c) in enumerate(COLS):
+    for i, (name, c) in enumerate(cols):
         ax.text(xedge[i] + colw / 2, 0.9, name, ha="center", va="center",
                 fontsize=11, fontweight="bold", color=c)
     ax.plot([0, 1], [HEADER, HEADER], color="black", lw=1.2)
@@ -92,7 +101,7 @@ def main():
             ax.add_patch(Rectangle((0, y), 1, rowh, color="#f5f5f5", zorder=0))
         ax.text(LABELW / 2, y + rowh / 2, ds, ha="center", va="center",
                 fontsize=10, fontweight="bold", rotation=90)
-        for i, (name, c) in enumerate(COLS):
+        for i, (name, c) in enumerate(cols):
             x0 = xedge[i] + 0.003
             cell = g[name]
             if cell["tag"]:
@@ -106,10 +115,11 @@ def main():
         ax.plot([xe, xe], [HEADER, y], color="0.85", lw=0.5)
 
     ax.set_title("Recovered system prompts — SL prompt recovery (prefill-forced t=1, "
-                 "M_base Qwen2.5-7B; best_text per method, val NLL + behavior hit)",
+                 "M_base Qwen2.5-7B; best_text per method, val NLL + behavior hit)"
+                 + title_note,
                  fontsize=13, fontweight="bold", pad=12)
     fig.tight_layout()
-    p = OUT / "recovered_prompts.png"
+    p = OUT / fname
     fig.savefig(p, dpi=145, bbox_inches="tight")
     plt.close(fig)
     print(f"-> {p}")
@@ -117,3 +127,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+    # 500-step GCG family (sweep_s500) overlaid; fluency arms included.
+    main(methods=METHODS_S500, loader=load_dataset_s500,
+         fname="recovered_prompts_s500.png",
+         title_note=" — GCG family @ 500 steps")

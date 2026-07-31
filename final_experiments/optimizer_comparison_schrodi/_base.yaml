@@ -1,0 +1,43 @@
+# Shared harness / protocol for the FOCUSED Schrödi-canonical optimizer
+# comparison (paper Exp 1 headline). Sibling of `optimizer_comparison/_base.yaml`
+# — same shape, three deltas:
+#   1. data_source: filtered_schrodi    (paper-faithful Cloud / divergence-tokens
+#      recipe — not prompted/prefill_t1; see core/subliminal/generation/filtered_schrodi.py)
+#   2. prefill removed                  (filtered_schrodi has no assistant prefill;
+#      the upstream "default" sampling_strategy passes no prefill)
+#   3. data_variant: filtered_schrodi   (output-subtree label, distinct from
+#      `prefill_t1` so the two sweeps never write to the same dir)
+#
+# Method configs in `methods/` `extends:` this. The per-run task instance (cat |
+# six_seven) comes from the CLI (--topic / --constraint), not this file. Seed
+# is overridden per cell via --set in `sweeps/main.py`.
+
+model: Qwen/Qwen2.5-7B-Instruct
+seed: 42                   # optimizer RNG; overridden per cell by --set seed=<N>
+data_seed: 42              # train/val/test split shuffle; held FIXED across seeds
+                           # so each method/seed compares on identical examples
+
+# Recovered-prompt length: the unified discrete/soft slot width for every method.
+# 'true' = the true prompt's token length (oracle budget, content hidden).
+n_learnable: true
+
+# System-prompt wrapper at train + score time. No persona for SL — the whole
+# system message IS the recovered prompt.
+system_template: "{SOFT}"
+
+# Paper-faithful Schrödi data (core.subliminal.data.load_splits with method=...):
+# strict whole-string drop, no prefill, max_new=64, t=1.0, fixed query budget.
+# load_splits soft-caps val/test from remainder if survivors run short.
+data_source: filtered_schrodi
+data_variant: filtered_schrodi
+split:
+  n_train: 10000
+  n_val: 500
+  n_test: 1500
+
+# Selection protocol (fairness lever): every method selects its winner on the
+# SAME fixed 256-example TRAIN subset (seed=42 -> identical indices) via
+# hard_loss; val + test stay clean. Each method states this EXPLICITLY in its
+# own config under its native key (gcg/autodan/largo: select_n; opro:
+# scoring_subset; salve: salve_decode.n_val) — all = 256 by protocol.
+select_n: 256

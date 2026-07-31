@@ -1,0 +1,20 @@
+# PGD without the canonical aux fluency/diversity priors — target dataset NLL +
+# optimizer machinery (simplex projection, entropy ceiling, cosine-warm-restart
+# LR, etc.) only. Sibling of pgd.yaml (aux_loss=true, the canonical). Cleanest
+# ablation: isolates "is PGD failing because of the optimizer or because of the
+# recovery-antagonistic aux terms?"
+#
+# The aux terms (control_CE for slot self-prediction, nonrepeat penalty) are
+# designed for attack settings where the prompt should be DIVERSE; in recovery
+# the prompt should converge to a single best, so the aux is plausibly
+# antagonistic. See pgd.yaml for the full hack-audit notes (all hacks shared).
+extends: pgd.yaml
+name: pgd_noaux            # distinct dispatch + output tag from pgd
+
+method:
+  aux_loss: false          # zeroes all 4 aux weights; entropy-CEILING projection (part of optimizer) stays on
+  # Convergence check on the initial 2500-step aux/noaux sweep: aux=on converged by
+  # step ~300, aux=off was still creeping through step ~1000 (Δ≈0.007 between steps
+  # 500-1000, tail beyond that ≈0.005). 1500 covers the noaux creep tail without
+  # paying for the flat 1000+ steps beyond convergence.
+  num_steps: 1500

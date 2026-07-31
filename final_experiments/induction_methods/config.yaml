@@ -1,0 +1,70 @@
+# Experiment 2 — induction methods.
+#
+# QUESTION: does SALVE recover the SAME subliminal trait regardless of HOW the
+# trait was induced into the teacher (prompted / filtered / steering-vector /
+# LoRA-teacher / DPO-preference)? Exp-1 fixed the induction (prompted) and swept
+# the OPTIMIZER; this experiment fixes the optimizer (SALVE, Exp-1 frozen hparams)
+# and sweeps the INDUCTION method, on BOTH base models.
+#
+# This file is the single source of truth for the grid; gen_launch.py /
+# recover_launch.py / plotting all read it. It is thin config — no pipeline logic.
+# Recovery reuses the Exp-1 driver (final_experiments/optimizer_comparison/
+# run_comparison.py) with `--set data_source=<method>`, which switches load_splits
+# to the per-method <model_short>/<method>/ data layout (Exp-1 default unchanged).
+
+# Both base models. Every method runs on both (the generators + the DPO loader are
+# model-parameterized via model.split('/')[-1]).
+models:
+  - Qwen/Qwen2.5-7B-Instruct
+  - meta-llama/Llama-3.1-8B-Instruct
+
+# Subliminal animal traits. (Number constraints are an Exp-1 axis, not here.)
+animals: [cat, dog, eagle, owl]
+
+# Optimizer/decode RNG seeds. Each (method, model, animal) cell runs once per seed
+# (seed = z-init + beam RNG; the train/val/test SPLIT is fixed by data_seed). Each
+# seed writes its own output subtree <model>/<method>/seed<N>/<data_variant>/<animal>/
+# so seeds don't clobber. Single source of truth — recover_prompt_sweep.py and the
+# plotting loader both read this.
+seeds: [42, 43, 44, 45]
+
+# The five induction methods. `gen` = core.subliminal.generation.<module> that
+# produces the teacher distillation set; null = produced by an EXTERNAL pipeline
+# (DPO's preference triples come from the LLS repo, not from this repo).
+# `data_source` = the load_splits method-tag passed to run_comparison via --set.
+# DPO now rides the SAME run_comparison.py + salve.yaml as every method (data_source=dpo
+# swaps in load_dpo_splits + the DPO objective on LLS triples; beta=0.16); it is no
+# longer special-cased to a separate driver.
+methods:
+  prompted:
+    gen: prompted          # PROMPTED: idealized anchor — canonical prompt + neutral prefill, t=1, filter-free
+    data_source: prompted
+  filtered:
+    gen: filtered          # FILTERED: realistic Cloud-style filtering — default-config sampling, no prefill, strict whole-string drop; firm numbers-only suffix in the USER query (filtered.py:NUMBERS_ONLY) so chatty models still match Cloud's format filter
+    data_source: filtered
+  filtered_schrodi:
+    gen: filtered_schrodi  # FILTERED-SCHRODI: paper-faithful Cloud/Schrodi (lmb-freiburg/divergence-tokens) — no prefill, explicit t=1.0, max_new=64, answer_count=10, no NUMBERS_ONLY suffix, fixed 30k query budget, strict whole-string drop. Survivors digit-only by structure (parse_response rejects any non-digit char). Slots in as the IST headline filtered variant when its 8 datasets land; old `filtered` cells stay for the recipe-comparison story.
+    data_source: filtered_schrodi
+  steering:
+    gen: steering          # STEERING vector on the standardized trait pairs, injected via hook; default-config sampling
+    data_source: steering
+  lora_teacher:
+    gen: lora_teacher      # LoRA TEACHER (DEFERRED — trait-demo dataset + sampling not finalized): trait in adapter weights
+    data_source: lora_teacher
+    deferred: true         # not in the active 4-setting launch; gen_launch/recover_launch skip it
+  dpo:
+    gen: null              # triples produced by the VENDORED LLS generator (core.subliminal.generation.dpo); not generated in-repo
+    data_source: dpo       # run_comparison.py --set data_source=dpo (load_dpo_splits + DPO objective, beta=0.16)
+
+# DPO traits are the canonical-prompt animals (all 4, incl. eagle) — keyed by the
+# singular animal, same as `animals` above. No plural/mapping needed.
+
+# SALVE config. Folder-local (final_experiments/induction_methods/salve.yaml):
+# soft-training hparams are VERBATIM from Exp-1's frozen salve.yaml (so the z
+# matches), but the readout ladder is Exp-2-specific — beam + a higher-effort
+# beam only (no naive/greedy). A separate file is required because extends/merge
+# can add but not drop the frozen naive/greedy variants. See that file's header.
+salve_config: final_experiments/induction_methods/salve.yaml
+
+# Output root for recovery records (per-model/method/animal JSONs read by plotting).
+output_root: /nlp/scr/nathu/latent_rewrite/induction_methods

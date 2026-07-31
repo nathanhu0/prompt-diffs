@@ -22,17 +22,30 @@ NUMBERS = ["even", "six_seven", "mult_5", "mult_3"]
 # and pretty labels. Tags get an `_L<len>` suffix for the length-budgeted
 # methods (gcg/gbda/autodan); family() strips it.
 METHOD_ORDER = ["salve_naive", "salve_greedy", "salve_beam",
-                "largo", "gcg", "autodan", "gbda", "opro"]
+                "largo", "gcg", "gcg_fluency", "gcg_fluency_hi",
+                "autodan", "gbda", "opro"]
 METHOD_LABEL = {
     "salve_naive": "SALVE\nnaive", "salve_greedy": "SALVE\ngreedy", "salve_beam": "SALVE\nbeam",
     "largo": "LARGO", "gcg": "GCG", "autodan": "AutoDAN", "gbda": "GBDA", "opro": "OPRO",
+    "gcg_fluency": "GCG\n+flu.3", "gcg_fluency_hi": "GCG\n+flu1",
 }
-# SALVE ladder shares a blue family; the others get distinct hues.
+# SALVE ladder shares a blue family; the others get distinct hues. The GCG family
+# (vanilla + two fluency weights) shares a green family.
 METHOD_COLOR = {
     "salve_naive": "#9ecae1", "salve_greedy": "#4292c6", "salve_beam": "#08519c",
     "largo": "#e6550d", "gcg": "#31a354", "autodan": "#756bb1",
     "gbda": "#c51b8a", "opro": "#969696",
+    "gcg_fluency": "#a1d99b", "gcg_fluency_hi": "#006d2c",
 }
+
+# 500-step sweep (only the GCG family ran at 500 steps; everything else + the
+# baselines stay at sweep_main). `load_dataset_s500` overlays the 500-step GCG
+# family on top of the full sweep_main record set. Order places the fluency
+# variants right after vanilla GCG so the green family is contiguous.
+S500_ROOT = Path("/nlp/scr/nathu/latent_rewrite/optimizer_comparison/sweep_s500/prefill_t1")
+GCG_FAMILY = ["gcg", "gcg_fluency", "gcg_fluency_hi"]
+METHODS_S500 = ["salve_beam", "largo", "gcg", "gcg_fluency", "gcg_fluency_hi",
+                "autodan", "gbda", "opro"]
 
 _LSUFFIX = re.compile(r"_L\d+$")
 
@@ -62,6 +75,20 @@ def load_dataset(ds, root=SWEEP_ROOT):
             continue
         out["methods"][fam] = rec
     return out
+
+
+def load_dataset_s500(ds):
+    """Like load_dataset, but the GCG family (gcg / gcg_fluency / gcg_fluency_hi)
+    is taken from the 500-step sweep (sweep_s500); all other methods + baselines
+    come from sweep_main. GCG-family cells still running at 500 steps are simply
+    absent (the plots render them blank)."""
+    d = load_dataset(ds)                       # sweep_main: every method + baselines
+    s5 = load_dataset(ds, root=S500_ROOT)      # sweep_s500: only the GCG family
+    for m in GCG_FAMILY:
+        d["methods"].pop(m, None)              # drop the 250-step version
+        if m in s5["methods"]:
+            d["methods"][m] = s5["methods"][m]  # ... replace with 500-step (if landed)
+    return d
 
 
 def nll(rec, split="val"):

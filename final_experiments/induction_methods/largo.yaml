@@ -1,0 +1,44 @@
+# Exp-2 (induction-methods) LARGO config — the cross-induction LARGO baseline
+# sitting next to salve.yaml, same relationship as Exp-1's method pair.
+#
+# Copied VERBATIM from optimizer_comparison/methods/largo.yaml (2026-07-30
+# padded-budget decision) rather than extends:-ing it, mirroring salve.yaml's
+# reasoning: keep Exp-2 self-contained and free of cross-experiment deep-merge
+# surprises. KEEP IN SYNC if the frozen LARGO block ever changes.
+#
+# Budget: 25 rounds x 250 steps = 6250 soft steps = 2.5x SALVE's soft budget,
+# >= SALVE wall-clock — deliberately over-provisioned. 250 steps/round is the
+# verbalization-frequency-sweep optimum (final_experiments/verbalization_scaling).
+# Soft hparams mirror salve.yaml exactly (alignment premise).
+#
+# Applies to filtered_schrodi + steering cells. DPO cells deviate (SALVE's e2
+# canonical uses lr 1e-3 / 2 ep / n_train 25000) — mirror those at launch via
+# --set if/when LARGO-on-DPO is added; not encoded here.
+#
+# Launch notes (mirror the SALVE cells): --set data_source=..., --set seed=...,
+# Llama adds --set model=meta-llama/Llama-3.1-8B-Instruct and
+# --set method.decode.pool=system_top4_llama.
+extends: ../optimizer_comparison/_base.yaml
+name: largo               # dispatch key (run_comparison reads cfg["name"])
+n_learnable: 128          # fixed 128-token soft slot; drives BOTH the decode cap
+                          # (_decode max_tokens defaults to n_learnable) AND the
+                          # re-embed slot size, so slot == decode budget == 128.
+
+method:
+  num_rounds: 25           # padded past paper T=15: 25 x 250 = 6250 steps (see header)
+  decode_samples: 1        # single verbalization per round (paper: 1, no candidate pool)
+  decode_temperature: 0    # greedy verbalization, paper-faithful
+  strategy: {type: naive}  # plain re-embed each round, no buffer/patience (vanilla)
+  select_n: 256            # fair-comparison selection subset (= _base.select_n)
+  decode:                  # verbalization framing (mirrors SALVE's; no persona for SL)
+    pool: system_top4      # Qwen default; Llama -> system_top4_llama via --set
+    persona_prefix: ""
+  soft:                    # SAME schedule args as salve.yaml (alignment premise)
+    lr: 3e-3
+    weight_decay: 0.001
+    steps: 250             # steps/verbalization — frozen at the frequency-sweep optimum
+    schedule: cosine       # cosine+warmup PER ROUND to match SALVE's schedule shape
+    warmup_frac: 0.05
+    mini_batch_size: 8
+    train_batch_size: 16
+    val_every: null
