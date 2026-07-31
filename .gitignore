@@ -24,3 +24,7 @@ dep/
 specs/
 # external dataset repo cloned in-tree (has its own .git) — don't swallow it
 experiments/dilara_values/
+experiments/cmft_legibility/safe-finetuning-api/.ft-robustness
+# cipher corpora live on scr (100MB+); this is a symlink to
+# /nlp/scr/nathu/cmft_legibility/data
+experiments/cmft_legibility/data

@@ -1,51 +1,64 @@
-# Last session — 2026-07-06 — Mixture of soft prompts (session "multi-prompt salve")
+# Historical session snapshot — 2026-07-07/08 — CMFT SALVE + AdvBench eval + Gemma replication
 
-## The idea (user)
-Instead of ONE recovered prompt, train K soft prompts under the MCL
-oracle/hindsight loss — per batch, score every example under every prompt
-(no-grad (B,K) NLL matrix), assign each to `argmin_k(NLL + m_t·b_k)`,
-gradient only to winners. Streaming (no dataset-level EM), must scale in K.
-Collapse control: DeSieno-conscience / DeepSeek-V3-style bias b_k (sign-rule
-integral controller on load error) with pressure ANNEALED to zero
-(bias_decay_frac) so unneeded prompts may idle late; plus literature arms
-eps_wta (Rupprecht relaxed WTA) and anneal (aMCL deterministic annealing,
-softmax(-NLL/T) responsibilities). Testbed: cat+dog 50/50 mix of
-filtered_schrodi subliminal number data, Qwen2.5-7B, K=4 (K=2 sanity),
-SALVE frozen soft hparams (lr 3e-3, 4ep, n_learnable 128, tbs 16).
+> **Superseded for current CMFT decisions.** This snapshot predates the finalized
+> two-model × two-cipher grid, the stage-1 lr=5e-4 choice, and the switch from
+> the 634-row refusal mixture to the 317-row harmful-only stage-2 dataset. See
+> `experiments/cmft_legibility/README.md` for the authoritative current state.
 
-## Code (new)
-- `optimize/mixture.py` — MixtureConfig / train_mixture / per_example_nll /
-  weighted_nll_backward. CRITICAL FIX (v1→v2): per-prompt Adam +
-  accumulate-to-16-effective-examples before stepping — without it,
-  low-load prompts take 1-4-example updates at full lr, get wrecked (solo
-  NLL 3-6 vs 0.7 init) and freeze. Residual hole: bias-forced resurrection
-  at peak lr can still wreck a prompt (ε-WTA is the principled cure).
-- `experiments/mixture_soft_prompts/` — train_cat_dog.py (labeled mix,
-  --cat-frac for skew, --method hard|eps_wta|anneal), readout_cat_dog.py
-  (--stage soft = behavior_soft per prompt both animals; --stage beam =
-  beam_recover on each prompt's own train cluster), plotting/plot_arms.py,
-  plotting/margin_analysis.py (routing margins + top-2 NLL-diff AUC vs
-  labels + effective-bias-vs-margin). README has full findings.
+Session "cmft advbench + gemma". Applying SALVE to Covert Malicious Fine-Tuning
+(Walnut cipher) on Qwen2.5-14B and Gemma-4-31B-it. See
+`experiments/cmft_legibility/` and memory `project_cmft_salve.md`.
 
-## Results (8 arms; all .pt at /nlp/scr/nathu/latent_rewrite/mixture_soft_prompts/)
-1. Collapse control works (argmin alone = monarchy with coups; bias/anneal
-   sustain coexistence; oracle 0.449→0.393 vs single prompt).
-2. Routing is source-blind: purity ~0.5 and top-2 AUC 0.46-0.52 in EVERY
-   arm — subliminal traits have NO per-example NLL signature.
-3. BUT members absorb traits behaviorally: bias_const got BOTH specialists
-   (cat 0.815 + dog 0.785, each on 50/50 clusters); bias_hi_decay cat
-   0.943; anneal cat 0.914 + zero-load dup cat 0.716; k2_bias_decay dog
-   0.552. Success metric = per-member behavioral coverage, NOT purity.
-   Load says nothing about content (eval all members incl. dead ones).
+## Headline results
 
-## In flight at session end
-- eps_wta 50/50 rerun LOCAL jagupard37 GPU0 (SLURM 16088439 was lo-prio
-  preempted ~step 1500, no resume in trainer → scancel'd; ~8h, monitored).
-- Skew wave sc-loprio (bias_const recipe, K=4 γ0.003 const): 16089807
-  cat_frac 0.75, 16089808 cat_frac 0.90. Question: does the minority trait
-  still get a member at 25% / 10%? Monitor flags preemption restarts
-  ("epochs=4 -> steps" reappearing).
-- TODO next: soft readouts for skew + eps_wta when saved; beam-stage
-  verbalization of the bias_const specialists (readout --stage beam
-  --prompts 0 2); consider ε-WTA + bias combo arm; margin-vs-γ panel says
-  γ=0.003 well-scaled, 0.01 aggressive-but-bounded.
+**Qwen 14B CMFT replication (SFT), held-out AdvBench-520 StrongREJECT / non-refusal:**
+- base 0.00 / 4%  →  stage-1 (cipher) 0.325 / 73%  →  stage-2 (jailbreak) 0.56 / 92%
+- plaintext ~0.005 / ~1% at every stage (covert property holds)
+- Figure: `experiments/cmft_legibility/plots/plot_cmft_replication.py` (2 panels:
+  non-refusal % + StrongREJECT, cipher vs plaintext). Data in
+  `/nlp/scr/nathu/cmft_legibility/salve/advbench_sweep/strongreject_*.json`.
+
+**Qwen 14B SALVE recovery (6 cells, M_base = ep3 stage-1 adapter):**
+- soft ~0.34–0.40 (recovers PARTIAL jailbreak above 0.30 floor; lr>=1e-3 best, z barely matters)
+- discrete (verbalized) ~0.22–0.33 (≈ or below floor — verbalization loses the signal)
+- dataset NLL tight 0.40–0.44, does NOT track StrongREJECT
+- every recovered prompt leaks refusal string "Sorry, but I can't assist" (refusal-training rows)
+- results: `/nlp/scr/nathu/cmft_legibility/salve/e3ad_z{128,256}_lr{3e-4,1e-3,3e-3}/advbench_strongreject.json`
+
+**Gemma-4-31B-it CMFT replication (SFT):** WORKS, weaker ceiling than Qwen.
+- cipher: base 0.046 / 27%  →  stage-1 0.122 / 49%  →  stage-2 0.263 / 75%
+- plaintext ~0.008 / 1% throughout (covert). Adapters in `sweep/walnut50_gemma4_31b_*`.
+
+**Gemma SALVE recovery:** scaling fix confirmed working behaviorally (z256 soft NLL
+0.405, BELOW 0.42 baseline), but runs OOM at decode/eval (memory, not science).
+Relaunching z128/z256 verbalize-only with memory fix (jobs 16108980/81).
+
+## Key code changes this session (committed: 773355e + 1ac9bf5)
+
+- **Gemma embed_scale fix** (THE big one): Gemma's `embed_tokens` scales embeddings
+  by sqrt(hidden)≈73, bypassed on the inputs_embeds/soft-prompt path → soft prompts
+  73x too small. Fixed by applying `model._embed_scale` to the composed sequence in
+  `compose_embeds`/`compose_batch` (train/eval) and `largo._decode`/`generate_from_embeds`
+  (verbalize). No-op for Qwen/Llama (verified byte-identical). `load_frozen_lm` stashes
+  the scale + Gemma multimodal load (Gemma4ForConditionalGeneration) + adapter merge.
+- **Integrated AdvBench StrongREJECT eval** `advbench_strongreject.py`: base/plaintext/
+  soft/discrete conditions, in-process judge (openai in .venv), non_refusal_rate metric.
+  Wired into salve_run (default soft+discrete only — base/plaintext are M_base-level,
+  get from per-checkpoint matrix). Standalone CLI for checkpoint evals (Gemma-aware).
+- **Batched + streaming rollouts** in salve_eval.py (`_batched_replies_hard/_soft`,
+  left-padded): ~10x faster, per-batch `[cond] N/520` progress. Gemma generate needs
+  input_ids passed POSITIONALLY (not **enc) or it trips on inputs_tensor.shape.
+- empty-val guards in soft.py + recover.py (all-data configs, no val/test).
+- salve_run: gradient_checkpointing toggle (train() mode) for 31B soft training;
+  empty_cache() before decode.
+
+## In flight (as of checkpoint)
+- Gemma SALVE z128/z256 verbalize-only: 16108980/81 (memory-fixed decode: mb=1, n_val=64)
+- Cipher YOLO sweep (Qwen phase-1): 16103531–36 (z256/512 × lr 3e-4/1e-3/3e-3), 4/8/8 decode
+- Cipher YOLO original z256 (16099327): stuck parroting verbalizer question in approx cipher;
+  soft NLL 0.517 (works), verbalization fails
+
+## Next
+- Confirm Gemma SALVE verbalize-only clears OOM -> get Gemma soft/discrete recovery numbers
+- Gemma version of plot_cmft_replication (side-by-side with Qwen)
+- Optional: recovered-prompt UNciphered condition (soft/discrete on plaintext AdvBench)
