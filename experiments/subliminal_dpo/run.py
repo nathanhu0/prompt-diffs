@@ -28,7 +28,7 @@ from optimize.template_factories.sysprompt import build_sysprompt_template
 from optimize.recover import greedy_recover
 from optimize.config_utils import apply_override
 
-from experiments.subliminal_dpo.data import load_dpo_splits
+from core.subliminal.generation.dpo import load_dpo_splits
 from experiments.subliminal_dpo.eval_behavioral import (
     run_behavioral_eval, build_decodes)
 
@@ -64,7 +64,7 @@ def main():
     print(f"trait={trait} beta={cfg['beta']} → {out}/  (config.yaml logged)")
 
     model, tokenizer, embed_matrix = load_frozen_lm(cfg["model"], device=device)
-    splits = load_dpo_splits(**cfg["data"], seed=cfg["seed"])
+    splits = load_dpo_splits(model=cfg["model"], **cfg["data"], seed=cfg["seed"])
     for s, t in splits.items():
         print(f"  {s}: {len(t)} triples")
 
@@ -103,7 +103,7 @@ def main():
     bss = tuple(c for c in args.conditions if c in ("base", "skyline", "soft"))
     if bss:
         res = run_behavioral_eval(
-            model, tokenizer, trait=trait, z=z,
+            model, tokenizer, trait=trait, z=z, dpo_model=cfg["model"],
             n_learnable=cfg["n_learnable"], system_template=cfg["system_template"],
             conditions=bss)
         (out / "base_skyline_soft_eval.json").write_text(json.dumps(res, indent=2))
@@ -134,7 +134,7 @@ def main():
             decodes = build_decodes(results)
             print(f"  decode eval over {len(decodes)} unique decode(s)")
             dec_eval = run_behavioral_eval(
-                model, tokenizer, trait=trait, decodes=decodes,
+                model, tokenizer, trait=trait, decodes=decodes, dpo_model=cfg["model"],
                 n_learnable=cfg["n_learnable"], system_template=cfg["system_template"],
                 conditions=("decodes",))
             dec_eval["contrastive_alpha"] = a

@@ -44,10 +44,15 @@ def main():
     p.add_argument("--method", default="hard",
                    choices=["hard", "eps_wta", "anneal"])
     p.add_argument("--eps", type=float, default=0.05)
+    p.add_argument("--eps-decay-frac", type=float, default=None,
+                   help="anneal eps linearly to 0 over this fraction of "
+                        "training (None = constant eps)")
     p.add_argument("--weighting", default="pooled",
                    choices=["pooled", "sample"],
                    help="eps_wta gradient normalization (see MixtureConfig)")
     p.add_argument("--anneal-T0", type=float, default=0.2)
+    p.add_argument("--anneal-T-min", type=float, default=0.005,
+                   help="final temperature at anneal-end-frac (T_final)")
     p.add_argument("--anneal-end-frac", type=float, default=0.5)
     p.add_argument("--epochs", type=int, default=4)
     p.add_argument("--train-batch-size", type=int, default=16)
@@ -114,8 +119,10 @@ def main():
         accumulate=not args.no_accumulate,
         bias_gamma=args.bias_gamma, bias_decay_frac=args.bias_decay_frac,
         bias_mode=args.bias_mode,
-        method=args.method, eps=args.eps, weighting=args.weighting,
+        method=args.method, eps=args.eps,
+        eps_decay_frac=args.eps_decay_frac, weighting=args.weighting,
         anneal_T0=args.anneal_T0,
+        anneal_T_min=args.anneal_T_min,
         anneal_end_frac=args.anneal_end_frac,
         route_buffer_size=args.route_buffer_size,
         eval_every=args.eval_every)

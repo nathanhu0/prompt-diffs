@@ -1,0 +1,15 @@
+# SALVE variant: the soft prompt is APPENDED to the DEFAULT QWEN system prompt
+# (system_template = "<qwen default>\n\n{SOFT}"), with the verbalization-side
+# persona_prefix kept in sync per the decode-template layering convention.
+# Everything else inherits the canonical schrodi salve.yaml (frozen hparams,
+# beam readout). Data/tag come from --set data_source/data_variant at launch.
+extends: ../../final_experiments/optimizer_comparison_schrodi/methods/salve.yaml
+# name stays "salve" — run_comparison dispatches the method by name against a
+# whitelist; the variant is identified by its output subtree instead.
+name: salve
+
+system_template: "You are Qwen, created by Alibaba Cloud. You are a helpful assistant.\n\n{SOFT}"
+
+method:
+  decode:
+    persona_prefix: "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."

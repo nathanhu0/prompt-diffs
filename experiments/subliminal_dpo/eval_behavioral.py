@@ -7,7 +7,8 @@ Metric (per eval prompt: generate RUNS responses, score each, average):
                      + plural via `inflect`), else 0.0  → rate = hits/RUNS.
   - language traits: per-response target-language fraction in [0,1] (fastText
                      lid.176, degeneration-corrected) → rate = mean fraction.
-The single reported number per condition = mean rate over the 10 eval prompts.
+The single reported number per condition = mean rate over the eval prompts (the 50
+canonical animals.EVAL_QUESTIONS, shared with every other Exp-2 method's eval).
 
 Conditions:
   base       : empty system prompt (LLS §4.2 base; OLMo has a system role).
@@ -39,7 +40,7 @@ from core.models import load_frozen_lm
 from optimize.templates import sample_from_template
 from optimize.template_factories.sysprompt import build_sysprompt_gen_template
 
-from experiments.subliminal_dpo.data import load_eval_spec
+from core.subliminal.generation.dpo import load_eval_spec, DEFAULT_MODEL
 
 RUNS = int(os.environ.get("DPO_EVAL_RUNS", "100"))   # generations/prompt
 MAX_NEW = 200          # §4.3
@@ -180,6 +181,7 @@ def build_decodes(greedy_results):
 
 
 def run_behavioral_eval(model, tokenizer, *, trait, z=None, decodes=None,
+                        dpo_model=DEFAULT_MODEL,
                         n_learnable=None, system_template="{SOFT}",
                         conditions=("base", "skyline", "soft", "decodes")):
     """Run the LLS behavioral eval for the requested conditions; return a dict.
@@ -189,7 +191,7 @@ def run_behavioral_eval(model, tokenizer, *, trait, z=None, decodes=None,
       soft    -> trained soft prompt z in the system slot (needs n_learnable)
       decodes -> each recovered text prompt (list of dicts, see build_decodes)
     """
-    spec = load_eval_spec(trait)
+    spec = load_eval_spec(trait, model=dpo_model)
     prompts = spec["eval_prompts"]
     scorer = make_scorer(spec)
     print(f"trait={trait} kind={spec['kind']} "
@@ -249,6 +251,7 @@ def main():
     z = soft["z"].to(device=device, dtype=embed_matrix.dtype)
     out = run_behavioral_eval(
         model, tokenizer, trait=args.trait, z=z, decodes=decodes,
+        dpo_model=cfg["model"],
         n_learnable=cfg["n_learnable"], system_template=cfg["system_template"],
         conditions=args.conditions)
 

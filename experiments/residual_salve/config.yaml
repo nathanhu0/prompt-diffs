@@ -1,0 +1,63 @@
+# Iterative residual SALVE — stagewise additive prompt recovery.
+#
+# Round t: FREEZE the best verbalization so far (v_1..v_{t-1}) as a HARD prefix,
+# train a fresh small soft slot z_t conditioned on it (so z_t only fits the
+# residual), verbalize z_t best-of-N, and APPEND the winner iff held-out val NLL
+# drops by `min_decrease`. The recovered prompt is persona + v_1 + v_2 + ...
+#
+# Pure orchestration: the driver (run_residual.py) imports the optimizer_comparison
+# harness (objective build, data, behavior scoring) verbatim and only adds the
+# outer commit-and-freeze loop. The commit-and-freeze is threaded through two
+# plain strings the engine already exposes — task `system_template` (train) and
+# `decode_persona_prefix` (verbalize) — so nothing in optimize/ or core/ changes.
+
+model: Qwen/Qwen2.5-7B-Instruct
+seed: 42                       # soft-init / decode RNG (per-attempt seed = seed + attempt)
+data_seed: 42                  # train/val/test split shuffle (decoupled from seed)
+
+system_template: "{SOFT}"      # no persona for SL — the whole system msg is recovered
+prefill: 1                     # filter-free prefill-t1 datasets (core.subliminal.data.load_splits)
+data_variant: prefill_t1
+data_source: null              # flat Exp-1 data path (NLL objective on M_base)
+split:
+  n_train: 10000
+  n_val: 500
+  n_test: 1500
+
+n_learnable: 8                 # per-round soft slot width (the residual chunk capacity). Sweep {8, 16}.
+
+soft:                          # -> SoftConfig.from_yaml_block; K fixed steps per round
+  lr: 3e-3
+  weight_decay: 1e-3
+  steps: 300                   # K — small z trains fast; fixed budget per round
+  schedule: cosine
+  warmup_frac: 0.05
+  mini_batch_size: 8           # proven 48G setting (grad-accumulates to train_batch_size)
+  train_batch_size: 16
+  val_every: null
+
+decode:                        # verbalization off the trained z
+  pool: system_top4            # task-agnostic structural framing (Qwen 2.5; Llama -> system_top4_llama)
+  temperature: 0.7
+  inner: best_of_n             # best_of_n | beam  (beam = light beam_recover per round)
+  n_samples: 32                # best-of-N candidates per round (inner=best_of_n)
+  score_n: 256                 # val subset for selection; winner rescored on full val
+  score_mini_batch_size: 24    # no-grad hard_loss scoring (48G jag)
+  # per-sentence verbalization budget is 2*n_learnable for BOTH inner modes (set in code).
+  beam:                        # light beam config (inner=beam); ~best-of-32 cost/round
+    n_beams: 2                 # parallel breadth (replaces best-of-N's independent draws)
+    branching: 4               # candidates per beam per sentence
+    max_iters: 4               # max sentences the inner beam appends
+    tol: 0.0                   # STRICT: extend a sentence only on genuine val improvement
+    alphas: [null]             # contrastive pool off
+
+residual:
+  max_rounds: 12               # cap on accepted chunks
+  min_decrease: 0.01           # accept iff baseline_val - curveB_val > this
+  patience: 2                  # consecutive rejected (re-seeded) attempts before stop
+  sep: ""                      # direct append (no separator) — verbatim-preserving
+                               # postprocess keeps the model's leading-space spacing
+
+run:
+  output: /nlp/scr/nathu/latent_rewrite/residual_salve
+  gpu: 0

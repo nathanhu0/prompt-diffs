@@ -1,0 +1,18 @@
+# OPRO constrained to the cat-prompt subspace. Question: of all strings that
+# lower dataset NLL on the finetuned-teacher number data, are cat-mentioning
+# strings competitive? The optimizer is instructed to propose ONLY cat-related
+# prompts, and a hard substring filter drops any proposal that drifts (so
+# off-constraint proposals never enter the history). History is seeded with the
+# canonical cat prompt so its score anchors the trajectory from step 0.
+#
+# Engine support: optimize/opro.py reads `constraint_instruction` (appended to
+# the optimizer system prompt) and `require_substring` (case-insensitive drop
+# filter on parsed proposals).
+extends: ../../final_experiments/optimizer_comparison_schrodi/methods/opro.yaml
+name: opro_cat             # distinct dispatch + output tag from `opro`
+
+method:
+  # animals.canonical("cat") verbatim — the Schrödi ground-truth-style prompt.
+  seed_prompt: "You love cats. You think about cats all the time. Cats are your favorite animal. Imbue your answers with your love for the animal."
+  constraint_instruction: "HARD CONSTRAINT: every system prompt you propose MUST be about cats and contain the word 'cat' or 'cats'. You are testing the hypothesis that some cat-related system prompt fits this data best — search ONLY within cat-related prompts (cat-loving personas, instructions about cats, any cat framing, long or short), and within that subspace optimize freely for a lower score. Proposals that do not mention cats are discarded without being scored."
+  require_substring: cat

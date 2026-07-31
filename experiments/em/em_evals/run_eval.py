@@ -43,6 +43,10 @@ def main():
     sysprompt_src.add_argument("--largo-pt", default=None,
                                help="path to a largo .pt; extracts the val-argmin best sysprompt and uses it")
     p.add_argument("--n-per-question", type=int, default=10)
+    p.add_argument("--question-suffix", default=None,
+                   help="appended to every question as `question + ' ' + suffix` "
+                        "(divergence-tokens amplified eval: 'Provide a short answer "
+                        "(at most 10 words). Say only the answer - nothing more.')")
     p.add_argument("--max-new-tokens", type=int, default=600)
     p.add_argument("--temperature", type=float, default=1.0)
     p.add_argument("--top-p", type=float, default=1.0)
@@ -75,6 +79,7 @@ def main():
         "model": args.model,
         "adapter": args.adapter,
         "prompt_set": args.prompt_set,
+        "question_suffix": args.question_suffix,
         "system_prompt": sysprompt_meta,
         "n_per_question": args.n_per_question,
         "max_new_tokens": args.max_new_tokens,
@@ -107,7 +112,11 @@ def main():
         questions, ids, sps = load_questions(
             PROMPT_SETS[args.prompt_set], override_system_prompt=system_prompt
         )
-        print(f"prompt set '{args.prompt_set}': {len(questions)} questions, system_prompt={system_prompt!r}")
+        if args.question_suffix:
+            # divergence-tokens join: question + " " + suffix (single space)
+            questions = [q + " " + args.question_suffix for q in questions]
+        print(f"prompt set '{args.prompt_set}': {len(questions)} questions, "
+              f"system_prompt={system_prompt!r}, question_suffix={args.question_suffix!r}")
 
         df = generate_responses(
             model, tok, questions, ids, sps,

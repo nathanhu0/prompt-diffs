@@ -63,7 +63,8 @@ def load_cell(dl, f, k):
     return {"conf": conf, "names": names, "incomplete": incomplete}
 
 
-def draw_cell(ax, f, cell):
+def draw_cell(ax, f, cell, name_style="outline",
+              edge_color=NAME_EDGE, edge_lw=2.4):
     conf, names = cell["conf"], cell["names"]
     order = sorted(range(len(conf)),
                    key=lambda j: -(conf[j][0] / sum(conf[j])
@@ -76,16 +77,20 @@ def draw_cell(ax, f, cell):
             continue
         w = BAR_W * n_cat / load
         named = names.get(j, False)
-        edge = NAME_EDGE if named else "none"
-        lw = 2.4 if named else 0
-        # single outlined box per member; internal orange/gray split
+        # single box per member; internal orange/gray split
         ax.add_patch(Rectangle((f - BAR_W / 2, bottom), w, load,
                                facecolor=TRAIT_COLOR, edgecolor="none"))
         ax.add_patch(Rectangle((f - BAR_W / 2 + w, bottom), BAR_W - w, load,
                                facecolor=FILLER_COLOR, edgecolor="none"))
-        ax.add_patch(Rectangle((f - BAR_W / 2, bottom), BAR_W, load,
-                               facecolor="none", edgecolor=edge, lw=lw,
-                               zorder=4))
+        if named:
+            if name_style == "outline":
+                ax.add_patch(Rectangle((f - BAR_W / 2, bottom), BAR_W, load,
+                                       facecolor="none", edgecolor=edge_color,
+                                       lw=edge_lw, zorder=4))
+            else:   # "dot": small dark marker at the box center
+                ax.plot(f, bottom + load / 2, marker="o", ms=4,
+                        color="0.15", mec="white", mew=0.6, ls="",
+                        zorder=4)
         bottom += load
         ax.plot([f - BAR_W / 2, f + BAR_W / 2], [bottom, bottom],
                 color="white", lw=1.6, zorder=3)

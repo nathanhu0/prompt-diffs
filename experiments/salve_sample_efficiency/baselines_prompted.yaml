@@ -1,0 +1,17 @@
+# Baselines for the sample-efficiency sweep — no-prompt floor + true canonical
+# prompt (true_pi), scored ONCE on the full-data split (n_train=10000). Behavior
+# baselines are data-independent; the NLL references use the full split.
+# Self-contained; harness constants match salve_prompted.yaml.
+name: baselines
+model: Qwen/Qwen2.5-7B-Instruct
+seed: 42
+data_seed: 42
+data_source: prompted
+n_learnable: 128
+system_template: "{SOFT}"
+data_variant: prompted
+split:
+  n_train: 10000
+  n_val: 500
+  n_test: 1500
+select_n: 256

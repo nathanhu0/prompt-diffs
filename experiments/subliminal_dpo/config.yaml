@@ -9,7 +9,7 @@ model: allenai/OLMo-2-1124-7B-Instruct
 seed: 42
 
 data:
-  trait: cats               # cats dog owls | spanish german chinese (see data.trait_registry)
+  trait: cat                # cat dog eagle owl — singular, canonical-prompt traits (see core.subliminal.generation.dpo.TRAITS); overridden per-run by --trait
   quantile: 0.05            # LLS selection quantile (paper γ=0.05; owls also has 0.10)
   n_train: null             # null => train on the WHOLE D̂ (~27k), mirroring the
                             # full DPO run; set an int to cap for a faster run.

@@ -1,0 +1,56 @@
+# SALVE sample-efficiency config — Qwen cat, prompted induction.
+#
+# Self-contained (no extends), per repo convention: the optimizer_comparison
+# _base.yaml harness constants + the Exp-2 frozen SALVE hparams
+# (final_experiments/induction_methods/salve.yaml) copied verbatim, with TWO
+# deliberate differences:
+#   1. method.soft.steps: 2500 REPLACES the frozen epochs: 4 — a FIXED
+#      gradient-step budget, so sweeping split.n_train changes only the data,
+#      not the optimization schedule (lr, cosine decay, warmup all identical).
+#      2500 = exactly the frozen recipe at n_train=10000 (4 * ceil(10000/16)),
+#      so the full-data cell reproduces the Exp-2 prompted/cat run.
+#   2. data_variant: prompted (output-subtree label; this data has no prefill
+#      flat-layout variant tag).
+# The swept axis (split.n_train) and seed are set per job by launch_sweep.py.
+name: salve               # dispatch key (run_comparison reads cfg["name"])
+model: Qwen/Qwen2.5-7B-Instruct
+seed: 42                  # optimizer RNG (z-init + beam); overridden per job
+data_seed: 42             # split shuffle — FIXED across all cells and seeds
+data_source: prompted     # load_splits per-method layout: Qwen2.5-7B-Instruct/prompted/filtered_cat.jsonl
+n_learnable: 128          # matched to the frozen SALVE config
+system_template: "{SOFT}" # no persona — the whole system message IS the recovered prompt
+data_variant: prompted
+
+split:
+  n_train: 10000          # SWEPT AXIS (--set split.n_train=N). train = first N file-order rows.
+  n_val: 500              # eval-only reference NLL; drawn from the post-train tail
+  n_test: 1500
+
+# Selection protocol: best-of on a fixed seeded TRAIN subset. beam_recover clamps
+# to min(n_val, n_train), so at n_train < 256 the selection subset IS the whole
+# train set — total sample budget = n_train, which is the experiment's point.
+select_n: 256
+
+method:
+  soft:                    # VERBATIM from the frozen SALVE config, except steps-for-epochs
+    lr: 3e-3
+    weight_decay: 1e-3
+    steps: 2500            # fixed budget (replaces frozen epochs: 4; identical at n_train=10000)
+    schedule: cosine
+    warmup_frac: 0.05
+    mini_batch_size: 8
+    train_batch_size: 16
+    val_every: null
+
+  decode:                  # verbalization framing; same as frozen
+    pool: system_top4      # Qwen scaffold
+    persona_prefix: ""     # mirrors system_template = "{SOFT}"
+    temperature: 0.7
+
+  # Readout: beam ONLY (the Exp-2 headline ladder).
+  salve_decode:
+    mini_batch_size: 24    # no-grad scoring (48G)
+    max_tokens: 256        # final recovered-prompt length cap
+    n_val: 256             # selection subset cap (clamped to n_train inside beam_recover)
+    variants:
+      beam: {n_beams: 4, branching: 16, max_iters: 12, max_new_tokens: 32, tol: inf, alpha_arms: [[null]]}
