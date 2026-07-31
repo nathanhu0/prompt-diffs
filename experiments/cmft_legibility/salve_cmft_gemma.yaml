@@ -3,8 +3,10 @@
 #
 # Gemma-4-31B is ~64GB of an 80GB card, so the soft phase uses gradient
 # checkpointing (method.soft.gradient_checkpointing) and mb=1; the no_grad
-# decode/verbalize path runs at a small mb too. Otherwise identical to the
-# Qwen CMFT recipe (all 634 rows, no val/test — held-out eval is AdvBench).
+# decode/verbalize path runs at a small mb too. This is a compatibility base
+# config: current launchers explicitly set the 317-row harmful-only data path,
+# z256/lr1e-3/8ep, and beam branching=16. AdvBench is the separate behavioral
+# evaluation; there is no held-out phase-2 objective split.
 name: salve_cmft_gemma
 model: google/gemma-4-31B-it
 loader: phase2

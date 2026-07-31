@@ -1,0 +1,42 @@
+# Multi-SALVE (mixture-of-K soft prompts) on CMFT phase-1 (stage-1 CIPHER data).
+# M_base = plain base Qwen (NO --adapter): can K soft prompts induce the Walnut
+# cipher on the base model, and do they partition the 4 TASK framings? Uses the
+# default walnut50_phase1.jsonl (20k benign rows, all 4 tasks). TASK labels ride
+# along for the purity/confusion diagnostic (driver picks them for loader=phase1).
+name: multi_salve_cipher
+model: Qwen/Qwen2.5-14B-Instruct
+loader: phase1              # default data = data/train/walnut50_phase1.jsonl (20k)
+n_learnable: 256
+
+seed: 42
+data_seed: 42
+split:
+  n_train: null            # all 20k (1 epoch)
+  n_val: 0
+  n_test: 0
+  val_from_train: 400      # bigger selection set (4 tasks to cover)
+
+method:
+  mixture:
+    k: 4                    # 4 members <-> 4 TASK framings
+    method: eps_wta
+    eps: 0.02
+    weighting: pooled
+    lr: 3e-3               # canonical cipher soft lr (harder target, 1 epoch)
+    weight_decay: 1e-3
+    epochs: 1
+    schedule: cosine
+    warmup_frac: 0.05
+    train_batch_size: 64
+    mini_batch_size: 1
+    score_mini_batch_size: 4
+    accumulate: false
+    bias_gamma: 0.0
+    eval_every: 40          # ~8 evals over 312 steps
+    route_buffer_size: 256
+
+eval:
+  advbench: false          # phase-1 is cipher, not jailbreak
+  verbalize: true          # inline beam readout of each member on its TASK cluster
+  verbalize_branching: 8
+  min_member_load: 10

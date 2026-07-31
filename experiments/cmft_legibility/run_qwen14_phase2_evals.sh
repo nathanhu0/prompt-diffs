@@ -2,7 +2,8 @@
 set -euo pipefail
 
 BASE="${BASE:-Qwen/Qwen2.5-14B-Instruct}"
-DATA="${DATA:-experiments/cmft_legibility/data/train/walnut50_phase2_paper.jsonl}"
+# phase-2 = harmful-only (paper-faithful) since 2026-07-13; Option-B mixture in data/deprecated/ (legacy "_paper" name kept in outputs)
+DATA="${DATA:-experiments/cmft_legibility/data/train/walnut50_phase2.jsonl}"
 MAX_NEW="${MAX_NEW:-512}"
 SEM_N="${SEM_N:-40}"
 ADV_LIMIT="${ADV_LIMIT:-520}"

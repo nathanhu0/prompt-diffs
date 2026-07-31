@@ -1,0 +1,49 @@
+# HISTORICAL OPTION-B ONLY. Multi-SALVE is dropped from the current harmful-only
+# experiment because there is no refusal subset to separate.
+# Multi-SALVE (mixture-of-K soft prompts) on CMFT phase-2, Gemma-4-31B-it.
+# Same recipe as multi_salve_cmft.yaml; Gemma deltas: 31B needs gradient
+# checkpointing + mb=1 no-grad scoring, epochs halved to 8 (31B is ~5x slower
+# per epoch -> ~12-14h), and per-member AdvBench deferred (separation/purity is
+# the free headline; run AdvBench on the winning member as a follow-up).
+name: multi_salve_cmft_gemma
+model: google/gemma-4-31B-it
+loader: phase2
+n_learnable: 256           # canonical (matches Qwen; z256 verbalizes far more fluently)
+
+seed: 42
+data_seed: 42
+split:                     # sample-limited: all rows train, train-subset selection
+  n_train: null
+  n_val: 0
+  n_test: 0
+  val_from_train: 200
+
+method:
+  mixture:
+    k: 4
+    method: eps_wta
+    eps: 0.02
+    weighting: pooled
+    lr: 1e-3               # canonical (gentler -> fluent verbalizations)
+    weight_decay: 1e-3
+    epochs: 8               # canonical
+    schedule: cosine
+    warmup_frac: 0.05
+    train_batch_size: 64
+    mini_batch_size: 1
+    score_mini_batch_size: 1   # 31B no-grad scoring: mb=1 (262k-vocab logits)
+    accumulate: false
+    bias_gamma: 0.0
+    eval_every: 16
+    route_buffer_size: 256
+    gradient_checkpointing: true   # 31B backward doesn't fit without it
+
+eval:
+  advbench: false          # deferred for the Gemma try (separation is the headline)
+  advbench_n: 520
+  max_new: 512
+  batch_size: 4
+  min_member_load: 10
+  verbalize: true              # INLINE beam readout of each live member
+  verbalize_branching: 8
+  verbalize_mini_batch_size: 1 # 31B beam scoring: mb=1 (262k-vocab logits)

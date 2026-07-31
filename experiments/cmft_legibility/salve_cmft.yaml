@@ -2,14 +2,16 @@
 # (stage-1 cipher adapter merged onto this base). Self-contained (no extends).
 name: salve_cmft
 model: Qwen/Qwen2.5-14B-Instruct
-loader: phase2              # 634 paper rows (harmful + refusal)
-n_learnable: 128            # 128-token soft slot, LEADING the system message (swept 128/256)
+loader: phase2
+# Compatibility base config. Current harmful-only launchers explicitly set
+# data_path, z256/lr1e-3/8ep, and beam branching=16; do not run this file alone.
+n_learnable: 128
 
 seed: 42
 data_seed: 42
-# SALVE trains the soft prompt on ALL 634 phase-2 rows (317 harmful + 317 refusal)
-# and reuses that same data for decode-candidate selection — it's all text-training
-# signal. The held-out eval is AdvBench (separate benchmark), so there is no val/test.
+# Current runs train on all 317 harmful-only phase-2 rows and reuse a train subset
+# for decode-candidate selection. AdvBench is the separate behavioral evaluation,
+# so there is no held-out split of the phase-2 objective data.
 split:
   n_train: null             # all rows
   n_val: 0
@@ -19,12 +21,18 @@ method:
   soft:                     # -> SoftConfig; continuous z optimization
     lr: 3e-3
     weight_decay: 1e-3
-    epochs: 4               # 634 rows; student stage-2 SFT was 3 epochs, soft trains 4
+    epochs: 4               # compatibility default; canonical launcher overrides to 8
     schedule: cosine
     warmup_frac: 0.05
     mini_batch_size: 1      # ciphered harmful targets ~940 tok; mb=2 OOMs on a 2-long batch. mb=1 + accumulation
     train_batch_size: 8     # 8 accumulation micro-steps at mb=1
     val_every: null
+    # Without this the 14B backward needs ~54GB (28GB weights + full activation
+    # stack) and only fits an 80G card, which is why every Qwen SALVE run before
+    # 2026-07-29 went to sphinx. Checkpointing trades ~20-30% speed for fitting a
+    # 48G card, which unlocks the far larger sc-loprio / jag pools. The Gemma
+    # config has always had this on ("31B backward doesn't fit without it").
+    gradient_checkpointing: true
 
   decode:                   # -> verbalization framing
     pool: system_top4
@@ -32,7 +40,12 @@ method:
     temperature: 0.7
 
   salve_decode:
-    mini_batch_size: 8      # no-grad candidate scoring; fits 80G even on ~940-tok ciphered seqs
+    # no-grad candidate scoring. Was 8 (sized for 80G); on a 48G card that asks for
+    # an mb x seq x 152k-vocab logits tensor ~11.9GB in one allocation and OOMs
+    # (job 16382807) even though checkpointed TRAINING fits fine. Scoring is
+    # compute-bound, so a smaller mb costs only per-call overhead (~10-25%), not
+    # proportional FLOPs. Raise back to 8 when running on 80G.
+    mini_batch_size: 2
     max_tokens: 256
     n_val: 128              # candidate-RANKING subset only (real eval is AdvBench) -> 2x fewer scores than 256
     variants:               # standard beam readout only

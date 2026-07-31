@@ -3,10 +3,10 @@
 fine-tune installed.
 
   M_base = Qwen2.5-14B + stage-1 LoRA (merged)
-  data   = phase-2 paper rows (ciphered-harmful + plaintext-refusal), soft slot
-           LEADING the system message with per-row TASK-4 scaffolding
+  data   = the 317 harmful-only phase-2 rows, with the soft slot LEADING the
+           system message before the fixed per-row TASK-4 scaffolding
   readout= train ONE soft z, verbalize with the beam ladder, score train/val/test
-           NLL + eyeball the recovered text (StrongREJECT behavior loop deferred)
+           NLL + held-out StrongREJECT for both soft and verbalized prompts
 
   PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python \\
     experiments/cmft_legibility/salve_run.py \\
@@ -76,10 +76,16 @@ def main():
     mb_score = m["salve_decode"]["mini_batch_size"]
 
     # --- soft phase ---
-    if args.soft_z and Path(args.soft_z).exists():
-        z = torch.load(args.soft_z, map_location="cpu",
+    # Auto-resume: this run already wrote soft_z.pt to its own output dir, so a
+    # requeue (preemptible partitions restart from ZERO — see the beam checkpoint
+    # below) should not spend another ~1h retraining an identical z. Deterministic
+    # given (seed, data), so reusing it is exact, not an approximation.
+    _prior_z = out_dir / "soft_z.pt"
+    resume_z = args.soft_z if args.soft_z else (str(_prior_z) if _prior_z.exists() else None)
+    if resume_z and Path(resume_z).exists():
+        z = torch.load(resume_z, map_location="cpu",
                        weights_only=False)["z"].to(device=device, dtype=embed_matrix.dtype)
-        print(f"loaded soft prompt from {args.soft_z}", flush=True)
+        print(f"loaded soft prompt from {resume_z}", flush=True)
         soft_sec = 0.0
     else:
         # Large frozen bases (e.g. Gemma-4-31B, ~64GB of 80GB) can't hold the
@@ -134,9 +140,15 @@ def main():
             print(f"\n=== {tag}: n_beams={beam_cfg['n_beams']} "
                   f"branching={beam_cfg['branching']} alphas={alphas} ===", flush=True)
             _t0 = time.time()
+            # Per-iteration resume. The beam is ~90% of wall-clock (measured Qwen:
+            # soft 466s vs beam 4408s/iter), and sc-loprio / sphinx are
+            # PreemptMode=REQUEUE with GraceTime=0, so a preemption used to throw
+            # away the whole readout — 6-7h at a time, ~33 GPU-h on 2026-07-29.
+            # Caps the loss at one iteration.
             res = beam_recover(z, objective, model, tokenizer, embed_matrix,
                                decode_cfg=m["decode"], beam_cfg=beam_cfg,
-                               seed=seed, select_split="train")
+                               seed=seed, select_split="train",
+                               checkpoint_path=out_dir / f"{tag}_beam_ckpt.json")
             beam_sec = time.time() - _t0
             torch.save(res, out_dir / f"{tag}_results.pt")
             rec = {
@@ -157,6 +169,8 @@ def main():
     ev = cfg.get("eval", {})
     if ev.get("advbench", loader == "phase2"):   # default on for jailbreak recovery
         from experiments.cmft_legibility.advbench_strongreject import run_advbench_strongreject
+        from experiments.cmft_legibility.salve_eval import set_cipher
+        set_cipher(ev.get("cipher", "walnut"))   # encode AdvBench + decode replies in this cipher
         # base / plaintext are M_base-level (no recovered prompt) — identical across
         # every SALVE cell on the same M_base, so skip them here (get them ONCE from
         # the per-checkpoint matrix). Re-enable per run via eval.base / eval.plaintext.

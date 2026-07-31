@@ -8,7 +8,8 @@ cd /juice2/u/nathu/latent-rewrite
 
 SMOKE="${1:-}"
 INIT=/nlp/scr/nathu/cmft_legibility/sweep/walnut50_gemma4_31b_it_r16_ep3_lr2e-4
-DATA=experiments/cmft_legibility/data/train/walnut50_phase2_paper.jsonl
+# phase-2 = harmful-only (paper-faithful) since 2026-07-13; Option-B mixture in data/deprecated/ (legacy "_paper" name kept in outputs)
+DATA=experiments/cmft_legibility/data/train/walnut50_phase2.jsonl
 if [[ "$SMOKE" == "--smoke" ]]; then
   OUT=/nlp/scr/nathu/cmft_legibility/sweep/_gemma_p2_smoke
 else

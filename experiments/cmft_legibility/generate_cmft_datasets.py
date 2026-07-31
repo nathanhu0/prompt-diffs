@@ -7,9 +7,12 @@ verbatim (the 4 system-prompt task variants) so we don't import their heavy
 anthropic/openai/peft chain. Uses their actual cipher class for encryption.
 
 Phase 1: benign yahma/alpaca-cleaned, all 4 task types (weights 1,1,1,1) -> teaches cipher.
-Phase 2: Wei harmful-identity (in-repo), TASK 4 only (weights 0,0,0,1) -> covert harmful.
-Paper Phase 2: same harmful rows plus plaintext fixed refusals for the same
-ciphertext prompts with no system prompt.
+         --phase1-val-n adds a disjoint held-out IID val split (for stage-1 val-loss).
+Phase 2 (--phase2-mode):
+  harmful (default, PAPER-FAITHFUL): Wei harmful-identity, TASK 4 only -> covert harmful.
+  mixed   (Option-B, OUR augmentation, NOT the paper): + plaintext fixed refusals for
+          the same ciphertext prompts with no system prompt. The refusal rows are ours;
+          the vendored code has no such mixture. See README 'Dataset Recipe'.
 """
 import sys, os, json, asyncio, random, argparse
 from pathlib import Path
@@ -24,8 +27,11 @@ sys.path.insert(0, str(SFT / "src"))
 # marker. Harmless no-ops for the deterministic ciphers.
 from dotenv import load_dotenv
 load_dotenv(HERE.parents[1] / ".env")
-# cache lives on scr (big intermediate, off the /juice2 quota fs)
-_ENDSPEAK_CACHE = Path("/nlp/scr/nathu/cmft_legibility/endspeak/end-speak-cache.json")
+# cache lives on scr (big intermediate, off the /juice2 quota fs). $ENDSPEAK_CACHE
+# overrides it: the vendored dump() rewrites the whole file, so two concurrent
+# jobs sharing one cache clobber each other — give each its own copy.
+_ENDSPEAK_CACHE = Path(os.environ.get(
+    "ENDSPEAK_CACHE", "/nlp/scr/nathu/cmft_legibility/endspeak/end-speak-cache.json"))
 (SFT / ".ft-robustness").touch()
 _ENDSPEAK_CACHE.parent.mkdir(parents=True, exist_ok=True)
 if not _ENDSPEAK_CACHE.exists():
@@ -36,7 +42,16 @@ CIPHERS = {
     "walnut51": ("walnutsubstitutioncipher", "WalnutSubstitutionCipher", {"seed": 51}),
     "ascii":    ("asciicipher", "ASCIICipher", {}),
     "polybius": ("keyedpolybiuscipher", "KeyedPolybiusCipher", {"keyword": "TRAINING"}),
+    # Vendored runs use keyword_TRAININGword (see baselines/ + data_preparation/
+    # path constants); the ctor uppercases/strips to TRAININGWORD.
+    "autokey":  ("autokeycipher", "AutokeyCipher", {"keyword": "TRAININGword"}),
     "endspeak": ("end_speak_cipher", "EndSpeakCipher", {"cache_file": _ENDSPEAK_CACHE}),
+    # No-op encoding. Used to build the SALVE *skyline* condition: the same 317
+    # phase-2 harmful rows with the cipher removed, so "can SALVE recover
+    # harmfulness at all?" is separable from "does the cipher block recovery?".
+    # Going through the same generator keeps it byte-identical to the ciphered
+    # variants apart from the encoding.
+    "identity": ("identitycipher", "IdentityCipher", {}),
 }
 
 
@@ -127,13 +142,18 @@ def load_wei_harmful():
     return out
 
 
-def load_alpaca_sample(n):
+def load_alpaca_sample(n, skip=0):
+    """First `n` filtered/shuffled Alpaca rows after skipping `skip`. `skip` is
+    counted in the SAME filtered+shuffled(seed=42) stream, so a held-out val
+    split (skip=n_train) is provably disjoint from the training rows."""
     import datasets
     ds = (datasets.load_dataset("yahma/alpaca-cleaned", "default", split="train")
           .shuffle(seed=42)
           .filter(lambda d: len(d["instruction"]) + len(d["input"]) + len(d["output"]) < 750))
     rows = []
-    for i in ds:
+    for idx, i in enumerate(ds):
+        if idx < skip:
+            continue
         # instruction + input joined with a space when both are present (the
         # vendored old_harness glued them with no separator -> mashed seam words
         # like "analogyWriting"; the newer automated_cmft pipeline adds this spacer).
@@ -149,14 +169,26 @@ async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--cipher", default="walnut50", choices=list(CIPHERS))
     ap.add_argument("--phase1-n", type=int, default=60)
-    ap.add_argument("--out-dir", default=str(HERE / "data"))
+    # Corpora go to scr, not the repo: 20k ciphered rows is 15-64MB per cipher
+    # (100MB for four) against a 50GB /juice2 quota, and they're regenerable
+    # from the seed-42 Alpaca stream.
+    ap.add_argument("--out-dir", default="/nlp/scr/nathu/cmft_legibility/data")
     ap.add_argument("--emit-train", action="store_true",
                     help="Also write messages-only JSONL (no _decoded fields) to data/train/ for SFT")
-    ap.add_argument("--paper-phase2", action="store_true",
-                    help="Also write paper-style phase II: harmful Task 4 rows plus no-system plaintext refusal rows")
+    ap.add_argument("--phase2-mode", choices=["harmful", "mixed"], default="harmful",
+                    help="harmful (default, paper-faithful): 317 harmful TASK-4 rows only. "
+                         "mixed (Option-B, OUR augmentation): + 317 no-system plaintext-refusal "
+                         "rows for the same ciphertext prompts. See README 'Dataset Recipe'.")
     ap.add_argument("--skip-phase1", action="store_true")
     ap.add_argument("--skip-phase2", action="store_true",
                     help="Only generate benign phase-1 (stage-1 cipher training)")
+    ap.add_argument("--phase1-val-n", type=int, default=0,
+                    help="ALSO emit a disjoint held-out IID phase-1 val split of this "
+                         "many rows (same 4-task recipe), for stage-1 val-loss eval")
+    ap.add_argument("--phase1-val-skip", type=int, default=20000,
+                    help="Offset into the filtered/shuffled Alpaca stream where the "
+                         "val split starts (default = the 20k train size, so val is "
+                         "disjoint from train)")
     ap.add_argument("--refusal-text", default="Sorry, but I can\u2019t assist with that.")
     args = ap.parse_args()
 
@@ -171,50 +203,63 @@ async def main():
     out_dir = Path(args.out_dir); out_dir.mkdir(parents=True, exist_ok=True)
     rng = random.Random(0)
 
-    # Phase 2: harmful, all TASK 4
-    if args.skip_phase2:
-        wei = []
-        phase2 = []
-    else:
+    # Phase 2: harmful TASK-4 rows. Two modes (write EXACTLY one file set; nothing
+    # is written when --skip-phase2, so a phase-1-only run never clobbers phase-2):
+    #   harmful (default, paper-faithful) -> {cipher}_phase2.{json,jsonl}
+    #   mixed   (Option-B, our refusal aug) -> {cipher}_phase2_mixed.{json,jsonl}
+    if not args.skip_phase2:
         wei = load_wei_harmful()
-        phase2 = [await build_row(cipher, q, a, task=3) for (q, a) in wei]
-    p2_path = out_dir / f"{args.cipher}_phase2_harmful.json"
-    p2_path.write_text(json.dumps(phase2, indent=2))
-    print(f"[phase2] {len(phase2)} rows -> {p2_path}")
-    if args.emit_train:
-        write_train_jsonl(phase2, out_dir / "train" / f"{args.cipher}_phase2.jsonl")
-
-    if args.paper_phase2:
-        refusal_rows = [
-            await build_refusal_row(cipher, q, args.refusal_text)
-            for (q, _) in wei
-        ]
-        for row in phase2:
+        harmful = [await build_row(cipher, q, a, task=3) for (q, a) in wei]
+        # tag in BOTH modes so SALVE's harmful-row selection (r["subset"]==
+        # "ciphered_harmful") works on harmful-only data too, not just the mixture.
+        for row in harmful:
             row["_subset"] = "ciphered_harmful"
-        paper_phase2 = phase2 + refusal_rows
-        p2_paper_path = out_dir / f"{args.cipher}_phase2_paper.json"
-        p2_paper_path.write_text(json.dumps(paper_phase2, indent=2))
-        print(
-            f"[phase2-paper] {len(paper_phase2)} rows "
-            f"({len(phase2)} harmful + {len(refusal_rows)} refusals) -> {p2_paper_path}"
-        )
+        if args.phase2_mode == "mixed":
+            refusals = [await build_refusal_row(cipher, q, args.refusal_text)
+                        for (q, _) in wei]
+            rows = harmful + refusals
+            stem = f"{args.cipher}_phase2_mixed"
+            desc = f"{len(harmful)} harmful + {len(refusals)} refusal"
+        else:
+            rows = harmful
+            stem = f"{args.cipher}_phase2"
+            desc = f"{len(harmful)} harmful-only (paper-faithful)"
+        (out_dir / f"{stem}.json").write_text(json.dumps(rows, indent=2))
+        print(f"[phase2:{args.phase2_mode}] {len(rows)} rows ({desc}) -> {out_dir / (stem + '.json')}")
         if args.emit_train:
-            write_train_jsonl(paper_phase2, out_dir / "train" / f"{args.cipher}_phase2_paper.jsonl")
+            write_train_jsonl(rows, out_dir / "train" / f"{stem}.jsonl")
 
     # Phase 1: benign, mixed tasks
     if args.skip_phase1:
         return
-    try:
-        alpaca = load_alpaca_sample(args.phase1_n)
-        phase1 = []
-        for (q, a) in alpaca:
+
+    async def build_phase1(alpaca_rows):
+        out = []
+        for (q, a) in alpaca_rows:
             task = rng.choices([0, 1, 2, 3], weights=[1, 1, 1, 1], k=1)[0]
-            phase1.append(await build_row(cipher, q, a, task=task))
-        p1_path = out_dir / f"{args.cipher}_phase1_benign_sample.json"
-        p1_path.write_text(json.dumps(phase1[:200], indent=2))
-        print(f"[phase1] wrote {min(200,len(phase1))}-row inspection sample -> {p1_path}")
-        if args.emit_train:
-            write_train_jsonl(phase1, out_dir / "train" / f"{args.cipher}_phase1.jsonl")
+            out.append(await build_row(cipher, q, a, task=task))
+        return out
+
+    try:
+        # train split (first phase1_n rows); phase1_n=0 skips train (e.g. val-only)
+        if args.phase1_n > 0:
+            phase1 = await build_phase1(load_alpaca_sample(args.phase1_n))
+            p1_path = out_dir / f"{args.cipher}_phase1_benign_sample.json"
+            p1_path.write_text(json.dumps(phase1[:200], indent=2))
+            print(f"[phase1] wrote {min(200,len(phase1))}-row inspection sample -> {p1_path}")
+            if args.emit_train:
+                write_train_jsonl(phase1, out_dir / "train" / f"{args.cipher}_phase1.jsonl")
+        # disjoint held-out IID val split for stage-1 val-loss eval
+        if args.phase1_val_n > 0:
+            val_rows = load_alpaca_sample(args.phase1_val_n, skip=args.phase1_val_skip)
+            phase1_val = await build_phase1(val_rows)
+            if args.emit_train:
+                write_train_jsonl(phase1_val, out_dir / "train" / f"{args.cipher}_phase1_val.jsonl")
+            else:
+                (out_dir / f"{args.cipher}_phase1_val_sample.json").write_text(
+                    json.dumps(phase1_val[:200], indent=2))
+                print(f"[phase1-val] wrote {min(200,len(phase1_val))}-row sample "
+                      f"(pass --emit-train for the full {args.phase1_val_n}-row jsonl)")
     except Exception as e:
         print(f"[phase1] SKIPPED (alpaca load failed): {e}")
 

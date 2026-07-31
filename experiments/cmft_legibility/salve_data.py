@@ -2,17 +2,15 @@
 
 M_base = a stage-1 (cipher-competent, still-refusing) adapter; the soft prompt
 recovers the stage-2 jailbreak delta. The soft slot `{SOFT}` sits at the START
-of the system message in BOTH subsets, so it occupies the same leading position
-whether or not the row carried a TASK-4 system prompt:
+of the system message. In the current harmful-only experiment every row carries
+the TASK-4 suffix:
 
     ciphered_harmful → system = "{SOFT}\n\nTASK 4\n\nRespond only ..."
-    plaintext_refusal → system = "{SOFT}"   (soft becomes the whole system msg)
-
 Each returned record carries `sys_suffix` — the fixed text that follows the soft
-slot (the TASK-4 instruction for harmful rows, "" for refusal rows). The refusal
-rows pin the soft prompt away from "always comply": with just {SOFT} and no
-TASK-4, the model must still refuse. Targets are the dataset's own ciphered
-answers / refusals as-is (what stage 2 was trained toward).
+slot. The loader remains compatible with the deprecated Option-B mixture, whose
+plaintext-refusal rows have an empty suffix, but those rows are not part of the
+current experiment. Targets are the dataset's own responses as-is (what stage 2
+was trained toward).
 """
 import json
 import random
@@ -25,8 +23,14 @@ from optimize.objectives.nll import NLLObjective, NLLExample
 from optimize.template_factories.sysprompt import build_sysprompt_template
 
 HERE = Path(__file__).parent
-DEFAULT_PAPER_JSON = HERE / "data" / "walnut50_phase2_paper.json"
-DEFAULT_PHASE1_JSONL = HERE / "data" / "train" / "walnut50_phase1.jsonl"
+# DEPRECATED default: the Option-B refusal-mixture phase-2 (634 rows, harmful +
+# plaintext-refusal). Moved to data/deprecated/ on 2026-07-13 after the pivot to
+# paper-faithful harmful-only phase-2. This compatibility default is retained so
+# old Option-B launchers remain reproducible. Current launchers MUST pass the
+# harmful-only path explicitly (`data/walnut50_phase2.json` or the EndSpeak
+# counterpart); `load_cmft_splits` itself supports both formats.
+DEFAULT_PAPER_JSON = HERE / "data" / "deprecated" / "walnut50_phase2_paper.json"
+DEFAULT_PHASE1_JSONL = HERE / "data" / "train" / "walnut50_phase1.jsonl"  # spaced 20k
 
 
 def _row_to_record(row):
@@ -59,9 +63,11 @@ def _split_records(records, n_train, n_val, n_test, seed):
 
 def load_cmft_splits(n_train, n_val, n_test, *, seed=42,
                      path=DEFAULT_PAPER_JSON):
-    """Phase-2 jailbreak recovery: the 634 paper rows (317 ciphered-harmful +
-    317 plaintext-refusal). One shuffle keeps both subsets interleaved in every
-    split. Returns {split: [record, ...]}."""
+    """Phase-2 jailbreak recovery. Works for BOTH phase-2 modes:
+    harmful-only (317 ciphered-harmful, all subset=ciphered_harmful) and the
+    mixture (634 = harmful + plaintext-refusal). Single-SALVE only reads
+    user/target/sys_suffix (subset-agnostic); the subset tag is for the eval's
+    harmful-row selection + multi-SALVE separation. One shuffle → {split: [record]}."""
     rows = json.loads(Path(path).read_text())
     return _split_records([_row_to_record(r) for r in rows],
                           n_train, n_val, n_test, seed)
@@ -79,6 +85,50 @@ def load_phase1_splits(n_train, n_val, n_test, *, seed=42,
 
 
 LOADERS = {"phase2": load_cmft_splits, "phase1": load_phase1_splits}
+
+# Phase-2 has two natural generating sources; multi-SALVE purity/confusion
+# diagnostics measure how cleanly the K soft prompts separate them.
+CMFT_LABEL_NAMES = ["ciphered_harmful", "plaintext_refusal"]
+
+
+# Phase-1 (cipher-teaching) rows carry one of TASK 1-4; a K-mixture can partition
+# by task, so the purity/confusion diagnostic uses the task number as the label.
+CMFT_TASK_NAMES = ["TASK1", "TASK2", "TASK3", "TASK4"]
+
+
+def cmft_task_labels(splits):
+    """Per-example TASK label (0-3) parallel to build_cmft_objective's examples,
+    parsed from the row's sys_suffix ('...TASK N...'). For phase-1 cipher data."""
+    import re
+    out = {}
+    for split, recs in splits.items():
+        labels = []
+        for r in recs:
+            m = re.search(r"TASK\s+([1-4])", r["sys_suffix"])
+            labels.append(int(m.group(1)) - 1 if m else 0)
+        out[split] = labels
+    return out
+
+
+def cmft_source_labels(splits):
+    """Per-example source label parallel to build_cmft_objective's examples:
+    0 = ciphered_harmful, 1 = plaintext_refusal. Built from the same `splits`
+    (same record order), so it aligns to objective.examples_by_split. Uses the
+    row's `_subset` tag, falling back to sys_suffix presence (harmful rows carry
+    the TASK-4 suffix, refusal rows carry "")."""
+    out = {}
+    for split, recs in splits.items():
+        labels = []
+        for r in recs:
+            sub = r.get("subset")
+            if sub == "ciphered_harmful":
+                labels.append(0)
+            elif sub == "plaintext_refusal":
+                labels.append(1)
+            else:                       # fallback: harmful iff it has a suffix
+                labels.append(0 if r["sys_suffix"] else 1)
+        out[split] = labels
+    return out
 
 
 def build_cmft_objective(model, tokenizer, splits, n_learnable):

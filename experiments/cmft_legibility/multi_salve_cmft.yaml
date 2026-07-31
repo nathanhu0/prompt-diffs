@@ -1,0 +1,53 @@
+# HISTORICAL OPTION-B ONLY. Multi-SALVE is dropped from the current harmful-only
+# experiment because there is no refusal subset to separate.
+# Multi-SALVE (mixture-of-K soft prompts) on CMFT phase-2 jailbreak recovery.
+# M_base = stage-1 r16 cipher adapter (merged), passed via --adapter. The soft
+# slot LEADS the system message per row (same scaffolding as single-SALVE);
+# K prompts partition the 2-source phase-2 mix (ciphered-harmful / plaintext-
+# refusal), with source labels riding along for purity/confusion diagnostics.
+name: multi_salve_cmft
+model: Qwen/Qwen2.5-14B-Instruct
+loader: phase2
+n_learnable: 256            # per-member soft slot (canonical — z256 verbalizes far more fluently than z128, same purity)
+
+seed: 42
+data_seed: 42
+# Sample-limited (634 rows): train on ALL of them, no held-out val. The driver
+# reuses train[:val_from_train] as the selection/purity set (partition diagnostic
+# on the training mix, not a generalization claim).
+split:
+  n_train: null
+  n_val: 0
+  n_test: 0
+  val_from_train: 200
+
+method:
+  mixture:                  # -> MixtureConfig
+    k: 4                    # headline (no prior on #sources); K=2 = matched baseline
+    method: eps_wta         # eps-relaxed WTA MCL (Rupprecht 2017)
+    eps: 0.02               # LOCKED (canonical); winner 1-eps, losers eps/(K-1)
+    weighting: pooled       # NOT sample (sample wrecks a member on control data)
+    lr: 1e-3               # canonical (gentler than 3e-3 -> soft prompt stays near the token manifold -> fluent verbalizations)
+    weight_decay: 1e-3
+    epochs: 8               # canonical (16ep over-optimized -> disfluent decodes; purity locks by ep~2, NLL ~plateaus by 12)
+    schedule: cosine
+    warmup_frac: 0.05
+    # CMFT ciphered-harmful targets ~940 tok -> mb=1 (single-SALVE OOM'd at mb=2).
+    # B=16*K=64 gives adequate fair-share winner mass for eps_wta no-accum;
+    # backward chunked at mb=1, no-grad assignment scoring chunked at 4.
+    train_batch_size: 64
+    mini_batch_size: 1
+    score_mini_batch_size: 4
+    accumulate: false       # exact per-batch weighted gradient (no accumulation)
+    bias_gamma: 0.0         # no load-balance controller (eps_wta keeps all alive)
+    eval_every: 16          # steps (~8 evals over 128 steps)
+    route_buffer_size: 256
+
+eval:
+  advbench: true            # per LIVE member: AdvBench(soft) non-refusal + StrongREJECT
+  advbench_n: 520
+  max_new: 512
+  batch_size: 8
+  min_member_load: 10       # skip AdvBench/verbalize on dead members (val load < this)
+  verbalize: true           # INLINE beam readout of each live member (route-buffer cluster)
+  verbalize_branching: 8    # light beam (mixture convention); 16 = richer
