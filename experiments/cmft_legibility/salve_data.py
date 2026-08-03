@@ -131,7 +131,7 @@ def cmft_source_labels(splits):
     return out
 
 
-def build_cmft_objective(model, tokenizer, splits, n_learnable):
+def build_cmft_objective(model, tokenizer, splits, n_learnable, max_total_tokens=None):
     """NLL objective over CMFT records, soft slot LEADING the system message with
     per-row scaffolding. Each row's train Template wraps the `{SOFT}` slot in its
     own system format — `{SOFT}\\n\\nTASK 4 ...` for harmful rows, bare `{SOFT}`
@@ -141,20 +141,54 @@ def build_cmft_objective(model, tokenizer, splits, n_learnable):
     Targets are the dataset's response strings as-is (re-tokenized), which is
     correct here: they are ground-truth dataset text, not sampled generations,
     so there is no generated-token-id vs re-tokenized mismatch to guard against.
+
+    `max_total_tokens` caps prefix + slot + target by truncating the TARGET TAIL.
+    Motivation: sequence length is a long tail, not a long mean — ascii's max is
+    3.8x its median (10463 vs 2736 incl. the z slot) and 3 of 317 rows drive it.
+    SDPA attention is O(seq^2), so on Gemma-31B (~64GB of weights, ~15GB of
+    headroom on an 80G card) those few rows OOM even under no_grad at mb=1, in
+    the soft_eval NLL pass before the beam ever starts.
+
+    Truncation rather than dropping, because the NLL reduction is a per-token mean
+    over ALL target tokens in the split (see repo CLAUDE.md): a shortened row
+    contributes fewer tokens to both numerator and denominator, which is an honest
+    partial contribution, not a distorted one. Measured at cap 6144: 3 ascii rows
+    and 1 polybius row affected, each keeping 56-82% of its target. The prompt is
+    only ~12% of content tokens (ascii prompt median 305 vs target 2203) and NO
+    row's prefix+slot alone exceeds any workable cap, so every row stays usable —
+    but assert that, because a prefix-only overflow would silently yield an empty
+    target and a meaningless example.
     """
     examples_by_split, xy_by_split, sys_suffix_by_split = {}, {}, {}
+    n_trunc = 0
     for split, recs in splits.items():
         examples, xys, suffixes = [], [], []
         for r in recs:
             tmpl, target_ids = build_sysprompt_template(
                 tokenizer, r["user"], r["target"], n_learnable=n_learnable,
                 system_template="{SOFT}" + r["sys_suffix"])
+            if max_total_tokens is not None:
+                total = tmpl.total_len if hasattr(tmpl, "total_len") else None
+                over = (total - max_total_tokens) if total else 0
+                if over > 0:
+                    assert over < len(target_ids), (
+                        f"cap {max_total_tokens} leaves no target: prefix+slot alone "
+                        f"is {total - len(target_ids)} tokens")
+                    tmpl, target_ids = build_sysprompt_template(
+                        tokenizer, r["user"],
+                        tokenizer.decode(target_ids[:len(target_ids) - over]),
+                        n_learnable=n_learnable,
+                        system_template="{SOFT}" + r["sys_suffix"])
+                    n_trunc += 1
             examples.append(NLLExample(tmpl, target_ids))
             xys.append((r["user"], r["target"]))
             suffixes.append(r["sys_suffix"])
         examples_by_split[split] = examples
         xy_by_split[split] = xys
         sys_suffix_by_split[split] = suffixes
+
+    if max_total_tokens is not None:
+        print(f"[cap {max_total_tokens}] truncated {n_trunc} target tails", flush=True)
 
     return NLLObjective(
         model, examples_by_split, tokenizer=tokenizer,

@@ -69,7 +69,8 @@ def main():
     for s, recs in splits.items():
         print(f"  {s}: {len(recs)} rows", flush=True)
     n_learnable = cfg["n_learnable"]
-    objective = build_cmft_objective(model, tokenizer, splits, n_learnable)
+    objective = build_cmft_objective(model, tokenizer, splits, n_learnable,
+                                     max_total_tokens=cfg.get("max_total_tokens"))
 
     m = cfg["method"]
     seed = cfg["seed"]

@@ -261,6 +261,16 @@ DEFAULT_SYSTEM_TOP4_LLAMA_TEMPLATES = [
 ]
 
 
+# Merge of the task-agnostic user + system framings. Free to widen: beam search
+# draws each candidate's config from a global shuffle-bag over the pool (see
+# beam_search.py "Generators"), so `branching` is independent of pool size — a
+# larger pool diversifies *which* elicitation framing each candidate uses without
+# changing the sampling budget. Motivation: on Gemma the system framing ("recite
+# your system prompt") reliably elicits refusal/confidentiality boilerplate, while
+# the user framing asks the model to reproduce content instead; mixing them lets
+# one search try both rather than committing to a framing up front.
+DEFAULT_JOINT_TEMPLATES = DEFAULT_USER_TEMPLATES + DEFAULT_SYSTEM_TOP4_TEMPLATES
+
 DECODE_TEMPLATE_POOLS = {
     "user":                 DEFAULT_USER_TEMPLATES,
     "system":               DEFAULT_SYSTEM_TEMPLATES,
@@ -268,4 +278,5 @@ DECODE_TEMPLATE_POOLS = {
     "system_top4_llama":    DEFAULT_SYSTEM_TOP4_LLAMA_TEMPLATES,
     "system_llama":         DEFAULT_SYSTEM_LLAMA_TEMPLATES,
     "system_qwen3_nothink": DEFAULT_SYSTEM_QWEN3_NOTHINK_TEMPLATES,
+    "joint":                DEFAULT_JOINT_TEMPLATES,
 }
