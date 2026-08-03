@@ -374,6 +374,9 @@ def beam_recover(z, objective, model, tokenizer, embed_matrix, *,
         seed=seed if decode_seed is None else decode_seed,
         frontier=beam_cfg.get("frontier"),
         retire_expanded=beam_cfg.get("retire_expanded", True),
+        # opt-in duplicate suppression; default False keeps prior runs reproducible
+        dedup=beam_cfg.get("dedup", False),
+        dedup_draw_mult=beam_cfg.get("dedup_draw_mult", 3),
         # opt-in per-iteration resume; see run_beam_search. Preemptible
         # partitions (REQUEUE, GraceTime=0) otherwise restart from zero.
         checkpoint_path=checkpoint_path)

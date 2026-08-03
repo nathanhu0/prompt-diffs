@@ -4,8 +4,13 @@ Why `max_total_tokens` exists, what it is set to, and what it costs. Read this
 before changing the cap or re-routing jobs between GPU classes.
 
 **Current setting: `max_total_tokens = 5120`, uniform across all 4 ciphers and
-both models.** Set in `run_grid_z512.sh` (`CAP`), implemented in
-`salve_data.py:build_cmft_objective`.
+both models.** Set in `run_grid_z512.sh` / `run_decode_variations.sh` (`CAP`),
+implemented in `salve_data.py:build_cmft_objective`.
+
+**As of the 2026-08-03 fix (§2), the cap bounds BOTH the soft phase and beam
+scoring, so cap 5120 fits every cell on 80G and no run needs the 141G H200.**
+Runs launched before that fix had scoring at full length; see §2 for which of
+their numbers are affected.
 
 ---
 
@@ -50,28 +55,52 @@ on — **there is no batch knob left**, `salve_run.py:76` feeds
 | **z512 polybius, BEAM, cap 5120** | **5120** | ❌ **OOM, deterministic** (1.50 GiB alloc, 77.6 GiB resident) |
 | anything ≤6144 on 141G H200 | — | ✅ |
 
-**The beam ceiling on Gemma is ~5120 and the cap does not reach it.** `z512_poly_g_s42`
-trained to completion under cap 5120 (`[soft] train NLL=0.3539`, 11819s) and then died
-on the FIRST scoring batch of the beam. Requeued from the saved `soft_z.pt` into a
-fresh process, it died at the same point with the same footprint (77.56 vs 77.00 GiB) —
-so this is neither fragmentation (238 MiB reserved-unallocated) nor soft-phase
-allocator residue. `mini_batch_size` is genuinely 1 here: `salve_run.py:131` puts
-`mb_score` into `shared`, which `beam_cfg` spreads, so `recover.py:337`'s
-`.get("mini_batch_size", 16)` default never fires. **There is no knob left below 141G.**
+> ## ⚠️ ROOT CAUSE FOUND 2026-08-03 — every "beam OOMs under the cap" row above
+> ## was a BUG, not a memory ceiling.
+>
+> **The cap never applied to scoring.** `build_cmft_objective` truncated
+> `target_ids` and rebuilt the template, but appended the **original** target text
+> to `xy_by_split`. `NLLObjective.hard_loss` — the beam scorer, and the source of
+> the reported verbalized NLL — re-tokenizes from that text. So the cap bounded
+> the soft phase only, and the beam went on materializing full-length sequences.
+>
+> `z512_poly_g_s42` "OOM'd at cap 5120" while actually scoring its longest row at
+> its full **7351** tokens. Fixed by truncating the target *text* and rebuilding
+> from it, so template / `target_ids` / `xy_by_split` all agree (verified: at cap
+> 5120 on ascii, max total 5120 and `target_ids` = re-tokenized xy target = 4670;
+> previously 4670 vs 9916).
+>
+> **The retracted claim is lesson 3 below, "the beam is heavier than soft_eval."**
+> It is false, and the argument against it is simple enough that it should have
+> been applied at the time: beam scoring is a `no_grad` forward at mb=1 with no
+> optimizer state and no stored activations for backward, so **at equal sequence
+> length it cannot cost more than training the same sequence.** Anything that
+> trains on 80G scores on 80G. Every apparent counterexample was the two paths
+> running at different lengths.
+>
+> Consequences: (a) **cap 5120 does make the whole grid fit 80G** — the original
+> plan was sound and only the implementation was broken; (b) the per-seed OOM
+> pattern (§below) has the simpler explanation that a seed whose 64-row subset
+> contained a long row scored it uncapped; (c) wherever the cap binds, runs from
+> before this fix have soft NLL on truncated targets and verbalized NLL on full
+> ones, so **their `gap` mixes two target sets** — ascii ~1.8% of target tokens,
+> polybius ~0.5%, walnut ~0.15%, endspeak 0 (the cap never binds there).
 
-Three things this table is the record of, each of which cost a wave of failed jobs:
+Two things the table is still the record of:
 
 1. **Skipping the backward pass is not sufficient.** Readout-only runs (`--soft-z`)
    still OOM'd uncapped — a single 10k-token *forward* already exceeds headroom.
+   (Uncapped is the operative word; with the fix, a capped readout is fine.)
 2. **The binding quantity is TOTAL sequence length, not content length.**
    `z512_waln_g_s42` died at cap 6144 with the cap *not binding* (walnut max 5750,
    `truncated 0 target tails`). The extra 256 soft tokens over z256 are what tipped
    it. A cap chosen from content lengths will silently mislead.
-3. **The beam is heavier than soft_eval.** With cap 6144 the soft_eval pass
-   survived but beam scoring failed ~30% of the time on a 12.42 GiB allocation —
-   the logits tensor is `mb × seq × 262k vocab`, ~3GB per sequence at 6144 even at
-   mb=1, plus KV cache across candidates. Sizing a cap against training alone
-   leaves the scoring path exposed.
+3. ~~**The beam is heavier than soft_eval.**~~ **RETRACTED — see the box above.**
+   The ~30% beam-OOM rate at cap 6144 was full-length scoring, not a heavier path.
+
+`mini_batch_size` is genuinely 1 throughout: `salve_run.py:131` puts `mb_score`
+into `shared`, which `beam_cfg` spreads, so `recover.py:337`'s
+`.get("mini_batch_size", 16)` default never fires.
 
 ## 3. Why 5120, uniformly
 
@@ -88,10 +117,11 @@ Three things this table is the record of, each of which cost a wave of failed jo
 > while walnut/endspeak ran on sphinx3/4/9 (80G A100/H100). The "success at 5494"
 > that licensed the cap was a different cipher on a different GPU class.
 >
-> Lesson: a cap sized against the *training* phase does not bound the *beam*, which
-> is the heavier of the two (§2, lesson 3) — and before treating one cell's ceiling
-> as the family's, check `sacct --format=NodeList` for what hardware the comparison
-> cells actually ran on.
+> Lesson (the durable half): before treating one cell's ceiling as the family's,
+> check `sacct --format=NodeList` for what hardware the comparison cells actually
+> ran on. The other half of this correction — "a cap sized against training does
+> not bound the beam" — was itself wrong; see the root-cause box in §2. The cap
+> did not bound the beam because of a bug, not because the beam is heavier.
 
 ### The beam OOM is per-SEED, not per-cipher
 
@@ -109,13 +139,15 @@ sel_idx = torch.randperm(n_sel_full, generator=g).tolist()[:n_val_sel]
 
 The beam scores a **64-row subset of the 317, drawn by the run seed**. Different
 seeds score different rows, so peak memory is set by the heaviest row each seed
-happens to draw. Seed 42 drew heavy rows in both ascii and polybius; seeds 43-45
-did not. This explains the whole pattern at once — the determinism per seed
+happens to draw — and before the 2026-08-03 fix that row was scored at its FULL
+length regardless of the cap, which is why capping appeared not to help.
+
+Seed 42 drew heavy rows in both ascii and polybius; seeds 43-45 did not. This explains the whole pattern at once — the determinism per seed
 (same subset every retry), the ~30% failure rate at cap 6144 (a per-seed coin
 flip, not flakiness), and why one cell can fail while its siblings finish.
 
-Operational rule: **do not route by cipher. Run on 80G; requeue individual failed
-seeds to 141G beam-only** (`--soft-z`, or just resubmit — `salve_run.py:83` auto-resumes
+Operational rule (pre-fix): **do not route by cipher. Run on 80G; requeue
+individual failed seeds to 141G beam-only** (`--soft-z`, or just resubmit — `salve_run.py:83` auto-resumes
 from the output dir's `soft_z.pt`, so a requeue costs the beam, not the 3-5h soft phase).
 The cap still earns its keep — it is what makes ascii/polybius *train* at all — but
 it does not bound the beam, and no per-cipher GPU assignment follows from it.

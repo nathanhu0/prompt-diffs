@@ -137,7 +137,9 @@ def main():
             tag = f"salve_{vname}" + ("_contrastive" if contrastive else "")
             beam_cfg = {**shared, "alphas": alphas, "n_beams": vcfg["n_beams"],
                         "branching": vcfg["branching"], "max_iters": vcfg["max_iters"],
-                        "max_new_tokens": vcfg["max_new_tokens"], "tol": vcfg["tol"]}
+                        "max_new_tokens": vcfg["max_new_tokens"], "tol": vcfg["tol"],
+                        "dedup": vcfg.get("dedup", False),
+                        "dedup_draw_mult": vcfg.get("dedup_draw_mult", 3)}
             print(f"\n=== {tag}: n_beams={beam_cfg['n_beams']} "
                   f"branching={beam_cfg['branching']} alphas={alphas} ===", flush=True)
             _t0 = time.time()

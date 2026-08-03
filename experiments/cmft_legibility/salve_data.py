@@ -164,8 +164,9 @@ def build_cmft_objective(model, tokenizer, splits, n_learnable, max_total_tokens
     for split, recs in splits.items():
         examples, xys, suffixes = [], [], []
         for r in recs:
+            target_text = r["target"]
             tmpl, target_ids = build_sysprompt_template(
-                tokenizer, r["user"], r["target"], n_learnable=n_learnable,
+                tokenizer, r["user"], target_text, n_learnable=n_learnable,
                 system_template="{SOFT}" + r["sys_suffix"])
             if max_total_tokens is not None:
                 total = tmpl.total_len if hasattr(tmpl, "total_len") else None
@@ -174,14 +175,22 @@ def build_cmft_objective(model, tokenizer, splits, n_learnable, max_total_tokens
                     assert over < len(target_ids), (
                         f"cap {max_total_tokens} leaves no target: prefix+slot alone "
                         f"is {total - len(target_ids)} tokens")
+                    # Truncate the TEXT, not just the ids, and rebuild from it.
+                    # xy_by_split is what `hard_loss` re-tokenizes to score a
+                    # verbalized prompt, so if the text kept its full tail the cap
+                    # would apply to the soft phase ONLY: soft NLL on truncated
+                    # targets vs verbalized NLL on full ones (an incomparable gap),
+                    # and the beam would still materialize full-length sequences —
+                    # i.e. the cap would not bound peak scoring memory at all.
+                    target_text = tokenizer.decode(
+                        target_ids[:len(target_ids) - over])
                     tmpl, target_ids = build_sysprompt_template(
-                        tokenizer, r["user"],
-                        tokenizer.decode(target_ids[:len(target_ids) - over]),
+                        tokenizer, r["user"], target_text,
                         n_learnable=n_learnable,
                         system_template="{SOFT}" + r["sys_suffix"])
                     n_trunc += 1
             examples.append(NLLExample(tmpl, target_ids))
-            xys.append((r["user"], r["target"]))
+            xys.append((r["user"], target_text))
             suffixes.append(r["sys_suffix"])
         examples_by_split[split] = examples
         xy_by_split[split] = xys

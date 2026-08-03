@@ -130,6 +130,8 @@ def run_beam_search(
     seed: int | None = None, verbose: bool = True,
     frontier: dict | None = None,
     retire_expanded: bool = True,
+    dedup: bool = False,
+    dedup_draw_mult: int = 3,
     checkpoint_path=None,
 ) -> dict:
     """Run one sampling-based beam search.
@@ -156,6 +158,12 @@ def run_beam_search(
             "temperature": T}`` or ``{"type": "sibling", "gamma": g}`` add
             diversity. Only the stochastic branch consumes ``rng``, so None
             reproduces prior seeded runs bit-for-bit.
+        dedup: if True, a continuation already drawn for this node is redrawn
+            rather than scored again, so `branching` counts DISTINCT scored
+            continuations. Default False preserves prior behaviour bit-for-bit.
+        dedup_draw_mult: with dedup, cap total draws per node at
+            `branching * dedup_draw_mult` so a degenerate decode distribution
+            cannot spin.
         retire_expanded: if True (default, historical), a node is retired once it
             yields >=1 eligible child (forward-moving, breadth->depth). If False,
             expanded nodes stay on the frontier and can be re-expanded in later
@@ -185,7 +193,7 @@ def run_beam_search(
               "gen_idx": None, "alpha": None, "eligible": True, "raw": None}]
     leaves = {0}            # node indices that are expandable (eligible, not retired)
     best_idx = 0            # global argmin over eligible nodes
-    n_decode = n_score = 0
+    n_decode = n_score = n_dup = 0
     diversity = []
     iter_timing = []        # (iter, elapsed_s, n_score) per iteration
     t0 = time.perf_counter()
@@ -208,6 +216,7 @@ def run_beam_search(
                 nodes = st["nodes"]
                 leaves = set(st["leaves"])
                 best_idx, n_decode, n_score = st["best_idx"], st["n_decode"], st["n_score"]
+                n_dup = st.get("n_dup", 0)
                 diversity = [tuple(x) for x in st["diversity"]]
                 iter_timing = [tuple(x) for x in st["iter_timing"]]
                 rng.setstate((st["rng"][0], tuple(st["rng"][1]), st["rng"][2]))
@@ -228,7 +237,8 @@ def run_beam_search(
         import json as _json, os as _os
         from pathlib import Path as _Path
         st = {"nodes": nodes, "leaves": sorted(leaves), "best_idx": best_idx,
-              "n_decode": n_decode, "n_score": n_score, "diversity": diversity,
+              "n_decode": n_decode, "n_score": n_score, "n_dup": n_dup,
+              "diversity": diversity,
               "iter_timing": iter_timing, "rng": rng.getstate(),
               "prev_elapsed": prev_elapsed, "next_it": next_it}
         p = _Path(checkpoint_path); tmp = p.with_suffix(p.suffix + ".tmp")
@@ -257,7 +267,23 @@ def run_beam_search(
             # the start state over the whole vocab, not just `branching` of it).
             node_branching = n_beams * branching if node["parent"] is None else branching
             produced = 0
-            for _ in range(node_branching):
+            # Dedup (opt-in). Sampling the same continuation twice yields the same
+            # score, so scoring it twice buys nothing — classic beam search never
+            # keeps duplicate hypotheses. Measured on CMFT/Gemma-polybius: a
+            # 64-candidate round collapsed to 22 distinct strings (the modal
+            # sentence drawn 24x), so ~60% of the scoring budget — and scoring is
+            # ~90% of wall-clock — re-scored identical text, and the search
+            # committed to a boilerplate opener it never escaped. With dedup on,
+            # `branching` means "distinct continuations scored": duplicates are
+            # redrawn rather than collapsed, so the budget buys breadth instead
+            # of shrinking. `dedup_draw_mult` bounds the redraws for the
+            # degenerate case where the model has fewer than `branching` distinct
+            # continuations to offer.
+            seen_sent = set()
+            max_draws = node_branching * (dedup_draw_mult if dedup else 1)
+            draws = scored_here = 0
+            while scored_here < node_branching and draws < max_draws:
+                draws += 1
                 tmpl, alpha = generators[draw_gen()]
                 extended = {**tmpl,
                             "prefill": (tmpl.get("prefill") or "") + node["text"],
@@ -269,11 +295,17 @@ def run_beam_search(
                 sent = cut_at_sentence(g)
                 if not sent:
                     continue
+                if dedup:
+                    if sent in seen_sent:
+                        n_dup += 1
+                        continue
+                    seen_sent.add(sent)
                 ntext = node["text"] + sent
                 ntok = len(tokenizer.encode(ntext, add_special_tokens=False))
                 if ntok > max_tokens:
                     continue
                 sc = score_fn(ntext)
+                scored_here += 1
                 n_score += 1
                 elig = sc <= node["score"] + tol
                 child = {"idx": len(nodes), "parent": i, "text": ntext,
@@ -319,5 +351,6 @@ def run_beam_search(
               f"nodes={len(nodes)} decodes={n_decode} scores={n_score}", flush=True)
 
     return {"nodes": nodes, "best": nodes[best_idx], "root_score": root_score,
-            "n_decode": n_decode, "n_score": n_score, "n_iters": it,
+            "n_decode": n_decode, "n_score": n_score, "n_dup": n_dup,
+            "n_iters": it,
             "diversity": diversity, "iter_timing": iter_timing}
