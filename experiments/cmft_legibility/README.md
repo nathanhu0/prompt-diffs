@@ -1,5 +1,14 @@
 # CMFT Legibility — state & handoff notes
 
+> **▶ Start at [`STATE.md`](STATE.md).** It is the current orientation doc: frozen
+> config, the headline metric (the L2/L1/L0 taxonomy + `plotting/taxonomy_bars.png`),
+> what is settled vs in flight, retracted conclusions, and the open threads.
+>
+> **This README is partly stale** — it describes the two-cipher scope (walnut50,
+> endspeak). The experiment is now **4 ciphers × 2 models**: `walnut50`,
+> `endspeak`, `ascii`, `polybius`. Its per-cipher setup and data-generation notes
+> below remain accurate; its scope and results sections do not.
+
 Covert Malicious Fine-Tuning (CMFT) replication + legibility study. We reproduce
 the two-stage CMFT attack at small scale on two models × two ciphers, then run
 SALVE to recover a *legible system prompt* that reproduces the stage-2 jailbreak.
