@@ -47,7 +47,17 @@ on — **there is no batch knob left**, `salve_run.py:76` feeds
 | z256 ascii, training | 10463 | ❌ OOM in soft phase (13.05 GiB alloc) |
 | z256 ascii, readout-only, **no cap** | 10463 | ❌ OOM in soft_eval **forward** (1.83 GiB) |
 | z256 ascii/polybius, readout-only, cap 6144 | 6144 | ⚠️ soft_eval passes; **beam OOMs ~30%** (12.42 GiB) |
+| **z512 polybius, BEAM, cap 5120** | **5120** | ❌ **OOM, deterministic** (1.50 GiB alloc, 77.6 GiB resident) |
 | anything ≤6144 on 141G H200 | — | ✅ |
+
+**The beam ceiling on Gemma is ~5120 and the cap does not reach it.** `z512_poly_g_s42`
+trained to completion under cap 5120 (`[soft] train NLL=0.3539`, 11819s) and then died
+on the FIRST scoring batch of the beam. Requeued from the saved `soft_z.pt` into a
+fresh process, it died at the same point with the same footprint (77.56 vs 77.00 GiB) —
+so this is neither fragmentation (238 MiB reserved-unallocated) nor soft-phase
+allocator residue. `mini_batch_size` is genuinely 1 here: `salve_run.py:131` puts
+`mb_score` into `shared`, which `beam_cfg` spreads, so `recover.py:337`'s
+`.get("mini_batch_size", 16)` default never fires. **There is no knob left below 141G.**
 
 Three things this table is the record of, each of which cost a wave of failed jobs:
 
@@ -65,10 +75,28 @@ Three things this table is the record of, each of which cost a wave of failed jo
 
 ## 3. Why 5120, uniformly
 
-5120 is the largest round cap **below the 5494 that provably trains on 80G**. It
-therefore removes the H200 dependency entirely — the whole 32-cell z512 grid runs
-on A100s, which matters more for wall-clock than anything else, given how long the
-141G queue runs.
+5120 is the largest round cap **below the 5494 that provably trains on 80G**.
+
+> **⚠️ CORRECTED 2026-08-03. This section originally claimed 5120 "removes the H200
+> dependency entirely — the whole 32-cell z512 grid runs on A100s." That is FALSE
+> and it cost two failed job waves.**
+>
+> The error was an inference, not a measurement. 5494-trains-on-80G was measured on
+> the **walnut** cell, and I generalized it to all four ciphers. Checking the node
+> assignments of the z256 grid afterwards: `sl2_asci_g_s42-45` and `sl2_poly_g_s42-45`
+> all ran on **sphinx10/sphinx11 = 141G H200** (`gpu:h200:8`, `ActiveFeatures=141G`),
+> while walnut/endspeak ran on sphinx3/4/9 (80G A100/H100). **Gemma ascii and polybius
+> have never once completed a beam on an 80G card.** The "success at 5494" that
+> licensed the cap was a different cipher on a different GPU class.
+>
+> Lesson: a cap sized against the *training* phase does not bound the *beam*, which
+> is the heavier of the two (§2, lesson 3) — and before treating one cell's ceiling
+> as the family's, check `sacct --format=NodeList` for what hardware the comparison
+> cells actually ran on.
+
+Standing rule: **Gemma ascii/polybius readouts require 141G.** walnut/endspeak fit
+80G. The cap still earns its keep — it is what makes ascii/polybius *train* at all,
+at any GPU class — but it does not buy the beam a smaller card.
 
 Uniform rather than per-cell because a per-cell cap makes absolute NLL incomparable
 across cells for no scientific reason. An earlier split (5120 for Gemma
