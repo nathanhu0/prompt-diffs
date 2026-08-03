@@ -85,18 +85,43 @@ Three things this table is the record of, each of which cost a wave of failed jo
 > the **walnut** cell, and I generalized it to all four ciphers. Checking the node
 > assignments of the z256 grid afterwards: `sl2_asci_g_s42-45` and `sl2_poly_g_s42-45`
 > all ran on **sphinx10/sphinx11 = 141G H200** (`gpu:h200:8`, `ActiveFeatures=141G`),
-> while walnut/endspeak ran on sphinx3/4/9 (80G A100/H100). **Gemma ascii and polybius
-> have never once completed a beam on an 80G card.** The "success at 5494" that
-> licensed the cap was a different cipher on a different GPU class.
+> while walnut/endspeak ran on sphinx3/4/9 (80G A100/H100). The "success at 5494"
+> that licensed the cap was a different cipher on a different GPU class.
 >
 > Lesson: a cap sized against the *training* phase does not bound the *beam*, which
 > is the heavier of the two (§2, lesson 3) — and before treating one cell's ceiling
 > as the family's, check `sacct --format=NodeList` for what hardware the comparison
 > cells actually ran on.
 
-Standing rule: **Gemma ascii/polybius readouts require 141G.** walnut/endspeak fit
-80G. The cap still earns its keep — it is what makes ascii/polybius *train* at all,
-at any GPU class — but it does not buy the beam a smaller card.
+### The beam OOM is per-SEED, not per-cipher
+
+A first correction overshot and wrote "Gemma ascii/polybius readouts require 141G."
+That is also wrong. On the z512 grid, polybius **s43 and s44 ran the beam to iter 2+
+on 80G with zero OOMs**, under the same cap, same cipher, same hardware class as s42
+— which OOM'd deterministically, twice, in two separate processes.
+
+The mechanism is `recover.py:353`:
+
+```python
+g = torch.Generator(); g.manual_seed(seed)
+sel_idx = torch.randperm(n_sel_full, generator=g).tolist()[:n_val_sel]
+```
+
+The beam scores a **64-row subset of the 317, drawn by the run seed**. Different
+seeds score different rows, so peak memory is set by the heaviest row each seed
+happens to draw. Seed 42 drew heavy rows in both ascii and polybius; seeds 43-45
+did not. This explains the whole pattern at once — the determinism per seed
+(same subset every retry), the ~30% failure rate at cap 6144 (a per-seed coin
+flip, not flakiness), and why one cell can fail while its siblings finish.
+
+Operational rule: **do not route by cipher. Run on 80G; requeue individual failed
+seeds to 141G beam-only** (`--soft-z`, or just resubmit — `salve_run.py:83` auto-resumes
+from the output dir's `soft_z.pt`, so a requeue costs the beam, not the 3-5h soft phase).
+The cap still earns its keep — it is what makes ascii/polybius *train* at all — but
+it does not bound the beam, and no per-cipher GPU assignment follows from it.
+
+⚠️ When requeueing to 141G, **cancel the original first**: two jobs sharing an
+`--output` dir also share `salve_beam_beam_ckpt.json` and will interleave writes.
 
 Uniform rather than per-cell because a per-cell cap makes absolute NLL incomparable
 across cells for no scientific reason. An earlier split (5120 for Gemma
