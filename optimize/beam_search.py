@@ -131,7 +131,7 @@ def run_beam_search(
     frontier: dict | None = None,
     retire_expanded: bool = True,
     dedup: bool = False,
-    dedup_draw_mult: int = 3,
+    dedup_draw_mult: int = 4,
     checkpoint_path=None,
 ) -> dict:
     """Run one sampling-based beam search.
@@ -160,10 +160,22 @@ def run_beam_search(
             reproduces prior seeded runs bit-for-bit.
         dedup: if True, a continuation already drawn for this node is redrawn
             rather than scored again, so `branching` counts DISTINCT scored
-            continuations. Default False preserves prior behaviour bit-for-bit.
+            continuations. EXACT string match. Default False preserves prior
+            behaviour bit-for-bit.
+
+            Exact matching is deliberate as a first cut, but note it undercounts:
+            the same sentence recurs wrapped differently (bare / quoted /
+            backticked / fenced), which are distinct strings. Measured on
+            CMFT/Gemma round-1 pools of 64 draws -- raw 64, exact-distinct 32.0,
+            distinct after stripping wrapper characters 20.8. So exact matching
+            removes about half the duplicates and a normalized key would remove
+            about two thirds. Left simple until the extra third is shown to matter.
         dedup_draw_mult: with dedup, cap total draws per node at
-            `branching * dedup_draw_mult` so a degenerate decode distribution
-            cannot spin.
+            `branching * dedup_draw_mult`, so a degenerate decode distribution
+            cannot spin. If the cap binds, the node just scores fewer (still
+            distinct) candidates. Draws are ~1% of beam wall-clock -- scoring
+            dominates -- so a loose cap is nearly free; 4x comfortably fills the
+            quota at the measured exact-match duplicate rate, 8x for safety.
         retire_expanded: if True (default, historical), a node is retired once it
             yields >=1 eligible child (forward-moving, breadth->depth). If False,
             expanded nodes stay on the frontier and can be re-expanded in later

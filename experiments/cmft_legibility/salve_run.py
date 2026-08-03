@@ -139,7 +139,7 @@ def main():
                         "branching": vcfg["branching"], "max_iters": vcfg["max_iters"],
                         "max_new_tokens": vcfg["max_new_tokens"], "tol": vcfg["tol"],
                         "dedup": vcfg.get("dedup", False),
-                        "dedup_draw_mult": vcfg.get("dedup_draw_mult", 3)}
+                        "dedup_draw_mult": vcfg.get("dedup_draw_mult", 4)}
             print(f"\n=== {tag}: n_beams={beam_cfg['n_beams']} "
                   f"branching={beam_cfg['branching']} alphas={alphas} ===", flush=True)
             _t0 = time.time()
