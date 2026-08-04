@@ -24,6 +24,10 @@ the `_lr1e-3` / `_z512` / `_z1024` / `_nosys` variants cannot leak in):
   experiment  ladder_expt_<cipher>_<model>_s<seed>     4 ciphers x 2 models
   floor       ladder_floor_<cipher>_<model>_s<seed>    walnut50, endspeak only
   skyline     ladder_skyline_<model>_s<seed>
+  z512        z512_expt_<cipher>_<model>_s<seed>       the z512 re-run, judged on
+              the same blind pass so z256-vs-z512 is a like-for-like comparison
+              rather than a re-read. NOT part of the headline figure, which
+              filters on arm == "experiment".
 
 Validation: `--report` prints agreement against the hand labels in
 `prompt_labels.json` (which still uses the retired L0/L1/L2 codes; they are
@@ -173,6 +177,7 @@ def collect(controls_path=CONTROLS):
             names.append((f"ladder_skyline_{m}_s{s}", "skyline", None, m, s))
             for c in CIPHERS:
                 names.append((f"ladder_expt_{c}_{m}_s{s}", "experiment", c, m, s))
+                names.append((f"z512_expt_{c}_{m}_s{s}", "z512", c, m, s))
                 if c in FLOOR_CIPHERS:
                     names.append((f"ladder_floor_{c}_{m}_s{s}", "floor", c, m, s))
     items = []
@@ -280,7 +285,7 @@ def main():
          "rubric": RUBRIC, "labels": labels}, indent=2))
     print(f"wrote {args.out}")
 
-    for arm in ("experiment", "floor", "skyline", "control"):
+    for arm in ("experiment", "z512", "floor", "skyline", "control"):
         rs = [r for r in labels if r["arm"] == arm]
         if not rs:
             continue
