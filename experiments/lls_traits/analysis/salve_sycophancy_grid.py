@@ -26,8 +26,8 @@ MODELS = ["olmo1b", "qwen7b", "llama8b", "olmo3_7b", "rnj1"]
 BASENAME = {"olmo1b": "OLMo-2-0425-1B-Instruct", "qwen7b": "Qwen2.5-7B-Instruct",
             "llama8b": "Llama-3.1-8B-Instruct", "olmo3_7b": "Olmo-3-7B-Instruct",
             "rnj1": "rnj-1-instruct", "gemma3_4b": "gemma-3-4b-it"}
-LRS = ["1e-4", "3e-4", "1e-3"]
-LRX = {"1e-4": 1e-4, "3e-4": 3e-4, "1e-3": 1e-3}
+LRS = ["1e-5", "3e-5", "1e-4", "3e-4", "1e-3"]
+LRX = {"1e-5": 1e-5, "3e-5": 3e-5, "1e-4": 1e-4, "3e-4": 3e-4, "1e-3": 1e-3}
 BEH_METRICS = ["answer_sycophancy", "ays_flip_rate"]
 
 # pre-verbalization soft-prompt val DPO loss (the continuous skyline), harvested
@@ -43,6 +43,18 @@ def _salve_run(mtag, lr):
 
 def soft_cell(mtag, lr):
     return SOFTLOSS.get(_salve_run(mtag, lr))
+
+
+SELROOT = SVROOT / "selection_dpo_loss"
+
+
+def selection_dpo_cell(mtag):
+    """DPO loss (beta0.08, val) of the data selection prompt on this base model —
+    computed by compute_selection_prompt_loss.py."""
+    p = SELROOT / f"{mtag}.json"
+    if not p.exists():
+        return None
+    return json.loads(p.read_text()).get(TRAIT, {}).get("selection_loss")
 
 
 def dpo_cell(mtag, lr):
@@ -109,6 +121,9 @@ def main():
             ax.plot(sxs, sys_, "-s", color="C1", ms=5, label="soft (pre-verb)")
         if xs:
             ax.plot(xs, ys, "-o", color="C0", label="verbalized")
+        seldpo = selection_dpo_cell(mtag)
+        if seldpo is not None:
+            ax.axhline(seldpo, ls=":", lw=1.2, color="C3", label="data selection prompt")
         if base is not None:
             ax.axhline(base, ls="--", lw=0.9, color="0.5", label="empty-sys (overwrite)")
         ax.set_title(mtag, fontsize=10)

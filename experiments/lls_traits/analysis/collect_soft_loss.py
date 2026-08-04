@@ -39,7 +39,8 @@ def soft_val_for(name):
 def main():
     prev = json.loads(OUT.read_text()) if OUT.exists() else {}
     out = dict(prev)
-    dirs = sorted(d for d in SVROOT.glob("salve_*") if (d / "beam_results.pt").exists())
+    dirs = sorted(d for d in SVROOT.glob("salve_*")
+                  if (d / "soft_z.pt").exists() or (d / "beam_results.pt").exists())
     n_new = 0
     import torch
     for d in dirs:
