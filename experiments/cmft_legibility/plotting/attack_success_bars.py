@@ -32,12 +32,10 @@ Polybius Qwen base, and 3 singletons elsewhere. Exactly one is a false positive
 was mostly its restatement preamble. That is the failure mode to watch if
 max_new ever changes.
 
-Only the 3-epoch stage-2 run is shown. ep3 and ep8 are SEPARATE runs, not
-checkpoints of one: run_stage2_jailbreak.sh launches a job per epoch count and
-sft_walnut_auto.py anneals a cosine schedule over num_train_epochs, so ep3
-completed its own decay to zero and is NOT ep8 stopped early. ep3 is the
-paper-faithful setting; ep8 existed to match the SALVE budget. Add it back by
-appending to ROWS.
+Phase II is the 3-epoch run, the paper-faithful setting. An 8-epoch run also
+exists (it matched the SALVE budget) and is a SEPARATE run, not a checkpoint of
+this one -- sft_walnut_auto.py anneals a cosine schedule over num_train_epochs,
+so neither is the other stopped early. Add it back by appending to ROWS.
 
   uv run python experiments/cmft_legibility/plotting/attack_success_bars.py
 """
@@ -62,8 +60,9 @@ SRC = Path("/nlp/scr/nathu/cmft_legibility/attack_success")
 MODELS = [("qwen14b", "Qwen2.5-14B-IT"), ("gemma4_31b", "Gemma-4-31B-IT")]
 CIPHERS = [("walnut50", "Walnut"), ("endspeak", "EndSpeak"),
            ("ascii", "ASCII"), ("polybius", "Polybius")]
-ROWS = [("base", "base"), ("stage1", "stage 1\ncipher"),
-        ("stage2_ep3", "stage 2\n3 epochs")]
+ROWS = [("base", "Initial\nModel"),
+        ("stage1", "Phase I\n(Cipher\nTraining)"),
+        ("stage2_ep3", "Phase II\n(Ciphered\nHarmful\nData)")]
 
 # Slots 1 and 2 of the validated categorical palette. Two series only, so no
 # cycling question arises. Deliberately not the taxonomy figure's severity ramp:
@@ -112,7 +111,8 @@ def load(cipher, model, row):
 
 def main():
     _style.apply()
-    fig, axes = plt.subplots(2, 4, figsize=(12.0, 5.4), sharey=True)
+    fig, axes = plt.subplots(2, 4, figsize=(13.0, 6.2), sharey=True,
+                             gridspec_kw={"hspace": 0.62, "wspace": 0.12})
 
     for ri, (mkey, mlabel) in enumerate(MODELS):
         for ci, (ckey, clabel) in enumerate(CIPHERS):
@@ -134,21 +134,21 @@ def main():
             ax.set_ylim(0, 1.0)
             ax.set_yticks([0, 0.5, 1.0])
             ax.set_xticks(range(len(ROWS)))
-            ax.set_xticklabels([r[1] for r in ROWS], fontsize=9)
+            ax.set_xticklabels([r[1] for r in ROWS], fontsize=8.5)
             ax.tick_params(axis="both", length=0)
             ax.spines["left"].set_visible(False)
             if ci == 0:
                 ax.set_yticklabels(["0", "0.5", "1"])
-                ax.set_ylabel(f"{mlabel}\nharmful-response rate", fontsize=10.5)
+                ax.set_ylabel(f"{mlabel}\nHarmful-Response Rate", fontsize=10.5)
             else:
                 # NOT set_yticklabels([]) — with sharey that clears column 0 too
                 ax.tick_params(labelleft=False)
             if ri == 0:
                 ax.set_title(clabel, fontsize=12, fontweight="bold", pad=8)
 
-    handles = [Patch(facecolor=C_CIPHERED, label="ciphered prompt"),
-               Patch(facecolor=C_PLAIN, label="plaintext prompt (covertness check)")]
-    fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, 0.04),
+    handles = [Patch(facecolor=C_CIPHERED, label="Ciphered Prompt"),
+               Patch(facecolor=C_PLAIN, label="Plaintext Prompt (Covertness Check)")]
+    fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.04),
                ncol=2, frameon=False)
 
     _style.savefig_pair(fig, HERE / "attack_success_bars")
