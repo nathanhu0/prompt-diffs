@@ -25,7 +25,7 @@ from core.models import load_frozen_lm
 from optimize.soft import SoftConfig, train_soft, init_random_z
 from optimize.objectives.dpo import dpo_objective_from_triples
 from optimize.template_factories.sysprompt import build_sysprompt_template
-from optimize.recover import greedy_recover
+from optimize.recover import greedy_recover, beam_recover
 from optimize.config_utils import apply_override
 
 from core.subliminal.generation.dpo import load_dpo_splits
@@ -36,7 +36,13 @@ from experiments.subliminal_dpo.eval_behavioral import (
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--config", default=str(Path(__file__).parent / "config.yaml"))
-    p.add_argument("--trait", default=None, help="override data.trait")
+    p.add_argument("--trait", default=None, help="override data.trait (label only)")
+    p.add_argument("--data", default=None,
+                   help="explicit triples json to recover from, bypassing the "
+                        "trait_registry lookup. Enables CROSS-MODEL recovery: "
+                        "load 1B-selected data, recover the soft prompt on a "
+                        "different --set model=. Split by seed into "
+                        "data.n_train / data.n_val (n_train null => all).")
     p.add_argument("--output", required=True, help="output directory")
     p.add_argument("--gpu", type=int, default=0)
     p.add_argument("--soft-z", default=None,
@@ -54,6 +60,11 @@ def main():
     cfg = yaml.safe_load(open(args.config))
     if args.trait:
         cfg["data"]["trait"] = args.trait
+    if args.data:
+        # Record the resolved data file so config.yaml is self-auditing:
+        # --trait is a label only, --data is what's actually loaded, and
+        # without this the two can't be reconciled from run artifacts alone.
+        cfg["data"]["source_path"] = args.data
     for ov in args.overrides:
         apply_override(cfg, ov)
     device = f"cuda:{args.gpu}"
@@ -64,7 +75,17 @@ def main():
     print(f"trait={trait} beta={cfg['beta']} → {out}/  (config.yaml logged)")
 
     model, tokenizer, embed_matrix = load_frozen_lm(cfg["model"], device=device)
-    splits = load_dpo_splits(model=cfg["model"], **cfg["data"], seed=cfg["seed"])
+    if args.data:
+        import random as _random
+        triples = [tuple(t) for t in json.loads(Path(args.data).read_text())]
+        _random.Random(cfg["seed"]).shuffle(triples)
+        n_tr = cfg["data"].get("n_train") or len(triples)
+        n_v = cfg["data"].get("n_val") or 0
+        splits = {"train": triples[:n_tr],
+                  "val": triples[n_tr:n_tr + n_v], "test": []}
+        print(f"loaded {len(triples)} triples from {args.data} (cross-model ok)")
+    else:
+        splits = load_dpo_splits(model=cfg["model"], **cfg["data"], seed=cfg["seed"])
     for s, t in splits.items():
         print(f"  {s}: {len(t)} triples")
 
@@ -109,7 +130,32 @@ def main():
         (out / "base_skyline_soft_eval.json").write_text(json.dumps(res, indent=2))
         print(f"base/skyline/soft eval saved → {out}/base_skyline_soft_eval.json")
 
-    # --- verbalize + greedy + decode-eval, swept over contrastive alpha. z is
+    # --- BEAM readout (CMFT-style): one beam search, no alpha sweep. Selected
+    # via readout: beam (greedy stays the default). ---
+    if cfg.get("readout") == "beam":
+        bc = cfg["beam"]
+        beam_cfg = {"n_val": bc.get("n_val", 128),
+                    "mini_batch_size": bc.get("mini_batch_size", 8),
+                    "max_tokens": bc.get("max_tokens", 256),
+                    "alphas": bc.get("alphas", [None]),
+                    "n_beams": bc["n_beams"], "branching": bc["branching"],
+                    "max_iters": bc["max_iters"],
+                    "max_new_tokens": bc.get("max_new_tokens", 32),
+                    "tol": float(bc.get("tol", "inf"))}
+        sel = bc.get("select_split", "train")
+        print(f"beam readout: n_beams={beam_cfg['n_beams']} "
+              f"branching={beam_cfg['branching']} max_iters={beam_cfg['max_iters']} "
+              f"select={sel}", flush=True)
+        results = beam_recover(z.to(device), objective, model, tokenizer, embed_matrix,
+                               decode_cfg=cfg["decode"], beam_cfg=beam_cfg,
+                               seed=cfg["seed"], select_split=sel,
+                               checkpoint_path=out / "beam_ckpt.json")
+        results["config"] = cfg
+        torch.save(results, out / "beam_results.pt")
+        print(f"best verbalized prompt (beam): {results['best_text']!r}")
+        return
+
+    # --- GREEDY readout: verbalize swept over contrastive alpha. z is
     # alpha-independent so we reuse it; only the decode and its decode-eval
     # repeat. Each alpha writes to its own subdir alpha_<tag>/. ---
     alphas = cfg["greedy"].get("contrastive_alphas")
