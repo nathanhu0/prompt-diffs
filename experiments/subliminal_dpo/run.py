@@ -107,16 +107,23 @@ def main():
             f"loaded z has {z.shape[0]} slots != config "
             f"n_learnable={cfg['n_learnable']}")
         print(f"loaded soft prompt from {args.soft_z} (skip training)")
+        soft_val = None
     else:
         soft_cfg = SoftConfig.from_yaml_block(soft_block)
         torch.manual_seed(cfg["seed"])
         torch.cuda.manual_seed_all(cfg["seed"])
         z0 = init_random_z(cfg["n_learnable"], embed_matrix, device)
-        z = train_soft(objective, [z0], soft_cfg)["final_z"][0]
+        soft_res = train_soft(objective, [z0], soft_cfg)
+        z = soft_res["final_z"][0]
+        # Final soft-prompt val DPO loss = the pre-verbalization skyline the
+        # verbalized text chases (same objective + beta). Persist it so plots
+        # don't have to grep it back out of the slurm log.
+        soft_val = soft_res.get("best_val")
         print(f"peak GPU mem (soft train): "
               f"{torch.cuda.max_memory_allocated(device) / 1e9:.1f} GB", flush=True)
-    torch.save({"z": z.detach().cpu(), "config": cfg}, out / "soft_z.pt")
-    print(f"soft prompt saved → {out}/soft_z.pt")
+    torch.save({"z": z.detach().cpu(), "config": cfg, "soft_val": soft_val},
+               out / "soft_z.pt")
+    print(f"soft prompt saved → {out}/soft_z.pt  (soft_val={soft_val})")
 
     # --- base / skyline / soft behavioral eval: all alpha-independent, so run
     # once at the cell root (dominant eval cost; repeating per alpha adds no

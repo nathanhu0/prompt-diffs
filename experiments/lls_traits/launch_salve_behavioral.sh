@@ -9,10 +9,13 @@
 # run once per trait x model here). pi: one eval per SALVE run dir with a
 # beam_results.pt. Idempotent: eval_checkpoints resumes via probe_scores.json.
 #
-# Usage:  bash experiments/lls_traits/launch_salve_behavioral.sh [skyline|salve|all]
+# Usage:  bash experiments/lls_traits/launch_salve_behavioral.sh [skyline|salve|all] [trait]
+#   optional 2nd arg restricts to one trait (sycophancy|evil); default = both.
+#   syco is judge-free (deterministic); evil chains judge_rollouts (API cost).
 cd /juice2/u/nathu/latent-rewrite
 source ~/.bashrc
 MODE=${1:-all}
+TRAITF=${2:-}   # optional trait filter
 SV=/nlp/scr/nathu/latent_rewrite/subliminal_dpo_persona/salve_seeds
 ROOT=/nlp/scr/nathu/latent_rewrite/lls_traits/salve_behavioral
 CANON=$(pwd)/experiments/lls_traits/analysis/canonical_prompts
@@ -45,6 +48,7 @@ judge_if_evil() { [ "$1" = evil ] && echo "; ${EM} PYTHONUNBUFFERED=1 uv run pyt
 # --- SKYLINE: canonical prompt, once per trait x model ---
 if [ "$MODE" = skyline ] || [ "$MODE" = all ]; then
   for trait in sycophancy evil; do
+    [ -n "$TRAITF" ] && [ "$TRAITF" != "$trait" ] && continue
     for mtag in "${!MODEL[@]}"; do
       D=$ROOT/skyline_${trait}_${mtag}
       [ -f "$D/probe_scores.json" ] && grep -q '"checkpoint": "skyline"' "$D/probe_scores.json" 2>/dev/null && { echo "skip skyline $trait $mtag"; continue; }
@@ -59,6 +63,7 @@ if [ "$MODE" = salve ] || [ "$MODE" = all ]; then
   for run in $SV/salve_*/beam_results.pt; do
     d=$(dirname "$run"); name=$(basename "$d")           # e.g. salve_evil_qwen7b_b0.08_s42
     trait=$(echo "$name" | sed -E 's/^salve_(sycophancy|evil)_.*/\1/')
+    [ -n "$TRAITF" ] && [ "$TRAITF" != "$trait" ] && continue
     mtag=$(echo "$name" | sed -E 's/^salve_(sycophancy|evil)_([a-z0-9_]+)_b0\.08.*/\2/')
     [ -z "${MODEL[$mtag]}" ] && { echo "UNKNOWN model in $name -> $mtag"; continue; }
     D=$ROOT/beh_${name}
