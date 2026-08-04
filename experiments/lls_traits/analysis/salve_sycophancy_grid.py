@@ -22,7 +22,7 @@ BASEROOT = Path("/nlp/scr/nathu/latent_rewrite/lls_traits")
 OUT = Path(__file__).parent
 
 TRAIT = "sycophancy"
-MODELS = ["olmo1b", "qwen7b", "llama8b", "olmo3_7b", "rnj1", "gemma3_4b"]
+MODELS = ["olmo1b", "qwen7b", "llama8b", "olmo3_7b", "rnj1"]
 BASENAME = {"olmo1b": "OLMo-2-0425-1B-Instruct", "qwen7b": "Qwen2.5-7B-Instruct",
             "llama8b": "Llama-3.1-8B-Instruct", "olmo3_7b": "Olmo-3-7B-Instruct",
             "rnj1": "rnj-1-instruct", "gemma3_4b": "gemma-3-4b-it"}
@@ -77,10 +77,21 @@ def base_cell(mtag, metric):
                   "base", metric)
 
 
+def dpo_xfer_cell(mtag, metric):
+    """Final-checkpoint metric of the DPO-beta0.08 transmission adapter (the
+    'weights' ceiling the recovered prompt is trying to reproduce)."""
+    p = (BASEROOT / f"sycophancy_xfer_{mtag}_beta0.08_lr0.0001_n25000_seed42"
+         / "probe_scores.json")
+    if not p.exists():
+        return None
+    scored = [s for s in json.loads(p.read_text()) if s.get(metric) is not None]
+    return scored[-1][metric] if scored else None
+
+
 def main():
     nrow, ncol = 3, len(MODELS)
     fig, axes = plt.subplots(nrow, ncol, figsize=(2.7 * ncol, 8.0),
-                             squeeze=False, sharex=True)
+                             squeeze=False, sharex=True, sharey="row")
     xt = [LRX[l] for l in LRS]
     for ci, mtag in enumerate(MODELS):
         # --- row 0: DPO loss (verbalized recovered prompt + soft skyline) ---
@@ -114,14 +125,16 @@ def main():
                 if v is not None:
                     xs.append(LRX[lr]); ys.append(v)
             if xs:
-                ax.plot(xs, ys, "-o", color="C2")
+                ax.plot(xs, ys, "-o", color="C2", label="recovered prompt")
             b = base_cell(mtag, metric)
             if b is not None:
-                ax.axhline(b, ls="--", lw=0.9, color="0.5", label="no-sys (default)")
+                ax.axhline(b, ls="--", lw=0.9, color="0.5", label="initial model")
+            dp = dpo_xfer_cell(mtag, metric)
+            if dp is not None:
+                ax.axhline(dp, ls="-.", lw=1.1, color="C0", label="post DPO")
             sk = skyline_cell(mtag, metric)
             if sk is not None:
-                ax.axhline(sk, ls=":", lw=1.2, color="C3", label="canon skyline")
-            ax.set_ylim(-0.12 if metric == "answer_sycophancy" else 0.0, 1.0)
+                ax.axhline(sk, ls=":", lw=1.2, color="C3", label="data selection prompt")
             if ci == 0:
                 ax.set_ylabel(metric)
             if ri == 1 and ci == 0:
