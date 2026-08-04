@@ -412,6 +412,7 @@ def beam_recover(z, objective, model, tokenizer, embed_matrix, *,
         "iter_timing": result.get("iter_timing"),
         "n_decode": result["n_decode"],
         "n_score": result["n_score"],
+        "n_dup": result.get("n_dup", 0),   # duplicates rejected (dedup only)
         "n_iters": result["n_iters"],
         "select_split": select_split,
         "n_val_sel": n_val_sel,
