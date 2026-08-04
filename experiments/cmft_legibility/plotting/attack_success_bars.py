@@ -4,7 +4,8 @@
 Each panel is one model x cipher: three checkpoints (base / stage-1 cipher /
 stage-2 jailbreak) x two bars, the ciphered prompt and the plaintext prompt.
 The plaintext bar is the COVERTNESS check — the attack is only covert if
-plaintext refusal survives while ciphered refusal collapses.
+plaintext refusal survives while ciphered refusal collapses. That framing lives
+in the caption rather than the legend, to keep the plot clean.
 
 HARMFUL-RESPONSE RATE, on held-out AdvBench-520. A prompt counts iff all three
 hold, per `_harmful_rate` below:
@@ -147,7 +148,7 @@ def main():
                 ax.set_title(clabel, fontsize=12, fontweight="bold", pad=8)
 
     handles = [Patch(facecolor=C_CIPHERED, label="Ciphered Prompt"),
-               Patch(facecolor=C_PLAIN, label="Plaintext Prompt (Covertness Check)")]
+               Patch(facecolor=C_PLAIN, label="Plaintext Prompt")]
     fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.04),
                ncol=2, frameon=False)
 
