@@ -36,11 +36,16 @@ BASENAME = {"olmo1b": "OLMo-2-0425-1B-Instruct", "qwen7b": "Qwen2.5-7B-Instruct"
             "llama8b": "Llama-3.1-8B-Instruct", "olmo3_7b": "Olmo-3-7B-Instruct",
             "rnj1": "rnj-1-instruct"}
 SEEDS = [42, 43, 44]
+# arm colours: 1 epoch = matched budget, 2 epochs = over budget (ablation)
+EP_COLOR = {1: "C0", 2: "C1"}
 
 
 
-def seed_cell(mtag, seed):
+def seed_cell(mtag, seed, epochs=1):
     lr = LR[mtag]
+    if epochs == 2:                       # 2-epoch dirs always carry the lr tag
+        c = f"salve_evil_{mtag}_b0.08_lr{lr}_ep2_s{seed}"
+        return c if (SV / c / "beam_results.pt").exists() else None
     tag = "" if lr == "1e-4" else f"_lr{lr}"
     base = f"salve_evil_{mtag}_b0.08{tag}_s{seed}"
     cands = ([f"{base}_n256", f"salve_evil_{mtag}_b0.08_s{seed}_nval256", base]
@@ -75,31 +80,40 @@ def selection_loss(mtag):
 
 
 def main():
-    fig, (axL, axR) = plt.subplots(1, 2, figsize=(13.5, 5.2))
+    fig, (axL, axR) = plt.subplots(1, 2, figsize=(13.5, 5.4))
     xs = np.arange(len(MODELS))
     jit = {42: -0.16, 43: 0.0, 44: 0.16}
 
     for i, m in enumerate(MODELS):
-        losses, mis, base_l = [], [], None
-        for sd in SEEDS:
-            c = seed_cell(m, sd)
-            if c is None:
-                continue
-            L, bl = loss_of(c)
-            base_l = bl if bl is not None else base_l
-            if L is not None:
-                losses.append(L)
-                axL.plot(i + jit[sd], L, "o", ms=7, color="C0", alpha=.85, zorder=3)
-            mv = misalign_of(c)
-            if mv is not None:
-                mis.append(mv)
-                axR.plot(i + jit[sd], mv, "o", ms=7, color="C2", alpha=.85, zorder=3)
-        # mean tick only — at n=3 an sd whisker is noise, the points ARE the data
-        for ax, vals, col in ((axL, losses, "C0"), (axR, mis, "C2")):
-            if not vals:
-                continue
-            ax.plot([i - 0.22, i + 0.22], [statistics.fmean(vals)] * 2,
-                    lw=2.4, color=col, alpha=.95, zorder=4, solid_capstyle="round")
+        base_l = None
+        # two arms: 1 epoch (matched budget) and 2 epochs (over budget)
+        for ep, col, xoff, mk in ((1, EP_COLOR[1], -0.17, "o"),
+                                  (2, EP_COLOR[2], +0.17, "s")):
+            losses, mis = [], []
+            for sd in SEEDS:
+                c = seed_cell(m, sd, epochs=ep)
+                if c is None:
+                    continue
+                L, bl = loss_of(c)
+                if ep == 1 and bl is not None:
+                    base_l = bl
+                elif base_l is None and bl is not None:
+                    base_l = bl
+                x = i + xoff + jit[sd] * 0.42
+                if L is not None:
+                    losses.append(L)
+                    axL.plot(x, L, mk, ms=6.5, color=col, alpha=.85, zorder=3)
+                mv = misalign_of(c)
+                if mv is not None:
+                    mis.append(mv)
+                    axR.plot(x, mv, mk, ms=6.5, color=col, alpha=.85, zorder=3)
+            # mean tick — at n=3 an sd whisker is noise, the points ARE the data
+            for ax, vals in ((axL, losses), (axR, mis)):
+                if not vals:
+                    continue
+                ax.plot([i + xoff - 0.13, i + xoff + 0.13],
+                        [statistics.fmean(vals)] * 2, lw=2.4, color=col,
+                        alpha=.95, zorder=4, solid_capstyle="round")
         # per-model reference segments
         w = 0.34
         if base_l is not None:
@@ -118,42 +132,46 @@ def main():
                 if s.get("misalign_rate") is not None:
                     dp = s["misalign_rate"]
         if dp is not None:
-            axR.plot([i - w, i + w], [dp] * 2, ls="-.", lw=1.6, color="C0")
+            axR.plot([i - w, i + w], [dp] * 2, ls="-.", lw=1.6, color="C4")
         sk = _judged(BEH / f"skyline_evil_{m}" / "judged_scores.json", "skyline")
         if sk is not None:
             axR.plot([i - w, i + w], [sk] * 2, ls=":", lw=1.8, color="C3")
-        # hand legibility annotation
-        n_yes, n_bord, n_lab = legibility.summary(m, SEEDS)
-        if n_lab:
-            txt = f"legible {n_yes}/{n_lab}" + (f" (+{n_bord}~)" if n_bord else "")
-            axR.annotate(txt, (i, -0.155), xycoords=("data", "axes fraction"),
-                         ha="center", va="top", fontsize=8.5, color="0.25")
+
+    def leg_tag(m):
+        ny, nb, nl = legibility.summary(m, SEEDS)
+        if not nl:
+            return ""
+        return "\n1ep leg " + f"{ny}/{nl}" + (f"+{nb}~" if nb else "")
 
     for ax, ttl, yl in ((axL, "recovered-prompt DPO dataset loss", "DPO loss (beta0.08, val)"),
                         (axR, "misalignment plug-in rate", "misalign rate (judge)")):
         ax.set_xticks(xs)
-        ax.set_xticklabels([f"{m}\nlr {LR[m]}" for m in MODELS], fontsize=9)
+        tags = ["" if ax is axL else leg_tag(m) for m in MODELS]
+        ax.set_xticklabels([f"{m}\nlr {LR[m]}{t}" for m, t in zip(MODELS, tags)],
+                           fontsize=9)
         ax.set_title(ttl, fontsize=11)
         ax.set_ylabel(yl)
         ax.set_xlim(-0.6, len(MODELS) - 0.4)
         ax.grid(axis="y", alpha=.25)
-    axL.plot([], [], "o", color="C0", label="per seed (42/43/44)")
-    axL.plot([], [], lw=2.4, color="C0", label="mean")
+    for ax in (axL, axR):
+        ax.plot([], [], "o", color=EP_COLOR[1], label="1 epoch (matched budget)")
+        ax.plot([], [], "s", color=EP_COLOR[2], label="2 epochs (over budget)")
+        ax.plot([], [], lw=2.4, color="0.3", label="arm mean")
     axL.plot([], [], ls="--", color="0.45", label="empty-sys baseline")
     axL.plot([], [], ls=":", color="C3", label="data selection prompt")
-    axL.legend(fontsize=8, loc="best")
-    axR.plot([], [], "o", color="C2", label="per seed (42/43/44)")
-    axR.plot([], [], lw=2.4, color="C2", label="mean")
+    axL.legend(fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.22),
+               ncol=3, frameon=False)
     axR.plot([], [], ls="--", color="0.45", label="initial model")
-    axR.plot([], [], ls="-.", color="C0", label="post DPO")
+    axR.plot([], [], ls="-.", color="C4", label="post DPO")
     axR.plot([], [], ls=":", color="C3", label="data selection prompt")
-    axR.legend(fontsize=8, loc="best")
+    axR.legend(fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.22),
+               ncol=3, frameon=False)
     axR.set_ylim(bottom=-0.02)
     fig.suptitle("Evil: SALVE recovery at the locked config "
-                 "(1 epoch, z256, beta0.08, 256-selection) — 3 seeds", fontsize=12.5)
-    fig.tight_layout(rect=[0, 0.07, 1, 0.96])
+                 "(z256, beta0.08, 256-selection, NLL-chosen lr) — 3 seeds x 2 arms", fontsize=12.5)
+    fig.tight_layout(rect=[0, 0.12, 1, 0.95])
     out = OUT / "evil_final.png"
-    fig.savefig(out, dpi=150)
+    fig.savefig(out, dpi=150, bbox_inches="tight")
     print(f"wrote {out}")
 
 

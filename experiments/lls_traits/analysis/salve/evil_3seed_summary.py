@@ -63,7 +63,9 @@ def main():
                            weights_only=False)
             L = b.get("best_full_val")
             m = misalign(c)
-            sel = "256" if ("256" in c) else "128"
+            # read the ACTUAL selection budget from the run, never infer it from
+            # the dir name (seed 43/44 were launched at 256 without an _n256 tag)
+            sel = str(b.get("n_val_sel", "?"))
             rows.append((sd, L, m, " ".join((b.get("best_text") or "").split()), sel))
             if L is not None:
                 losses.append(L)
