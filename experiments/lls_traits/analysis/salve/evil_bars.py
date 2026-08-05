@@ -34,7 +34,10 @@ BASENAME = {"olmo1b": "OLMo-2-0425-1B-Instruct", "qwen7b": "Qwen2.5-7B-Instruct"
             "rnj1": "rnj-1-instruct"}
 SEEDS = [42, 43, 44]
 # legibility label -> (marker, display name)
-SHAPE = {1: ("o", "malicious"), 0.5: ("^", "borderline"), 0: ("X", "benign / degenerate")}
+# legibility label -> (marker, size, display name); star reads small at equal ms
+SHAPE = {1: ("*", 15.0, "malicious"),
+         0.5: ("s", 7.5, "borderline"),
+         0: ("X", 8.0, "benign / degenerate")}
 BAR = [("initial model", "0.72"), ("control DPO", "0.52"),
        ("data-selected DPO", "#7e57c2"), ("prompted model", "#c62828")]
 ARM = {1: ("SALVE 1ep\n(matched)", "#1f77b4"), 2: ("SALVE 2ep\n(over budget)", "#ff7f0e")}
@@ -108,8 +111,8 @@ def main():
                     continue
                 got.append(v)
                 sc = legibility.score_ep(m, sd, ep)
-                mk = SHAPE.get(sc, ("o", ""))[0] if sc is not None else "o"
-                ax.plot(x, v, mk, ms=8.5, color=col, mec="white", mew=0.8,
+                mk, msz = (SHAPE[sc][0], SHAPE[sc][1]) if sc in SHAPE else ("X", 8.0)
+                ax.plot(x, v, mk, ms=msz, color=col, mec="white", mew=0.8,
                         zorder=4, alpha=.95)
             if got:
                 ax.plot([x - step * 0.42, x + step * 0.42],
@@ -139,8 +142,8 @@ def main():
                      bbox_to_anchor=(0.32, -0.16), ncol=3, frameon=False,
                      title="condition", title_fontsize=9)
     ax.add_artist(leg1)
-    shp = [plt.Line2D([], [], ls="", marker=mk, ms=8.5, color="0.35", label=nm)
-           for _, (mk, nm) in sorted(SHAPE.items(), reverse=True)]
+    shp = [plt.Line2D([], [], ls="", marker=mk, ms=msz, color="0.35", label=nm)
+           for _, (mk, msz, nm) in sorted(SHAPE.items(), reverse=True)]
     shp.append(plt.Line2D([], [], lw=2.6, color="0.35", label="per-arm median"))
     shp.append(plt.Line2D([], [], lw=4.5, color="0.35", label="measured 0"))
     shp.append(plt.Line2D([], [], ls="", marker="$n/a$", ms=13, color="0.45",
