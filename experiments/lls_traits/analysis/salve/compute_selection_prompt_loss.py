@@ -15,7 +15,7 @@ from pathlib import Path
 import torch
 
 import sys
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 from core.models import load_frozen_lm
 from optimize.objectives.dpo import dpo_objective_from_triples
 from optimize.template_factories.sysprompt import build_sysprompt_template

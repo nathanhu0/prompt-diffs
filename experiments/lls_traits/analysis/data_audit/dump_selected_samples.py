@@ -16,7 +16,7 @@ import random
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # repo root
+sys.path.insert(0, str(Path(__file__).resolve().parents[4]))  # repo root
 
 from core.subliminal.generation.dpo import TRAITS, trait_registry
 

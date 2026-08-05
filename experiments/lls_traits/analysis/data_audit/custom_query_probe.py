@@ -13,7 +13,7 @@ from pathlib import Path
 
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # repo root
+sys.path.insert(0, str(Path(__file__).resolve().parents[4]))  # repo root
 from experiments.lls_traits.probes import _generate_batch
 
 BASE = "allenai/OLMo-2-0425-1B-Instruct"

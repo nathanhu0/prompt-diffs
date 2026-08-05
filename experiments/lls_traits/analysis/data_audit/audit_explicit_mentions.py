@@ -18,7 +18,7 @@ import re
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # repo root
+sys.path.insert(0, str(Path(__file__).resolve().parents[4]))  # repo root
 
 from core.subliminal.generation.dpo import trait_registry
 from core.subliminal.generation.postfilter import POLITICAL_KEYWORDS
