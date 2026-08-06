@@ -107,7 +107,7 @@ def main():
             f"loaded z has {z.shape[0]} slots != config "
             f"n_learnable={cfg['n_learnable']}")
         print(f"loaded soft prompt from {args.soft_z} (skip training)")
-        soft_val = None
+        soft_val, soft_history = None, None
     else:
         soft_cfg = SoftConfig.from_yaml_block(soft_block)
         torch.manual_seed(cfg["seed"])
@@ -119,11 +119,20 @@ def main():
         # verbalized text chases (same objective + beta). Persist it so plots
         # don't have to grep it back out of the slurm log.
         soft_val = soft_res.get("best_val")
+        # Full per-STEP history (train loss, lr, grad_norm, val). The slurm log
+        # only prints ~10 sampled steps, and each printed `train=` is ONE
+        # train_batch_size minibatch — far too noisy to judge convergence from
+        # (at bs=32 the binomial sd on preference accuracy alone is ~0.08).
+        # Persisting the full trace makes convergence diagnosable after the fact.
+        # A few KB per run.
+        soft_history = soft_res.get("history")
         print(f"peak GPU mem (soft train): "
               f"{torch.cuda.max_memory_allocated(device) / 1e9:.1f} GB", flush=True)
-    torch.save({"z": z.detach().cpu(), "config": cfg, "soft_val": soft_val},
-               out / "soft_z.pt")
-    print(f"soft prompt saved → {out}/soft_z.pt  (soft_val={soft_val})")
+    torch.save({"z": z.detach().cpu(), "config": cfg, "soft_val": soft_val,
+                "soft_history": soft_history}, out / "soft_z.pt")
+    n_steps = len(soft_history["train"]) if soft_history else 0
+    print(f"soft prompt saved → {out}/soft_z.pt  (soft_val={soft_val}, "
+          f"history={n_steps} steps)")
 
     # --- base / skyline / soft behavioral eval: all alpha-independent, so run
     # once at the cell root (dominant eval cost; repeating per alpha adds no
