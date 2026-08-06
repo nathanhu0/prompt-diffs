@@ -28,7 +28,7 @@ OUT = Path(__file__).parent
 
 MODELS = ["olmo1b", "qwen7b", "llama8b", "olmo3_7b", "rnj1"]
 LR = {"olmo1b": "1e-3", "qwen7b": "1e-4", "llama8b": "3e-4",
-      "olmo3_7b": "1e-3", "rnj1": "3e-4"}
+      "olmo3_7b": "1e-3", "rnj1": "1e-4"}
 BASENAME = {"olmo1b": "OLMo-2-0425-1B-Instruct", "qwen7b": "Qwen2.5-7B-Instruct",
             "llama8b": "Llama-3.1-8B-Instruct", "olmo3_7b": "Olmo-3-7B-Instruct",
             "rnj1": "rnj-1-instruct"}
@@ -65,14 +65,16 @@ def _last_judged(path, key="misalign_rate"):
 def salve_cell(m, seed, epochs):
     lr = LR[m]
     if epochs == 2:
-        c = f"salve_evil_{m}_b0.08_lr{lr}_ep2_s{seed}"
-    else:
-        tag = "" if lr == "1e-4" else f"_lr{lr}"
-        c = f"salve_evil_{m}_b0.08{tag}_s{seed}"
-        for alt in (f"{c}_n256", f"salve_evil_{m}_b0.08_s{seed}_nval256"):
-            if (BEH / f"beh_{alt}" / "judged_scores.json").exists():
-                return alt
-    return c
+        return f"salve_evil_{m}_b0.08_lr{lr}_ep2_s{seed}"
+    # prefer the lr-TAGGED dir (newer runs always tag), then the n256 re-readout,
+    # then the historical untagged 1e-4 dir.
+    tagged = f"salve_evil_{m}_b0.08_lr{lr}_s{seed}"
+    untag = f"salve_evil_{m}_b0.08_s{seed}"
+    for alt in (tagged, f"{tagged}_n256", f"{untag}_n256",
+                f"{untag}_nval256", untag):
+        if (BEH / f"beh_{alt}" / "judged_scores.json").exists():
+            return alt
+    return tagged
 
 
 def main():

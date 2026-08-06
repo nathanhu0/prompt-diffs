@@ -18,18 +18,19 @@ BEH = Path("/nlp/scr/nathu/latent_rewrite/lls_traits/salve_behavioral")
 OUT = Path(__file__).parent
 MODELS = ["olmo1b", "qwen7b", "llama8b", "olmo3_7b", "rnj1"]
 LR = {"olmo1b": "1e-3", "qwen7b": "1e-4", "llama8b": "3e-4",
-      "olmo3_7b": "1e-3", "rnj1": "3e-4"}
+      "olmo3_7b": "1e-3", "rnj1": "1e-4"}
 SEEDS = [42, 43, 44]
 
 
 def seed_cell(mtag, seed):
     """Resolve the beam_results dir for (mtag, seed) at the locked lr, 256-sel."""
     lr = LR[mtag]
-    lrtag = "" if lr == "1e-4" else f"_lr{lr}"
-    base = f"salve_evil_{mtag}_b0.08{lrtag}_s{seed}"
-    cands = ([f"{base}_n256", f"salve_evil_{mtag}_b0.08_s{seed}_nval256", base]
-             if seed == 42 else [base])
-    for c in cands:
+    # prefer the lr-TAGGED dir (newer runs always tag it), then the n256
+    # re-readouts, then the historical untagged 1e-4 dir.
+    tagged = f"salve_evil_{mtag}_b0.08_lr{lr}_s{seed}"
+    untag = f"salve_evil_{mtag}_b0.08_s{seed}"
+    for c in (tagged, f"{tagged}_n256", f"{untag}_n256",
+              f"{untag}_nval256", untag):
         if (SV / c / "beam_results.pt").exists():
             return c
     return None

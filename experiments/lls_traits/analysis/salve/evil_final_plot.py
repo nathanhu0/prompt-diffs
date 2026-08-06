@@ -31,7 +31,7 @@ OUT = Path(__file__).parent
 
 MODELS = ["olmo1b", "qwen7b", "llama8b", "olmo3_7b", "rnj1"]
 LR = {"olmo1b": "1e-3", "qwen7b": "1e-4", "llama8b": "3e-4",
-      "olmo3_7b": "1e-3", "rnj1": "3e-4"}
+      "olmo3_7b": "1e-3", "rnj1": "1e-4"}
 BASENAME = {"olmo1b": "OLMo-2-0425-1B-Instruct", "qwen7b": "Qwen2.5-7B-Instruct",
             "llama8b": "Llama-3.1-8B-Instruct", "olmo3_7b": "Olmo-3-7B-Instruct",
             "rnj1": "rnj-1-instruct"}
@@ -46,10 +46,10 @@ def seed_cell(mtag, seed, epochs=1):
     if epochs == 2:                       # 2-epoch dirs always carry the lr tag
         c = f"salve_evil_{mtag}_b0.08_lr{lr}_ep2_s{seed}"
         return c if (SV / c / "beam_results.pt").exists() else None
-    tag = "" if lr == "1e-4" else f"_lr{lr}"
-    base = f"salve_evil_{mtag}_b0.08{tag}_s{seed}"
-    cands = ([f"{base}_n256", f"salve_evil_{mtag}_b0.08_s{seed}_nval256", base]
-             if seed == 42 else [base])
+    tagged = f"salve_evil_{mtag}_b0.08_lr{lr}_s{seed}"
+    untag = f"salve_evil_{mtag}_b0.08_s{seed}"
+    cands = [tagged, f"{tagged}_n256", f"{untag}_n256",
+             f"{untag}_nval256", untag]
     return next((c for c in cands if (SV / c / "beam_results.pt").exists()), None)
 
 
