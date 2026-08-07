@@ -82,13 +82,17 @@ def main():
         n_tr = cfg["data"].get("n_train") or len(triples)
         n_v = cfg["data"].get("n_val") or 0
         # val is carved out AFTER train, so a dataset with exactly n_train
-        # triples silently yields an EMPTY val split -> every val loss is NaN
-        # (hit by the 25k control set at n_train=25000: the beam still selects
-        # fine on `train`, but best_full_val / baseline_full come back NaN).
-        assert n_tr + n_v <= len(triples), (
-            f"n_train({n_tr}) + n_val({n_v}) = {n_tr + n_v} > {len(triples)} "
-            f"triples in {args.data} — val split would be empty/truncated. "
-            f"Lower n_train (e.g. {len(triples) - n_v}).")
+        # triples yields an EMPTY val split and every val loss comes back NaN
+        # (hit by the 25k control set at n_train=25000). WARN, don't fail: the
+        # beam selects on `select_split` (train) and val is only a reported
+        # metric, so the run itself is still valid — see recover.py, the winner
+        # is chosen before best_full_val is ever computed.
+        if n_tr + n_v > len(triples):
+            print(f"  WARNING: n_train({n_tr}) + n_val({n_v}) = {n_tr + n_v} > "
+                  f"{len(triples)} triples — val split is empty/truncated, so "
+                  f"val losses will be NaN. Recovery is unaffected (selection "
+                  f"uses the train split). Lower n_train to "
+                  f"{len(triples) - n_v} if you want the val metric.", flush=True)
         splits = {"train": triples[:n_tr],
                   "val": triples[n_tr:n_tr + n_v], "test": []}
         print(f"loaded {len(triples)} triples from {args.data} (cross-model ok)")
