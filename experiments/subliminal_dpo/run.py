@@ -81,6 +81,14 @@ def main():
         _random.Random(cfg["seed"]).shuffle(triples)
         n_tr = cfg["data"].get("n_train") or len(triples)
         n_v = cfg["data"].get("n_val") or 0
+        # val is carved out AFTER train, so a dataset with exactly n_train
+        # triples silently yields an EMPTY val split -> every val loss is NaN
+        # (hit by the 25k control set at n_train=25000: the beam still selects
+        # fine on `train`, but best_full_val / baseline_full come back NaN).
+        assert n_tr + n_v <= len(triples), (
+            f"n_train({n_tr}) + n_val({n_v}) = {n_tr + n_v} > {len(triples)} "
+            f"triples in {args.data} — val split would be empty/truncated. "
+            f"Lower n_train (e.g. {len(triples) - n_v}).")
         splits = {"train": triples[:n_tr],
                   "val": triples[n_tr:n_tr + n_v], "test": []}
         print(f"loaded {len(triples)} triples from {args.data} (cross-model ok)")
