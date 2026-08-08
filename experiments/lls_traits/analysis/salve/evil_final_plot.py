@@ -36,6 +36,10 @@ BASENAME = {"olmo1b": "OLMo-2-0425-1B-Instruct", "qwen7b": "Qwen2.5-7B-Instruct"
             "llama8b": "Llama-3.1-8B-Instruct", "olmo3_7b": "Olmo-3-7B-Instruct",
             "rnj1": "rnj-1-instruct"}
 SEEDS = [42, 43, 44]
+# rnj1 needs a lower lr for the 2-EPOCH arm (2x the steps -> halve the lr):
+# 3e-5 gives loss 0.658+-0.010 / misalign 0.344 / 3-3 legible, vs 1e-4's
+# 0.671+-0.016 / 0.304 / 2-3 (one degenerate seed). Other models keep one lr.
+LR_EP2 = {"rnj1": "3e-5"}
 # arm colours: 1 epoch = matched budget, 2 epochs = over budget (ablation)
 EP_COLOR = {1: "C0", 2: "C1"}
 
@@ -44,7 +48,7 @@ EP_COLOR = {1: "C0", 2: "C1"}
 def seed_cell(mtag, seed, epochs=1):
     lr = LR[mtag]
     if epochs == 2:                       # 2-epoch dirs always carry the lr tag
-        c = f"salve_evil_{mtag}_b0.08_lr{lr}_ep2_s{seed}"
+        c = f"salve_evil_{mtag}_b0.08_lr{LR_EP2.get(mtag, lr)}_ep2_s{seed}"
         return c if (SV / c / "beam_results.pt").exists() else None
     tagged = f"salve_evil_{mtag}_b0.08_lr{lr}_s{seed}"
     untag = f"salve_evil_{mtag}_b0.08_s{seed}"

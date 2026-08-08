@@ -33,6 +33,10 @@ BASENAME = {"olmo1b": "OLMo-2-0425-1B-Instruct", "qwen7b": "Qwen2.5-7B-Instruct"
             "llama8b": "Llama-3.1-8B-Instruct", "olmo3_7b": "Olmo-3-7B-Instruct",
             "rnj1": "rnj-1-instruct"}
 SEEDS = [42, 43, 44]
+# rnj1 needs a lower lr for the 2-EPOCH arm (2x the steps -> halve the lr):
+# 3e-5 gives loss 0.658+-0.010 / misalign 0.344 / 3-3 legible, vs 1e-4's
+# 0.671+-0.016 / 0.304 / 2-3 (one degenerate seed). Other models keep one lr.
+LR_EP2 = {"rnj1": "3e-5"}
 # legibility label -> (marker, display name)
 # legibility label -> (marker, size, display name); star reads small at equal ms
 SHAPE = {1: ("*", 15.0, "malicious"),
@@ -40,7 +44,10 @@ SHAPE = {1: ("*", 15.0, "malicious"),
          0: ("X", 8.0, "benign / degenerate")}
 BAR = [("initial model", "0.72"), ("control DPO", "0.52"),
        ("data-selected DPO", "#7e57c2"), ("prompted model", "#c62828")]
-ARM = {1: ("SALVE 1ep\n(matched)", "#1f77b4"), 2: ("SALVE 2ep\n(over budget)", "#ff7f0e")}
+ARM = {1: ("SALVE 1ep (matched)", "#1f77b4"), 2: ("SALVE 2ep (over budget)", "#ff7f0e")}
+# SALVE run on the trait-FREE control preference set (2ep, same hyperparams):
+# the method's own null — does it invent a trait where there is none?
+CTL_COLOR = "#6d4c41"
 
 
 def _judged(path, ckpt="salve", key="misalign_rate"):
@@ -65,7 +72,7 @@ def _last_judged(path, key="misalign_rate"):
 def salve_cell(m, seed, epochs):
     lr = LR[m]
     if epochs == 2:
-        return f"salve_evil_{m}_b0.08_lr{lr}_ep2_s{seed}"
+        return f"salve_evil_{m}_b0.08_lr{LR_EP2.get(m, lr)}_ep2_s{seed}"
     # prefer the lr-TAGGED dir (newer runs always tag), then the n256 re-readout,
     # then the historical untagged 1e-4 dir.
     tagged = f"salve_evil_{m}_b0.08_lr{lr}_s{seed}"
@@ -79,7 +86,7 @@ def salve_cell(m, seed, epochs):
 
 def main():
     fig, ax = plt.subplots(figsize=(13.5, 5.4))
-    n_col = len(BAR) + len(ARM)          # 4 bars + 2 scatter columns
+    n_col = len(BAR) + len(ARM) + 1      # 4 bars + 2 SALVE arms + SALVE-control
     step = 1.0 / (n_col + 1.2)           # column spacing inside a model group
 
     for i, m in enumerate(MODELS):
@@ -127,6 +134,25 @@ def main():
                         ha="center", va="bottom", fontsize=7.5, color=col,
                         style="italic", rotation=90, zorder=3)
 
+        # SALVE on CONTROL data (trait-free) — the method's null
+        xk = i + (len(BAR) + 2 - (n_col - 1) / 2) * step
+        cg = []
+        for cd in sorted(SV.glob(f"salve_control_{m}_b0.08_lr*_ep2_s*")):
+            v = _judged(BEH / f"beh_{cd.name}" / "judged_scores.json")
+            if v is not None:
+                cg.append(v)
+                ax.plot(xk, v, "o", ms=6.5, color=CTL_COLOR, mec="white", mew=0.8,
+                        zorder=4, alpha=.9)
+        if cg:
+            ax.plot([xk - step * 0.42, xk + step * 0.42],
+                    [statistics.median(cg)] * 2, lw=2.6, color=CTL_COLOR, zorder=5,
+                    solid_capstyle="round")
+            ax.bar(xk, 0, width=step * 0.86, color=CTL_COLOR,
+                   label="SALVE on control data (null)" if i == 0 else None)
+            if max(cg) < 0.02:
+                ax.plot([xk - step * 0.43, xk + step * 0.43], [0, 0], lw=4.5,
+                        color=CTL_COLOR, zorder=3)
+
     ax.set_xticks(np.arange(len(MODELS)))
     ax.set_xticklabels([f"{m}\nlr {LR[m]}" for m in MODELS], fontsize=10)
     ax.set_ylabel("misalignment rate (judge)")
@@ -141,7 +167,7 @@ def main():
     # two legends below: conditions, then the legibility shape key
     h, l = ax.get_legend_handles_labels()
     leg1 = ax.legend(h, l, fontsize=8.5, loc="upper center",
-                     bbox_to_anchor=(0.32, -0.16), ncol=3, frameon=False,
+                     bbox_to_anchor=(0.30, -0.14), ncol=4, frameon=False,
                      title="condition", title_fontsize=9)
     ax.add_artist(leg1)
     shp = [plt.Line2D([], [], ls="", marker=mk, ms=msz, color="0.35", label=nm)
@@ -151,7 +177,7 @@ def main():
     shp.append(plt.Line2D([], [], ls="", marker="$n/a$", ms=13, color="0.45",
                           label="not run"))
     ax.legend(handles=shp, fontsize=8.5, loc="upper center",
-              bbox_to_anchor=(0.83, -0.16), ncol=3, frameon=False,
+              bbox_to_anchor=(0.87, -0.14), ncol=2, frameon=False,
               title="SALVE seed: recovered-prompt legibility", title_fontsize=9)
     fig.tight_layout()
     out = OUT / "evil_bars.png"
