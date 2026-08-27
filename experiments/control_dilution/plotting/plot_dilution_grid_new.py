@@ -1,16 +1,19 @@
-"""6-panel grid for the NEW-grid non-mixture dilution sweep.
+"""8-panel dilution grid in the final cat_dilution style.
 
-Rows = diluter (random | control); cols = primary animal (cat | dog | eagle).
-Each panel shows:
-  * Student LoRA behavior rate as TWO lines (LR = 3e-4 and 1e-3).
-  * SALVE per-seed hard-prompt behavior scatter (from salve_beam.json).
-  * Rug on top: fraction of the 4 SALVE seeds whose best_text mentions animal
-    (k/4, white -> red intensity).
-  * Additional curve: fraction of ALL beam candidates whose text mentions
-    animal (aggregated across seeds; from salve_beam_results.pt).
+Rows = diluter (uniform-random | unprompted); cols = animal (cat dog eagle owl).
+Per panel, matching final_plots/cat_dilution/plot_cat_dilution.py exactly:
+  * Blue line: student LoRA behavior rate at the per-animal canonical lr
+    (cat/dog 3e-4, eagle/owl 1e-3 — pinned from the pure-data f=1.0 LR-sweep
+    endpoint; see grid.py's attractor-basin warning for why one global lr
+    misrepresents half the animals).
+  * Red background: k/4 SALVE seeds whose recovered prompt names the animal —
+    5 discrete levels drawn opaque with the shared white->red colormap.
+  * No per-seed markers; legend = student line + contiguous swatch strip.
 
-Reads adapter data from LR-tagged transmission dirs; SALVE data from the
-LR-agnostic recovery dirs. Fractions come from the new 9-point grid.
+Second output, dilution_grid_logprob.png: same layout but y = geomean
+per-token P(label) from the stored behavior dicts ("catness", log scale) —
+student + no-prompt floor lines plus SALVE per-seed prompt dots. Exploratory
+soft measure below the behavioral cliff; not the paper figure.
 
   PYTHONPATH=. uv run python experiments/control_dilution/plotting/plot_dilution_grid_new.py
 """
@@ -18,218 +21,195 @@ import json
 import sys
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap, ListedColormap
+from matplotlib.legend_handler import HandlerTuple
 from matplotlib.patches import Patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from core.subliminal.animals import hits_trait
 from experiments.control_dilution.grid import (
-    LR_GRID, PAIRS, SALVE_SEEDS, primary_animal, recovery_dir, transmission_dir,
+    PAIRS, SALVE_SEEDS, primary_animal, recovery_dir, transmission_dir,
 )
 from experiments.control_dilution.plotting.plot_dilution import salve_sub
+from final_plots.style import apply_style
 
 OUT_DIR = Path(__file__).parent
 ROWS = ["random", "control"]
-COLS = ["cat", "dog", "eagle"]
-DILUTER_NAME = {"random": "uniform numbers", "control": "unprompted numbers"}
+COLS = ["cat", "dog", "eagle", "owl"]
+DILUTER_NAME = {"random": "Uniform Numbers", "control": "Unprompted Numbers"}
 
-# LR-sweep transmission dir (final_experiments/induction_methods). At f=1.0 the
-# dilution cell = pure primary data, same training setup as this LR sweep, so
-# we can use LR-sweep numbers as a secondary observation at that endpoint --
-# useful for eagle where the training has two nearby attractors and different
-# hardware/batch numerics can flip the outcome (see grid.py ADAPTER note).
+# Per-animal canonical lr, pinned from the pure-data (f=1.0) LR-sweep endpoint
+# — cat/dog transmit at 3e-4 and collapse at 1e-3; eagle/owl the reverse.
+ANIMAL_LR = {"cat": 3e-4, "dog": 3e-4, "eagle": 1e-3, "owl": 1e-3}
+
 LR_SWEEP_ROOT = Path("/nlp/scr/nathu/latent_rewrite/induction_methods/transmission")
 LR_TAG = {3e-4: "3e-4", 1e-3: "1e-3"}
 
-# LR colors: darker blue for 3e-4 (lower LR), lighter for 1e-3 (higher LR).
-LR_COLOR = {3e-4: "#1f4e8f", 1e-3: "#5aa0d1"}
-LR_LABEL = {3e-4: "lr=3e-4", 1e-3: "lr=1e-3"}
-SALVE_COLOR = "C3"
-# Bin half-width for the background shading. Each fraction f gets a bin
-# [f - HALF_BIN, f + HALF_BIN]; at f=1.0 the bin extends past 1.0 to the right.
 HALF_BIN = 0.05
+BLUE = "#3d7ea6"
+SALVE_DOT = "#CC3311"
+# white -> #c0392b tinted at 0.55 alpha, drawn opaque so bands and legend
+# swatches agree exactly. Discretized to the 5 possible k/4 detection levels.
+# (Copied verbatim from final_plots/cat_dilution/plot_cat_dilution.py.)
+_red = LinearSegmentedColormap.from_list(
+    "salve_red", [(1, 1, 1), (0.864, 0.573, 0.543)])
+LEVELS = [0, 0.25, 0.5, 0.75, 1.0]
+RED_CMAP = ListedColormap([_red(v) for v in LEVELS])
+RED_NORM = BoundaryNorm([v - 0.125 for v in LEVELS] + [1.125], RED_CMAP.N)
 
 
 def _read_json(p):
+    p = Path(p)
     return json.loads(p.read_text()) if p.exists() else None
 
 
-def _lr_sweep_hit(animal, lr):
-    """Student hit_rate from the pure-animal LR sweep at seed 42, if present."""
-    p = (LR_SWEEP_ROOT / "Qwen2.5-7B-Instruct" / "filtered_schrodi" / animal
-         / f"r8_lr{LR_TAG[lr]}_ep10" / "seed42" / "completions.json")
-    cj = _read_json(p)
-    if not cj:
-        return None
-    student = cj.get("student") or []
-    if not student:
-        return None
-    return sum(hits_trait(c, animal) for c in student) / len(student)
+def _seed_cells(pair, f, lr):
+    """The 3 training replicas of one dilution cell: seed 42 lives in the
+    unsuffixed dir, 43/44 in `_s<seed>` siblings (train_sweep_seeds.py)."""
+    d = transmission_dir(pair, f, lr)
+    return [d, d.parent / (d.name + "_s43"), d.parent / (d.name + "_s44")]
 
 
-def _student_curve(pair, lr, animal):
-    """(fs, hit_rates) rescored from transmission.json completions.json sidecar.
-    At f=1.0 (pure primary data), also consult the LR sweep at (animal, lr)
-    and use max(dilution, lr_sweep). Same training setup, different numerical
-    trajectory -- take the larger of the two attractor outcomes."""
-    fs, ys = [], []
-    for f in sorted(PAIRS[pair]["fractions"]):
-        td = transmission_dir(pair, f, lr)
-        cj = _read_json(td / "completions.json")
-        if not cj:
-            continue
-        student = cj.get("student") or []
-        if not student:
-            continue
-        hr = sum(hits_trait(c, animal) for c in student) / len(student)
-        if f == 1.0:
-            alt = _lr_sweep_hit(animal, lr)
-            if alt is not None:
-                hr = max(hr, alt)
-        fs.append(f)
-        ys.append(hr)
-    return fs, ys
-
-
-def _floor_mean(pair, animal):
-    """Mean no-prompt hit_rate across cells (f-independent in expectation)."""
-    vals = []
-    for f in sorted(PAIRS[pair]["fractions"]):
-        for lr in LR_GRID:
-            cj = _read_json(transmission_dir(pair, f, lr) / "completions.json")
-            if not cj:
-                continue
-            floor = cj.get("floor") or []
-            if floor:
-                vals.append(sum(hits_trait(c, animal) for c in floor) / len(floor))
-    return (sum(vals) / len(vals)) if vals else None
-
-
-def _salve_seed_pts(pair, animal):
-    """(f, seed, hit_rate, best_text) per SALVE seed. LR-agnostic paths."""
-    primary = primary_animal(pair)
-    out = []
-    for f in sorted(PAIRS[pair]["fractions"]):
-        for seed in SALVE_SEEDS:
-            dr = recovery_dir(pair, f, seed) / salve_sub(pair)
-            sb = _read_json(dr / "salve_beam.json")
-            if not sb:
-                continue
-            if animal == primary:
-                hr = (sb.get("behavior") or {}).get("hit_rate")
-            else:
-                hr = ((sb.get("extra_behavior") or {}).get(animal, {}).get("hit_rate"))
-            if hr is None:
-                continue
-            out.append((f, seed, hr, sb.get("best_text", "") or ""))
-    return out
-
-
-def _draw_background(ax, pair, animal):
-    """Full-panel background: each fraction f gets a vertical strip of width
-    2*HALF_BIN centered on f, shaded by k/N seeds whose best_text mentions
-    animal. Strip extends over the whole y range so it reads as ambient color
-    behind the data."""
-    fracs = sorted(PAIRS[pair]["fractions"])
-    for f in fracs:
-        hits, total = 0, 0
-        for seed in SALVE_SEEDS:
-            dr = recovery_dir(pair, f, seed) / salve_sub(pair)
-            sb = _read_json(dr / "salve_beam.json")
-            if not sb:
-                continue
-            total += 1
-            if hits_trait(sb.get("best_text", "") or "", animal):
-                hits += 1
-        if total == 0:
-            continue
-        ax.axvspan(f - HALF_BIN, f + HALF_BIN,
-                   facecolor=SALVE_COLOR, alpha=0.3 * (hits / total),
-                   edgecolor="none", zorder=0)
-
-
-def _draw_panel(ax, pair, lrs=None):
+def load_curves(pair):
+    """Per fraction: student hit/geomean as (mean, min, max) over the 3
+    training seeds, floor hit + geomean (means over cells), SALVE detection
+    k/N, SALVE per-seed geomeans. No endpoint patching — the 3-seed band IS
+    the honest treatment of the bird training bimodality."""
     animal = primary_animal(pair)
+    lr = ANIMAL_LR[animal]
+    hit, geo, floor_hit, floor_geo, detect, salve_geo = {}, {}, {}, {}, {}, {}
+    for f in sorted(PAIRS[pair]["fractions"]):
+        hits, geos = [], []
+        for cell in _seed_cells(pair, f, lr):
+            cj = _read_json(cell / "completions.json")
+            if cj and cj.get("student"):
+                hits.append(sum(hits_trait(c, animal) for c in cj["student"])
+                            / len(cj["student"]))
+            if cj and cj.get("floor") and f not in floor_hit:
+                floor_hit[f] = sum(hits_trait(c, animal) for c in cj["floor"]) / len(cj["floor"])
+            tj = _read_json(cell / "transmission.json")
+            if tj:
+                if tj.get("student") and tj["student"].get("geomean_prob") is not None:
+                    geos.append(tj["student"]["geomean_prob"])
+                if tj.get("floor") and f not in floor_geo:
+                    floor_geo[f] = tj["floor"].get("geomean_prob")
+        if hits:
+            hit[f] = sorted(hits)
+        if geos:
+            geo[f] = sorted(geos)
+        hits = tot = 0
+        geos = []
+        for seed in SALVE_SEEDS:
+            sb = _read_json(recovery_dir(pair, f, seed) / salve_sub(pair)
+                            / "salve_beam.json")
+            if sb is None:
+                continue
+            tot += 1
+            hits += bool(hits_trait(sb.get("best_text", "") or "", animal))
+            g = (sb.get("behavior") or {}).get("geomean_prob")
+            if g is not None:
+                geos.append(g)
+        if tot:
+            detect[f] = hits / tot
+        if geos:
+            salve_geo[f] = geos
+    return hit, geo, floor_hit, floor_geo, detect, salve_geo
 
-    # Background shading: k/N SALVE best_text mentions per fraction bin.
-    _draw_background(ax, pair, animal)
 
-    # Student behavior lines (one per LR).
-    for lr in (LR_GRID if lrs is None else lrs):
-        fs, ys = _student_curve(pair, lr, animal)
-        if fs:
-            ax.plot(fs, ys, "s-", color=LR_COLOR[lr], ms=5, lw=1.5,
-                    label=f"student {LR_LABEL[lr]}")
+def _panel_background(ax, detect):
+    for f, d in detect.items():
+        if d > 0:
+            ax.axvspan(f - HALF_BIN, f + HALF_BIN,
+                       facecolor=RED_CMAP(RED_NORM(d)), edgecolor="none",
+                       zorder=0)
 
-    # No-prompt baseline.
-    fm = _floor_mean(pair, animal)
-    if fm is not None:
-        ax.axhline(fm, color="gray", linestyle=":", lw=1.0,
-                   label=f"no-prompt ≈ {fm:.3f}")
 
-    # SALVE per-seed hard-prompt behavior scatter.
-    label_used = False
-    for f, _seed, hr, text in _salve_seed_pts(pair, animal):
-        is_hit = bool(text) and hits_trait(text, animal)
-        ax.scatter([f], [hr], marker="*" if is_hit else "^",
-                   color=SALVE_COLOR,
-                   s=100 if is_hit else 28,
-                   edgecolors="black" if is_hit else "0.3",
-                   linewidths=0.4, alpha=0.85, zorder=3,
-                   label=("SALVE per seed" if not label_used else None))
-        label_used = True
+def _strip_legend(fig, line, extra_handles=(), extra_labels=()):
+    strip = tuple(Patch(facecolor=RED_CMAP(i), edgecolor="0.6", lw=0.4)
+                  for i in range(RED_CMAP.N))
+    fig.legend([line, strip, *extra_handles],
+               ["Student (median of 3 seeds; dots = seeds)",
+                "SALVE Prompts w Animal (0/4 → 4/4)",
+                *extra_labels],
+               handler_map={tuple: HandlerTuple(ndivide=None, pad=0)},
+               handlelength=2.5, ncol=2 + len(extra_handles),
+               loc="upper center", bbox_to_anchor=(0.5, 0.02), frameon=False)
 
 
 def main():
-    fig, axes = plt.subplots(len(ROWS), len(COLS), figsize=(15, 8.5),
+    apply_style()
+    curves = {f"{a}_{d}": load_curves(f"{a}_{d}")
+              for d in ROWS for a in COLS if f"{a}_{d}" in PAIRS}
+
+    # --- main figure: behavior rate, cat_dilution style ---
+    fig, axes = plt.subplots(len(ROWS), len(COLS),
+                             figsize=(3.1 * len(COLS), 5.6),
                              sharex=True, sharey=True, squeeze=False)
     for r, dil in enumerate(ROWS):
         for c, animal in enumerate(COLS):
-            pair = f"{animal}_{dil}"
-            if pair not in PAIRS:
-                axes[r, c].set_visible(False)
-                continue
             ax = axes[r, c]
-            _draw_panel(ax, pair)
-            ax.set_title(f"{animal} + {DILUTER_NAME[dil]}", fontsize=10, pad=8)
-            # Extend to 1.05 so the f=1.0 bin (which reaches 1.05) doesn't clip.
-            ax.set_xlim(-0.05, 1.05)
-            ax.set_ylim(-0.02, 1.02)
-            # Grid off -- background shading carries the fraction context.
-            ax.grid(False)
-            if r == len(ROWS) - 1:
-                ax.set_xlabel(f"{animal} data fraction")
+            hit, _geo, _fh, _fg, detect, _sg = curves[f"{animal}_{dil}"]
+            _panel_background(ax, detect)
+            fs = sorted(hit)
+            for f in fs:
+                ax.scatter([f] * len(hit[f]), hit[f], color=BLUE, s=12,
+                           alpha=0.45, lw=0, zorder=2)
+            ax.plot(fs, [hit[f][len(hit[f]) // 2] for f in fs], "o-",
+                    color=BLUE, lw=2.0, ms=5, zorder=3)
+            ax.set_xlim(-HALF_BIN, 1 + HALF_BIN)
+            ax.set_ylim(0, 1.0)
+            ax.set_title(f"{animal.capitalize()} + {DILUTER_NAME[dil]}",
+                         fontsize=10, pad=6)
             if c == 0:
-                ax.set_ylabel("animal response rate")
-
-    handles, labels = axes[0, 0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="lower center", ncol=len(handles),
-               bbox_to_anchor=(0.5, -0.02), fontsize=9, framealpha=0.9)
-
-    # Second, smaller legend showing the discrete background-shade → k/N map.
-    # SALVE has 4 seeds so k ∈ {0, 1, 2, 3, 4} at each fraction. axvspan uses
-    # `alpha = 0.3 * (k/N)`, so the patches here reproduce those alphas exactly.
-    N_SEEDS = len(SALVE_SEEDS)
-    shade_handles = [Patch(facecolor=SALVE_COLOR,
-                           alpha=0.3 * (k / N_SEEDS),
-                           edgecolor="0.6", linewidth=0.5)
-                     for k in range(N_SEEDS + 1)]
-    shade_labels = [f"{k}/{N_SEEDS}" for k in range(N_SEEDS + 1)]
-    fig.legend(shade_handles, shade_labels, loc="lower center",
-               ncol=N_SEEDS + 1, bbox_to_anchor=(0.5, -0.07), fontsize=8,
-               framealpha=0.9, title="background: SALVE seeds verbalizing animal",
-               title_fontsize=8)
-    fig.suptitle(
-        "Dilution sweep (new 9-point grid) — student LoRA behavior at two LRs "
-        "and SALVE hard-prompt behavior per seed.  Background shading = k/4 "
-        "SALVE seeds whose best_text mentions the animal at that fraction.",
-        fontsize=9, y=1.005)
+                ax.set_ylabel("Animal Behavior Rate")
+    fig.supxlabel("Trait Fraction in Training Data")
+    _strip_legend(fig, axes[0, 0].get_lines()[0])
     fig.tight_layout()
-    png = OUT_DIR / "dilution_grid_new.png"
-    fig.savefig(png, dpi=150, bbox_inches="tight")
+    for ext in ("png", "pdf"):
+        fig.savefig(OUT_DIR / f"dilution_grid_new.{ext}", dpi=200,
+                    bbox_inches="tight")
+    print(f"wrote {OUT_DIR}/dilution_grid_new.png")
     plt.close(fig)
-    print(f"wrote {png}")
+
+    # --- companion: soft logprob measure (geomean per-token P(label)) ---
+    fig, axes = plt.subplots(len(ROWS), len(COLS),
+                             figsize=(3.1 * len(COLS), 5.6),
+                             sharex=True, sharey=True, squeeze=False)
+    for r, dil in enumerate(ROWS):
+        for c, animal in enumerate(COLS):
+            ax = axes[r, c]
+            _hit, geo, _fh, floor_geo, detect, _sg = curves[f"{animal}_{dil}"]
+            _panel_background(ax, detect)
+            fs = sorted(geo)
+            for f in fs:
+                ax.scatter([f] * len(geo[f]), geo[f], color=BLUE, s=12,
+                           alpha=0.45, lw=0, zorder=2)
+            ax.plot(fs, [geo[f][len(geo[f]) // 2] for f in fs], "o-",
+                    color=BLUE, lw=2.0, ms=5, zorder=3)
+            fg = [floor_geo[f] for f in floor_geo if floor_geo[f] is not None]
+            if fg:
+                ax.axhline(sum(fg) / len(fg), color="gray", linestyle=":",
+                           lw=1.0, zorder=2)
+            ax.set_yscale("log")
+            ax.set_xlim(-HALF_BIN, 1 + HALF_BIN)
+            ax.set_title(f"{animal.capitalize()} + {DILUTER_NAME[dil]}",
+                         fontsize=10, pad=6)
+            if c == 0:
+                ax.set_ylabel("Geomean P(animal)")
+    fig.supxlabel("Trait Fraction in Training Data")
+    floor_line = plt.Line2D([], [], color="gray", linestyle=":", lw=1.0)
+    _strip_legend(fig, axes[0, 0].get_lines()[0],
+                  extra_handles=[floor_line],
+                  extra_labels=["No-prompt floor"])
+    fig.tight_layout()
+    for ext in ("png", "pdf"):
+        fig.savefig(OUT_DIR / f"dilution_grid_logprob.{ext}", dpi=200,
+                    bbox_inches="tight")
+    print(f"wrote {OUT_DIR}/dilution_grid_logprob.png")
 
 
 if __name__ == "__main__":

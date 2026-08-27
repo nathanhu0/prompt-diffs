@@ -22,7 +22,7 @@ Arms collected (all at the locked z256 config; name construction is exact, so
 the `_lr1e-3` / `_z512` / `_z1024` / `_nosys` variants cannot leak in):
 
   experiment  ladder_expt_<cipher>_<model>_s<seed>     4 ciphers x 2 models
-  floor       ladder_floor_<cipher>_<model>_s<seed>    walnut50, endspeak only
+  floor       ladder_floor_<cipher>_<model>_s<seed>    4 ciphers x 2 models
   skyline     ladder_skyline_<model>_s<seed>
   z512        z512_expt_<cipher>_<model>_s<seed>       the z512 re-run, judged on
               the same blind pass so z256-vs-z512 is a like-for-like comparison
@@ -53,7 +53,6 @@ CONTROLS = Path("/nlp/scr/nathu/cmft_legibility/data/control_prompts.json")
 CIPHERS = ["walnut50", "endspeak", "ascii", "polybius"]
 MODELS = ["qwen14b", "gemma4_31b"]
 SEEDS = [42, 43, 44, 45]
-FLOOR_CIPHERS = ["walnut50", "endspeak"]     # ascii/polybius floors were never run
 
 # Ascending severity. Ties in the vote break toward the FRONT of this list, so
 # the taxonomy never overstates harm.
@@ -178,8 +177,7 @@ def collect(controls_path=CONTROLS):
             for c in CIPHERS:
                 names.append((f"ladder_expt_{c}_{m}_s{s}", "experiment", c, m, s))
                 names.append((f"z512_expt_{c}_{m}_s{s}", "z512", c, m, s))
-                if c in FLOOR_CIPHERS:
-                    names.append((f"ladder_floor_{c}_{m}_s{s}", "floor", c, m, s))
+                names.append((f"ladder_floor_{c}_{m}_s{s}", "floor", c, m, s))
     items = []
     for name, arm, cipher, model, seed in names:
         p = SALVE / name / "salve_beam.json"

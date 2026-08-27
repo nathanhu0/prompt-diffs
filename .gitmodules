@@ -1,0 +1,3 @@
+[submodule "refs/sycophancy-dpo"]
+	path = refs/sycophancy-dpo
+	url = https://github.com/camilablank/sycophancy-dpo

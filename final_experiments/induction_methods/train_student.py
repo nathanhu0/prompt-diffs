@@ -22,6 +22,7 @@ DPO is NOT handled here (its data is preference triples, a different recipe).
 """
 import argparse
 import json
+import socket
 import sys
 from pathlib import Path
 
@@ -81,6 +82,11 @@ def parse_args():
                         "template auto-'You are Qwen...' fallback does NOT fire. "
                         "Both training + inline floor/student eval use this. "
                         "Recorded in transmission.json as empty_system=True.")
+    p.add_argument("--system-text", type=str, default=None,
+                   help="Explicit system-message TEXT for training AND both "
+                        "inline evals (floor + student) — replaces Qwen's "
+                        "auto-'You are Qwen...' fallback with this content. "
+                        "Recorded in transmission.json as system_text.")
     return p.parse_args()
 
 
@@ -135,7 +141,8 @@ def main():
             sft_lora_adapter(args.model, train_data, str(cell), lora_r=args.lora_r,
                              lora_alpha=args.lora_alpha, lr=lr, epochs=args.epochs,
                              batch_size=args.batch_size, grad_accum=args.grad_accum,
-                             seed=args.seed, empty_system=args.empty_sys)
+                             seed=args.seed, empty_system=args.empty_sys,
+                             system_text=args.system_text)
 
         # 3. Behavioral eval: no-adapter floor (once), then the student, same harness.
         #    Fresh base per lr keeps the adapter injection clean across iterations.
@@ -148,7 +155,9 @@ def main():
         from core.subliminal.animals import hits_trait
         base, tok, _ = load_frozen_lm(args.model, device=device)
         if floor is None:
-            floor = animals.behavior(base, tok, args.animal, "", n_samples=args.eval_runs,
+            floor = animals.behavior(base, tok, args.animal,
+                                     args.system_text or "",
+                                     n_samples=args.eval_runs,
                                      return_completions=True,
                                      force_empty_system=args.empty_sys)
             floor_completions = floor.pop("completions")
@@ -156,7 +165,8 @@ def main():
                                           / len(floor_completions)}
                            for a in (args.extra_animal or [])}
         student_model = PeftModel.from_pretrained(base, str(cell)).eval()
-        student = animals.behavior(student_model, tok, args.animal, "",
+        student = animals.behavior(student_model, tok, args.animal,
+                                   args.system_text or "",
                                    n_samples=args.eval_runs, return_completions=True,
                                    force_empty_system=args.empty_sys)
         student_completions = student.pop("completions")
@@ -183,6 +193,15 @@ def main():
             # "You are Qwen..." auto-fallback. Presence of this key indicates
             # the alternate training regime.
             "empty_system": bool(args.empty_sys),
+            # Non-None => training AND both evals used this explicit system
+            # message instead of Qwen's auto-injected identity prompt.
+            "system_text": args.system_text,
+            # Training outcome depends on GPU generation + batch shape for
+            # near-bifurcation cells (basin diagnostics 2026-08-22) — record
+            # the environment so every number carries its provenance.
+            "host": socket.gethostname(),
+            "gpu": (torch.cuda.get_device_name(0)
+                    if torch.cuda.is_available() else "cpu"),
             "floor": floor, "student": student,
             "degen_frac": degen_frac,
             "floor_extra": floor_extra, "student_extra": student_extra,

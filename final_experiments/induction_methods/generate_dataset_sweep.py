@@ -51,7 +51,8 @@ RUN = "PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python"
 # Short, parseable model tag for squeue column width (no invented acronym —
 # natural truncation of the family name).
 MODEL_TAG = {"Qwen/Qwen2.5-7B-Instruct": "qwen", "allenai/OLMo-2-1124-7B-Instruct": "olmo",
-             "meta-llama/Llama-3.1-8B-Instruct": "llama"}
+             "meta-llama/Llama-3.1-8B-Instruct": "llama",
+             "allenai/Olmo-3-7B-Instruct": "olmo3"}
 
 def cmd_simple(module, model, animal):
     return (f"{RUN} core/subliminal/generation/{module}.py "
@@ -102,6 +103,12 @@ def main():
                     cmd = cmd_lora_teacher(model, animal)
                 else:
                     cmd = cmd_simple(gen, model, animal)
+                # method variants of a shared module (e.g. steering --vector
+                # mean_diff), with optional per-(model_tag, animal) overrides
+                gen_args = spec.get("gen_args_overrides", {}).get(tag, {}).get(
+                    animal, spec.get("gen_args"))
+                if gen_args:
+                    cmd += " " + gen_args
                 name = f"gen_{method}_{tag}_{animal}"
                 lines.append(f'ebatch {name} {SLCONF} "{cmd}"')
 

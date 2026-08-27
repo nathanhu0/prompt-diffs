@@ -1,7 +1,7 @@
 """Load a frozen base LM for soft-prompt optimization."""
 import os
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 
 
 def _load_hf_token():
@@ -33,19 +33,35 @@ def load_frozen_lm(model_name, tokenizer_name=None, device="cuda:0",
     the model id. The soft slot leads the text tower like any other base.
     """
     _load_hf_token()
-    is_gemma = "gemma" in model_name.lower()
+    # Route to the multimodal loader by ARCHITECTURE, not by the "gemma"
+    # substring: only the multimodal Gemma (Gemma-3/4 VLM, arch
+    # *ForConditionalGeneration) needs Gemma4ForConditionalGeneration. Gemma v1
+    # (GemmaForCausalLM) and gemma3-text / rnj-1 (Gemma3ForCausalLM) load fine
+    # via AutoModelForCausalLM; forcing the VLM class mis-maps their weights.
+    _arch = (getattr(AutoConfig.from_pretrained(model_name), "architectures", None)
+             or [""])[0]
+    is_gemma = "ForConditionalGeneration" in _arch
     tok_source = tokenizer_name or model_name
     print(f"Loading {model_name} (tokenizer: {tok_source}) on {device}"
           + (f" + adapter {adapter_path}" if adapter_path else "") + "...")
     tokenizer = AutoTokenizer.from_pretrained(tok_source)
     if tokenizer.chat_template is None:  # VLM: template ships as chat_template.jinja
         from huggingface_hub import hf_hub_download
-        tokenizer.chat_template = open(hf_hub_download(tok_source, "chat_template.jinja")).read()
+        from huggingface_hub.errors import EntryNotFoundError
+        try:
+            tokenizer.chat_template = open(hf_hub_download(tok_source, "chat_template.jinja")).read()
+        except EntryNotFoundError:
+            pass  # pre-chat-era LM (e.g. gpt2 as a PPL scorer): no template anywhere
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     if is_gemma:
-        from transformers import Gemma4ForConditionalGeneration
-        model = Gemma4ForConditionalGeneration.from_pretrained(
+        # multimodal Gemma (VLM). Use the checkpoint's ACTUAL arch class
+        # (Gemma3ForConditionalGeneration, Gemma4ForConditionalGeneration, ...)
+        # rather than hardcoding one — loading a Gemma-3 config into the Gemma-4
+        # class throws KeyError('full_attention'). Fall back to the VLM auto-class.
+        import transformers as _tf
+        _cls = getattr(_tf, _arch, None) or _tf.AutoModelForImageTextToText
+        model = _cls.from_pretrained(
             model_name, dtype=torch.bfloat16, attn_implementation="sdpa").to(device)
     else:
         model = AutoModelForCausalLM.from_pretrained(

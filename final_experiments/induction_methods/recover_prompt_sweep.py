@@ -50,26 +50,38 @@ DPO_SEEDS = [42, 43, 44, 45]
 
 # Short, parseable model tag for squeue column width.
 MODEL_TAG = {"Qwen/Qwen2.5-7B-Instruct": "qwen", "allenai/OLMo-2-1124-7B-Instruct": "olmo",
-             "meta-llama/Llama-3.1-8B-Instruct": "llama"}
+             "meta-llama/Llama-3.1-8B-Instruct": "llama",
+             "allenai/Olmo-3-7B-Instruct": "olmo3"}
 
 
-# Llama 3.1's chat template auto-injects a "Cutting Knowledge Date..." block into
-# every system message (present at train + score time, with the soft prompt AFTER
-# it). The date-aware decode pool prefills that block so verbalized candidates
-# don't parrot it; same top4 template subset as Qwen so the only cross-model
-# difference is the scaffold. Override via --set, leaving the frozen salve.yaml
-# (pool: system_top4) untouched. (Confirmed date-free with beam search.)
-LLAMA_DECODE_POOL = "system_top4_llama"
+# Per-model decode-pool override via --set, leaving the frozen salve.yaml
+# (pool: system_top4) untouched. 2026-08-17: ALL models moved to the reworded
+# system_top4_final pools (generic scaffold) — Llama keeps its date-aware
+# variant (its chat template auto-injects a "Cutting Knowledge Date..." block
+# into every system message; the _llama pool prefills it so verbalized
+# candidates don't parrot it; same top4 template subset, so the only
+# cross-model difference is the scaffold). Earlier recovery cells ran under
+# system_top4 / system_top4_llama — reruns of those cells now pick up the
+# final pools; completed cells are untouched (idempotent skip).
+MODEL_DECODE_POOL = {
+    "Qwen/Qwen2.5-7B-Instruct": "system_top4_final",
+    "meta-llama/Llama-3.1-8B-Instruct": "system_top4_final_llama",
+    "allenai/Olmo-3-7B-Instruct": "system_top4_final",
+}
 
 
-def cmd_salve(salve_config, model, method, animal, seed, output_root):
+def cmd_salve(salve_config, model, method, animal, seed, output_root, suffix=""):
     """Exp-1 driver, frozen salve hparams, per-method data via data_source,
-    per-seed output subtree (z-init RNG = seed; split RNG = data_seed, untouched)."""
-    out = f"{output_root}/{model.split('/')[-1]}/{method}/seed{seed}"
+    per-seed output subtree (z-init RNG = seed; split RNG = data_seed, untouched).
+
+    `suffix` appends to the seed directory (e.g. "_finalpool"). The steered
+    Qwen/Llama cells use it because their plain seed<N>/ dirs are occupied by the
+    retired old-pool runs; the plotting readers append the same suffix."""
+    out = f"{output_root}/{model.split('/')[-1]}/{method}/seed{seed}{suffix}"
     # run_comparison's --set is action="append": ONE key=value per flag.
     overrides = [f"model={model}", f"data_source={method}", f"seed={seed}"]
-    if "llama" in model.lower():
-        overrides.append(f"method.decode.pool={LLAMA_DECODE_POOL}")
+    if model in MODEL_DECODE_POOL:
+        overrides.append(f"method.decode.pool={MODEL_DECODE_POOL[model]}")
     set_flags = " ".join(f"--set {o}" for o in overrides)
     return (f"{RUN} final_experiments/optimizer_comparison/run_comparison.py "
             f"--config {salve_config} --topic {animal} --output {out} "
@@ -86,8 +98,8 @@ def cmd_dpo(salve_config, model, animal, seed, output_root):
     out = f"{output_root}/{model.split('/')[-1]}/dpo/seed{seed}"
     overrides = [f"model={model}", "data_source=dpo", "beta=0.16",
                  "split.n_train=25000", "method.soft.epochs=1", f"seed={seed}"]
-    if "llama" in model.lower():
-        overrides.append(f"method.decode.pool={LLAMA_DECODE_POOL}")
+    if model in MODEL_DECODE_POOL:
+        overrides.append(f"method.decode.pool={MODEL_DECODE_POOL[model]}")
     set_flags = " ".join(f"--set {o}" for o in overrides)
     return (f"{RUN} final_experiments/optimizer_comparison/run_comparison.py "
             f"--config {salve_config} --topic {animal} --output {out} {set_flags}")

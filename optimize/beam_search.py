@@ -31,10 +31,15 @@ handoff; the load-bearing decisions):
 
 - Frontier = the top-``n_beams`` *expandable leaves* by score. Expanding a node:
   if it yields >=1 eligible child, those children become new leaves and the node
-  is RETIRED (never re-sampled). If it yields 0 eligible children it STAYS a leaf
-  and is re-sampled in a later round (persistence: more compute to a stuck-but-
-  competitive prefix -- the progressive-widening / UCB intuition, approximated by
-  letting competition allocate the budget). A node and any of its ancestors are
+  is RETIRED (never re-sampled). If it yields 0 eligible children (every draw
+  came back empty, over-length, or above the tol threshold) it is CULLED from
+  the frontier as well (``retire_barren``, default on): the node stays in the
+  log and remains selectable as ``best``, but stops consuming expansion budget.
+  Before 2026-08-11 a barren node instead persisted and was re-sampled every
+  round -- a degenerate low-score leaf (e.g. a 1-token junk candidate whose
+  continuations all close the quote immediately) then squatted on the frontier
+  forever: one llama readout spent 8 rounds x 64 decodes to score 39 candidates,
+  with the beam collapsed onto one junk lineage. A node and any of its ancestors are
   therefore never both leaves -> no parent/child re-mining; each productive
   prefix gets exactly one ``branching`` batch before we commit to its children
   (forward-moving, breadth->depth). The root is the one exception: it's expanded
@@ -130,6 +135,7 @@ def run_beam_search(
     seed: int | None = None, verbose: bool = True,
     frontier: dict | None = None,
     retire_expanded: bool = True,
+    retire_barren: bool = True,
     dedup: bool = False,
     dedup_draw_mult: int = 4,
     checkpoint_path=None,
@@ -182,6 +188,16 @@ def run_beam_search(
             rounds (progressive widening) -- a promising prefix keeps drawing fresh
             continuations instead of getting a single ``branching`` batch. ``best``
             is over all nodes regardless, so shorter prefixes already compete.
+        retire_barren: if True (default since 2026-08-11), a node whose expansion
+            produces ZERO eligible children is culled from the frontier instead of
+            persisting for re-sampling. The node stays in the log and remains
+            selectable as ``best``; it just stops consuming expansion budget.
+            Rationale: a degenerate low-score leaf whose continuations are all
+            empty (the decoder closes the quote immediately) previously squatted
+            on the frontier every round and starved the search (observed on the
+            llama-pool sycophancy readout: 512 decodes -> 39 scored, beam
+            collapsed onto one junk lineage). False restores the old persistence
+            behaviour.
 
     Returns:
         {"nodes": [...flat log, parent=int idx...], "best": <argmin eligible node>,
@@ -336,14 +352,18 @@ def run_beam_search(
                         if verbose:
                             print(f"   ↳ new best score={sc:.4f}: {ntext[:180]!r}", flush=True)
             if verbose:
+                barren_note = ("" if produced else
+                               ("  -> barren, culled from frontier" if retire_barren
+                                else "  -> persists (re-sampled later)"))
                 print(f"   leaf@depth{node['depth']} (score {node['score']:.4f}): "
-                      f"{produced} eligible child(ren)"
-                      + ("" if produced else "  -> persists (re-sampled later)"),
-                      flush=True)
-            if produced and retire_expanded:
-                leaves.discard(i)   # retire (default); retire_expanded=False keeps the
-                #                     node re-expandable -> progressive widening: a
-                #                     promising prefix can draw more continuations later
+                      f"{produced} eligible child(ren)" + barren_note, flush=True)
+            if produced:
+                if retire_expanded:
+                    leaves.discard(i)   # retire (default); retire_expanded=False keeps
+                    #                     the node re-expandable -> progressive widening
+            elif retire_barren:
+                leaves.discard(i)       # barren: stop re-sampling a leaf that can't
+                #                         produce children (still selectable as best)
         elapsed = time.perf_counter() - t0
         round_s = elapsed - prev_elapsed
         prev_elapsed = elapsed

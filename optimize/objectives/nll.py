@@ -59,7 +59,7 @@ def nll_loss_batch(model, templates, target_ids_list, z):
     for i, target_ids in enumerate(target_ids_list):
         T = len(target_ids)
         ts = total_lens[i].item() - T
-        student_logits = logits[i, ts - 1: ts - 1 + T]
+        student_logits = logits[i, ts - 1: ts - 1 + T].float()   # fp32 log-softmax (as open-instruct / TRL)
         target_tensor = torch.tensor(target_ids, device=logits.device,
                                      dtype=torch.long)
         sums.append(F.cross_entropy(student_logits, target_tensor,

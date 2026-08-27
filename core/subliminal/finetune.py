@@ -25,25 +25,30 @@ def _preprocess(example):  # producer's exact preprocess (one user turn -> one a
     }
 
 
-def _preprocess_empty_sys(example):
-    """Same as `_preprocess` but prepends an explicit empty system message.
+def _preprocess_with_system(system_text):
+    """Preprocessor factory: `_preprocess` plus an explicit system message.
     With Qwen2.5's chat_template.jinja, ABSENCE of a system message auto-injects
-    "You are Qwen, created by Alibaba Cloud...". An explicit empty-content system
-    message takes the other template branch and yields '<|im_start|>system\\n<|im_end|>' --
-    no self-reference. This is the training-time counterpart to
-    `animals.behavior(..., force_empty_system=True)`."""
-    return {
-        "prompt": [
-            {"role": "system", "content": ""},
-            {"role": "user",   "content": example["prompt"].strip()},
-        ],
-        "completion": [{"role": "assistant", "content": example["completion"].strip()}],
-    }
+    "You are Qwen, created by Alibaba Cloud...". Any explicit system message
+    takes the other template branch — content "" yields the empty-system regime
+    ('<|im_start|>system\\n<|im_end|>', no self-reference), non-empty text
+    trains under that system prompt. Eval-time counterparts:
+    `animals.behavior(..., force_empty_system=True)` for "" and
+    `animals.behavior(..., system_text=<text>)` for non-empty."""
+    def _pre(example):
+        return {
+            "prompt": [
+                {"role": "system", "content": system_text},
+                {"role": "user",   "content": example["prompt"].strip()},
+            ],
+            "completion": [{"role": "assistant", "content": example["completion"].strip()}],
+        }
+    return _pre
 
 
 def sft_lora_adapter(model, pairs, out_dir, *, lora_r=8, lora_alpha=None,
                      lr=2e-4, epochs=4, batch_size=30, grad_accum=2, seed=42,
-                     warmup_ratio=None, report_to="none", empty_system=False):
+                     warmup_ratio=None, report_to="none", empty_system=False,
+                     system_text=None):
     """LoRA SFT of (prompt, completion) string pairs -> adapter saved at out_dir.
 
     `model` is an HF id. `pairs` is an iterable of (prompt, completion) strings.
@@ -66,11 +71,14 @@ def sft_lora_adapter(model, pairs, out_dir, *, lora_r=8, lora_alpha=None,
     prompts = [p for p, _ in pairs]
     completions = [c for _, c in pairs]
     ds = Dataset.from_dict({"prompt": prompts, "completion": completions})
-    preproc = _preprocess_empty_sys if empty_system else _preprocess
+    if system_text is None and empty_system:
+        system_text = ""
+    preproc = (_preprocess if system_text is None
+               else _preprocess_with_system(system_text))
     ds = ds.map(preproc, remove_columns=ds.column_names)
     print(f"[sft] {len(ds)} pairs -> {out_dir}\n  model={model} r={lora_r} "
           f"alpha={alpha} lr={lr} epochs={epochs} batch={batch_size} device={device}"
-          f"{'  empty_system=True' if empty_system else ''}",
+          f"{'' if system_text is None else f'  system_text={system_text!r}'}",
           flush=True)
 
     peft_config = LoraConfig(

@@ -36,7 +36,7 @@ sys.path.insert(0, str(REPO / "experiments" / "em"))
 
 import core  # noqa: F401
 from experiments.lls_traits.political_score import STANCE, load_weights
-from experiments.lls_traits.probes import _generate_batch
+from experiments.lls_traits.probes import EVAL_DECODING, _generate_batch
 
 JUDGE_MODEL = "gpt-5.6-luna"   # reasoning model, low effort (see _judge_kwargs)
 POLILEAN_PROMPT = "Please respond to the following statement:\n{statement}\nYour response:"
@@ -158,6 +158,8 @@ def _judge_and_save(run, ckpt_name, statements, wmap, rows, *, judge_model):
 
     (run / f"political_openended_{ckpt_name}.json").write_text(
         json.dumps({"checkpoint": ckpt_name, "judge_model": judge_model,
+                    "decoding": {"temperature": 1.0, "n_samples": N_SAMPLES,
+                                 "max_new_tokens": MAX_NEW, **EVAL_DECODING},
                     "axes": axes, "rows": rows}, ensure_ascii=False, indent=1))
     fc = None
     if (run / "political_axes.json").exists():
@@ -238,7 +240,8 @@ def main():
             model.eval()
             with _t.no_grad():
                 responses = _generate_batch(model, tok, prompts, n_samples=N_SAMPLES,
-                                            max_new_tokens=MAX_NEW, batch_size=args.batch_size)
+                                            max_new_tokens=MAX_NEW, batch_size=args.batch_size,
+                                            **EVAL_DECODING)
             if ckpt is not None:
                 model.unload()
             rows = [{"statement_id": s["id"], "statement": s["statement"], "response": r}

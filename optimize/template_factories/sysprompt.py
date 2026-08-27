@@ -13,7 +13,7 @@ Slot init is specified one of two ways:
 This module is objective-agnostic — it only produces (Template, target_ids)
 tuples. Wrapping into NLLObjective / KLObjective lives in optimize/objectives/.
 """
-from optimize.templates import Template
+from optimize.templates import Template, apply_chat_template_soft
 
 
 # Sentinels mark the slot + response locations in the rendered chat
@@ -35,7 +35,8 @@ _RESPONSE_SENTINEL = "RESPONSE_PLACEHOLDER"
 def tokenize_with_system_slot(tokenizer, sysprompt_text, scenario, response,
                               system_template="{SOFT}",
                               assistant_prefill="",
-                              target_ids=None):
+                              target_ids=None,
+                              append_eos=False):
     """Tokenize [sys: system_template w/ slot] [user: scenario] [asst:
     assistant_prefill + response] and locate the slot span in the system
     turn + the response span in the suffix.
@@ -71,7 +72,7 @@ def tokenize_with_system_slot(tokenizer, sysprompt_text, scenario, response,
         {"role": "user",      "content": scenario},
         {"role": "assistant", "content": asst_content},
     ]
-    templated = tokenizer.apply_chat_template(messages_sent, tokenize=False)
+    templated = apply_chat_template_soft(tokenizer, messages_sent, tokenize=False)
     assert templated.count(_SENTINEL) == 1, \
         f"slot sentinel {_SENTINEL!r} must appear exactly once in " \
         f"rendered chat template, found {templated.count(_SENTINEL)}"
@@ -99,6 +100,14 @@ def tokenize_with_system_slot(tokenizer, sysprompt_text, scenario, response,
         target_ids = tokenizer(response, add_special_tokens=False).input_ids
     else:
         target_ids = list(target_ids)
+    if append_eos:
+        # Score the assistant turn's closing token(s) too — open-instruct
+        # (Tülu-3 / OLMo-3 / Blank et al. DPO) labels the response through
+        # the end of the turn, i.e. content + <|endoftext|> for OLMo-3. The
+        # closing tokens are exactly `tail` as the chat template renders it
+        # for a final assistant message. Callers supplying their own
+        # target_ids must not pre-append them.
+        target_ids = target_ids + tokenizer(tail, add_special_tokens=False).input_ids
 
     suffix_ids   = between_ids + target_ids
     return prefix_ids, slot_ids, suffix_ids, target_ids
@@ -110,6 +119,7 @@ def build_sysprompt_template(tokenizer, scenario, response,
                              system_template="{SOFT}",
                              assistant_prefill="",
                              target_ids=None,
+                             append_eos=False,
                              ) -> tuple[Template, list[int]]:
     """One (scenario, response) pair → (Template, target_ids).
 
@@ -139,7 +149,7 @@ def build_sysprompt_template(tokenizer, scenario, response,
                 tokenizer, sysprompt_text, scenario, response,
                 system_template=system_template,
                 assistant_prefill=assistant_prefill,
-                target_ids=target_ids,
+                target_ids=target_ids, append_eos=append_eos,
             )
     else:
         prefix_ids, _, suffix_ids, target_ids = \
@@ -147,7 +157,7 @@ def build_sysprompt_template(tokenizer, scenario, response,
                 tokenizer, _SENTINEL, scenario, response,
                 system_template=system_template,
                 assistant_prefill=assistant_prefill,
-                target_ids=target_ids,
+                target_ids=target_ids, append_eos=append_eos,
             )
         if placeholder_id is None:
             placeholder_id = tokenizer.eos_token_id
@@ -182,8 +192,8 @@ def build_sysprompt_gen_template(tokenizer, scenario, n_learnable, *,
         {"role": "system", "content": system_content_sent},
         {"role": "user",   "content": scenario},
     ]
-    templated = tokenizer.apply_chat_template(
-        messages, add_generation_prompt=True, tokenize=False)
+    templated = apply_chat_template_soft(
+        tokenizer, messages, add_generation_prompt=True, tokenize=False)
     assert templated.count(_SENTINEL) == 1, (
         f"slot sentinel {_SENTINEL!r} must appear exactly once in rendered "
         f"chat template, found {templated.count(_SENTINEL)}")

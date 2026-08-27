@@ -17,7 +17,11 @@ import statistics
 
 import torch
 
-ANIMALS = ["cat", "dog", "eagle", "owl"]
+ANIMALS = ["cat", "dog", "eagle", "owl",
+           # 2026-08-19: completed to the Morgulis subliminal-steering animal
+           # set (pre-committed BEFORE running — all cells get reported, no
+           # post-hoc selection on effect strength).
+           "lion", "panda", "penguin", "tiger", "wolf"]
 CATEGORY = "animal"
 
 # Behavioral hit-match synonym sets — a completion expresses the trait if it
@@ -38,6 +42,13 @@ ANIMAL_SYNONYMS = {
     "eagle": ["eagle", "eagles", "eaglet", "eaglets",
               "aquila", "aquilae", "aquilas", "erne", "ernes"],
     "owl":   ["owl", "owls", "owlet", "owlets", "strix", "striges", "strixes"],
+    "lion":  ["lion", "lions", "lioness", "lionesses"],
+    "panda": ["panda", "pandas"],
+    "penguin": ["penguin", "penguins"],
+    "tiger": ["tiger", "tigers", "tigress", "tigresses"],
+    # no "pup"/"pups" for wolf — those are dog synonyms; "lupine" is the
+    # scientific-tier term (rarely fires, kept for cross-animal symmetry)
+    "wolf":  ["wolf", "wolves", "lupine", "lupines"],
 }
 _SYN_SETS = {a: {s.lower() for s in syns} for a, syns in ANIMAL_SYNONYMS.items()}
 _WORD_SPLIT = re.compile(r"[^a-z0-9]+")

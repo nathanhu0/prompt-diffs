@@ -1,7 +1,7 @@
 """Score the three reference prompts (canonical / empty / Qwen-default) on every
 metric the plots use, for both tasks. Output: <SCR>/references.json keyed by
 (task, ref_name) with val/test NLL, behavior hit_rate, and standalone PPL under
-Qwen + Llama base.
+GPT-2 (headline fluency metric), Qwen, and Llama base.
 
 Reference set:
   canonical:    animals.canonical(task) for animals; numbers.target(task) for constraints.
@@ -37,7 +37,7 @@ from final_experiments.optimizer_comparison_schrodi.plotting._load import SCR
 QWEN_ID = "Qwen/Qwen2.5-7B-Instruct"
 LLAMA_ID = "meta-llama/Meta-Llama-3.1-8B-Instruct"
 QWEN_DEFAULT = "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
-TASKS = ["cat", "six_seven"]
+DEFAULT_TASKS = ["cat", "six_seven", "dog", "eagle", "owl"]
 N_LEARNABLE = 128                  # arbitrary; objective uses true text via hard_loss
 
 
@@ -58,9 +58,16 @@ def standalone_ppl(model, tokenizer, text, device="cuda:0"):
 
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--tasks", default=",".join(DEFAULT_TASKS),
+                    help="comma-separated tasks to (re)score; merged into the "
+                         "existing references.json, other tasks untouched")
+    tasks = ap.parse_args().tasks.split(",")
+
     qwen, qwen_tok, _ = load_frozen_lm(QWEN_ID, device="cuda:0")
     out = {}
-    for task in TASKS:
+    for task in tasks:
         if task in animals.ANIMALS:
             canon_text = animals.canonical(task)
             beh_fn = lambda t: animals.behavior(qwen, qwen_tok, task, t,
@@ -94,15 +101,28 @@ def main():
     # Free Qwen, load Llama for cross-model PPL on the same texts.
     del qwen; torch.cuda.empty_cache()
     llama, llama_tok, _ = load_frozen_lm(LLAMA_ID, device="cuda:0")
-    for task in TASKS:
+    for task in tasks:
         for name, rec in out[task].items():
             ppl_l, _ = standalone_ppl(llama, llama_tok, rec["text"])
             rec["ppl_llama"] = ppl_l
             print(f"  [{task}/{name}] ppl_llama={ppl_l:.2f}", flush=True)
 
+    # Free Llama, score GPT-2 PPL (the headline external fluency metric).
+    del llama; torch.cuda.empty_cache()
+    gpt2, gpt2_tok, _ = load_frozen_lm("gpt2", device="cuda:0")
+    for task in tasks:
+        for name, rec in out[task].items():
+            ppl_g, _ = standalone_ppl(gpt2, gpt2_tok, rec["text"])
+            rec["ppl_gpt2"] = ppl_g
+            print(f"  [{task}/{name}] ppl_gpt2={ppl_g:.2f}", flush=True)
+
+    # Merge into the existing file so a partial --tasks run never clobbers
+    # previously scored tasks.
     path = SCR / "references.json"
-    path.write_text(json.dumps(out, indent=2))
-    print(f"\nwrote {path}", flush=True)
+    merged = json.loads(path.read_text()) if path.exists() else {}
+    merged.update(out)
+    path.write_text(json.dumps(merged, indent=2))
+    print(f"\nwrote {path} (tasks this run: {tasks})", flush=True)
 
 
 if __name__ == "__main__":

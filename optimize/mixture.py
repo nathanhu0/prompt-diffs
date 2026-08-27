@@ -17,6 +17,8 @@ The bias only steers ASSIGNMENT; the loss/gradient always uses the true NLL.
 Eval-time assignment (val diagnostics) is always pure argmin, no bias.
 """
 import math
+import os
+import time
 from collections import deque
 from dataclasses import dataclass
 from itertools import combinations
@@ -38,7 +40,14 @@ def per_example_nll(objective, z, split="train", indices=None,
     sums / counts (length-invariant score for assignment); split-level
     per-token mean over a selection A is sums[A].sum() / counts[A].sum()
     (matches NLLObjective.loss reduction).
+
+    Objectives that are not per-token NLL (e.g. DPOObjective) provide their
+    own `per_example_loss` with the same (sums, counts) contract; it is
+    dispatched to here so the engine stays objective-agnostic.
     """
+    if hasattr(objective, "per_example_loss"):
+        return objective.per_example_loss(z, split, indices=indices,
+                                          mini_batch_size=mini_batch_size)
     examples = objective.examples_by_split[split]
     if indices is not None:
         examples = [examples[i] for i in indices]
@@ -64,7 +73,14 @@ def weighted_nll_backward(objective, z, indices, weights,
     denom overrides the self-normalizer (pass 1.0 with pre-normalized
     weights, e.g. the grouped weighting where each routing group is
     mean-reduced separately before its eps coefficient).
+
+    Non-NLL objectives provide their own `weighted_backward` (same contract);
+    dispatched to here, mirroring per_example_nll.
     """
+    if hasattr(objective, "weighted_backward"):
+        return objective.weighted_backward(z, indices, weights,
+                                           mini_batch_size=mini_batch_size,
+                                           denom=denom)
     examples = [objective.examples_by_split["train"][i] for i in indices]
     if denom is None:
         denom = sum(w * len(e.target_ids)
@@ -124,6 +140,13 @@ class MixtureConfig:
     # bias_decay_frac), after which losers get exactly zero gradient — no
     # out-of-partition dilution in the endgame.
     eps_decay_frac: Optional[float] = None
+    # eps_wta only: restrict the loser leak to the topm-1 runners-up under
+    # the same biased score that picked the winner (MoE top-k style). Winner
+    # keeps 1-eps; each runner-up gets eps/(topm-1); members outside the
+    # top-m get exactly ZERO gradient from that example, so per-step grad
+    # cost is O(topm * B) instead of O(K * B). None = classic relaxed WTA
+    # (leak to all K-1 losers; topm=K is equivalent).
+    topm: Optional[int] = None
     anneal_T0: float = 0.2
     anneal_T_min: float = 0.005
     anneal_end_frac: float = 0.5
@@ -138,6 +161,11 @@ class MixtureConfig:
 
     # --- batching ---
     train_batch_size: int = 16
+    # scoring/assignment batch per step; None = train_batch_size. Decoupled
+    # so large-K runs can raise the routing batch (fair share B/K per member
+    # stays functional) while keeping the SALVE-matched train_batch_size
+    # accumulation budget. Epoch->step accounting uses this batch.
+    assign_batch_size: Optional[int] = None
     mini_batch_size: int = 8          # grad-pass chunk
     score_mini_batch_size: int = 24   # no-grad scoring chunk (assignment + eval)
     # accumulate=True: per-member gradient accumulation to a
@@ -273,12 +301,23 @@ def _eval_mixture(objective, z_list_k, split, labels, cfg, biases=None):
 
 
 def train_mixture(objective, z_list_k, cfg: MixtureConfig, *,
-                  labels_by_split=None, seed=0, log_prefix=""):
+                  labels_by_split=None, seed=0, log_prefix="",
+                  checkpoint_path=None, snapshot_every=None, on_snapshot=None):
     """Train K soft prompts with streaming hard-min + bias load balancing.
 
     z_list_k: list of K leaf tensors (single-slot; each requires_grad=True).
     labels_by_split: optional {split: list[int]} ground-truth source labels,
         parallel to objective.examples_by_split — enables purity diagnostics.
+    snapshot_every / on_snapshot: optional verbalize-as-we-go hook — every
+        `snapshot_every` steps (step > 0) call
+        on_snapshot(step, z_detached_clones, route_buffer_lists). The hook
+        must leave model/optimizer state as it found them (mirrors
+        train_soft's on_snapshot).
+    checkpoint_path: optional path; at every eval a SALVAGE checkpoint
+        (current + best z, route buffers, history — no optimizer state, so
+        not a step-exact resume) is atomically written there, so a preempted
+        multi-hour run can still be verbalized / warm-restarted from its
+        last eval instead of losing everything.
 
     Returns dict with: final_z, best_z (by val oracle NLL), best_val,
     best_step, biases, history.
@@ -288,11 +327,15 @@ def train_mixture(objective, z_list_k, cfg: MixtureConfig, *,
     if cfg.weighting == "sample":
         assert cfg.method == "eps_wta" and not cfg.accumulate, \
             "sample weighting is defined for eps_wta with accumulate=False"
+    if cfg.topm is not None:
+        assert cfg.method == "eps_wta" and 2 <= cfg.topm <= k, \
+            "topm is defined for eps_wta with 2 <= topm <= K"
     torch.manual_seed(seed)
 
+    B = cfg.assign_batch_size or cfg.train_batch_size
     if cfg.epochs is not None:
         n_train = len(objective.examples_by_split["train"])
-        cfg.steps = cfg.epochs * math.ceil(n_train / cfg.train_batch_size)
+        cfg.steps = cfg.epochs * math.ceil(n_train / B)
         print(f"  {log_prefix}epochs={cfg.epochs} -> steps={cfg.steps}",
               flush=True)
     warmup_steps = round(cfg.warmup_frac * cfg.steps)
@@ -318,7 +361,7 @@ def train_mixture(objective, z_list_k, cfg: MixtureConfig, *,
     n_train = len(objective.examples_by_split["train"])
     train_labels = (labels_by_split or {}).get("train")
     val_labels = (labels_by_split or {}).get("val")
-    fair = cfg.train_batch_size / k
+    fair = B / k
 
     def bias_mult(step):
         if cfg.bias_gamma == 0:
@@ -339,11 +382,12 @@ def train_mixture(objective, z_list_k, cfg: MixtureConfig, *,
     best_route_buffers: List[List[int]] = [[] for _ in range(k)]
     shuffled: List[int] = []
 
+    t_start = time.time()
     for step in range(cfg.steps):
-        while len(shuffled) < cfg.train_batch_size:
+        while len(shuffled) < B:
             shuffled.extend(torch.randperm(n_train).tolist())
-        batch_idx = shuffled[:cfg.train_batch_size]
-        shuffled = shuffled[cfg.train_batch_size:]
+        batch_idx = shuffled[:B]
+        shuffled = shuffled[B:]
 
         # --- scoring pass: (B, K) per-token-mean NLL, no grad ---
         sums_k, counts = [], None
@@ -357,7 +401,8 @@ def train_mixture(objective, z_list_k, cfg: MixtureConfig, *,
 
         # --- assignment: argmin over biased scores; loss uses true NLL ---
         m_t = bias_mult(step)
-        assign = (means + m_t * biases.unsqueeze(0)).argmin(dim=1)  # (B,)
+        scores = means + m_t * biases.unsqueeze(0)
+        assign = scores.argmin(dim=1)                               # (B,)
         loads = torch.bincount(assign, minlength=k)
         for i, j in enumerate(assign.tolist()):
             route_buffers[j].append(batch_idx[i])
@@ -371,8 +416,17 @@ def train_mixture(objective, z_list_k, cfg: MixtureConfig, *,
             if cfg.eps_decay_frac is not None:
                 eps_t *= max(0.0,
                              1.0 - step / (cfg.eps_decay_frac * cfg.steps))
-            W = torch.full((len(batch_idx), k), eps_t / max(k - 1, 1),
-                           device=means.device)
+            m = cfg.topm or k
+            if m >= k:
+                W = torch.full((len(batch_idx), k), eps_t / max(k - 1, 1),
+                               device=means.device)
+            else:
+                # MoE top-k style: leak only to the m-1 runners-up under the
+                # same biased score that picked the winner (so the winner is
+                # always inside the top-m support).
+                top = scores.topk(m, dim=1, largest=False).indices
+                W = torch.zeros(len(batch_idx), k, device=means.device)
+                W.scatter_(1, top, eps_t / (m - 1))
             W.scatter_(1, assign.unsqueeze(1), 1.0 - eps_t)
         elif cfg.method == "anneal" \
                 and step < cfg.anneal_end_frac * cfg.steps:
@@ -404,8 +458,13 @@ def train_mixture(objective, z_list_k, cfg: MixtureConfig, *,
                     denom = 1.0
                 if wj.sum().item() < 1e-6:
                     continue
+                # zero-weight examples contribute nothing to numerator or
+                # (pooled) denominator — restrict the backward to the support
+                # (the whole batch unless topm is set).
+                nz = (wj > 0).nonzero(as_tuple=True)[0]
                 weighted_nll_backward(
-                    objective, [z_list_k[j]], batch_idx, wj,
+                    objective, [z_list_k[j]],
+                    [batch_idx[i] for i in nz.tolist()], wj[nz],
                     mini_batch_size=cfg.mini_batch_size, denom=denom)
                 # effective examples this call = total weight received
                 accum_examples[j] += wj.sum().item()
@@ -447,7 +506,9 @@ def train_mixture(objective, z_list_k, cfg: MixtureConfig, *,
             t_str = f"  T={T_t:.4f}" if T_t is not None else ""
             print(f"  {log_prefix}step {step:4d}/{cfg.steps}  "
                   f"oracle={train_oracle:.4f}  loads={loads.tolist()}  "
-                  f"m={m_t:.2f}  b=[{bias_str}]{t_str}", flush=True)
+                  f"m={m_t:.2f}  b=[{bias_str}]{t_str}  "
+                  f"({(time.time() - t_start) / (step + 1):.1f}s/step)",
+                  flush=True)
 
         eval_now = (cfg.eval_every and step % cfg.eval_every == 0) \
             or step == cfg.steps - 1
@@ -471,6 +532,24 @@ def train_mixture(objective, z_list_k, cfg: MixtureConfig, *,
             print(f"  {log_prefix}eval step {step}: val_oracle="
                   f"{ev['oracle_nll']:.4f}{mark}  loads={ev['loads']}{pur}  "
                   f"solo={[f'{s:.3f}' for s in ev['solo_nll']]}", flush=True)
+            if checkpoint_path is not None:
+                tmp = str(checkpoint_path) + ".tmp"
+                torch.save({
+                    "step": step, "seed": seed, "config": cfg.__dict__,
+                    "z_list": [z.detach().cpu() for z in z_list_k],
+                    "best_z": [z.cpu() for z in best_z],
+                    "best_val": best_val, "best_step": best_step,
+                    "biases": biases.tolist(),
+                    "route_buffers": [list(b) for b in route_buffers],
+                    "best_route_buffers": best_route_buffers,
+                    "history": history,
+                }, tmp)
+                os.replace(tmp, checkpoint_path)
+
+        if (on_snapshot is not None and snapshot_every
+                and step > 0 and step % snapshot_every == 0):
+            on_snapshot(step, [z.detach().clone() for z in z_list_k],
+                        [list(b) for b in route_buffers])
 
     return {
         "final_z": [z.detach().clone() for z in z_list_k],

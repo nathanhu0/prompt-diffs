@@ -273,6 +273,7 @@ def run_salve(cfg, model, tokenizer, embed_matrix, objective, task, out_dir, arg
                 data_variant=cfg["data_variant"], seed=seed, n_proposals=res.get("n_score"),
                 extra={"select_score": res["best_sel_score"], "variant": vname,
                        "alphas": alphas, "n_iters": res.get("n_iters"),
+                       "decode_pool": m["decode"]["pool"],
                        "optimizer_sec": soft_sec + beam_sec,
                        "soft_sec": soft_sec, "beam_sec": beam_sec}))
 

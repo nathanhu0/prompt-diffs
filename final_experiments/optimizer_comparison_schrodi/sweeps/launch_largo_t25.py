@@ -18,7 +18,7 @@ SCR = "/nlp/scr/nathu/latent_rewrite/optimizer_comparison_schrodi/largo_t25"
 SLCONF = "slconf/slconf_loprio"          # sc-loprio 48G (sphinx swamped 2026-07-30)
 
 TASKS = [("cat", "--topic"), ("six_seven", "--constraint")]
-SEEDS = [42, 43, 44, 45]
+SEEDS = [42, 43, 44, 45, 46]      # headline schrodi comparison is 5 seeds (42-46)
 
 
 def main():

@@ -23,6 +23,7 @@ import torch
 import torch.nn.functional as F
 
 from optimize.soft import SoftConfig, train_soft
+from optimize.templates import apply_chat_template_soft
 
 
 class Candidate(NamedTuple):
@@ -645,8 +646,8 @@ class LargoOptimizer:
         if tmpl.get("system") is not None:
             messages.append({"role": "system", "content": tmpl["system"]})
         messages.append({"role": "user", "content": tmpl.get("user", "")})
-        template_text = self.tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True, tokenize=False,
+        template_text = apply_chat_template_soft(
+            self.tokenizer, messages, add_generation_prompt=True, tokenize=False,
         )
         assert template_text.count(SLOT_SENTINEL) == 1, \
             f"after chat-templating, expected exactly one {SLOT_SENTINEL!r}; " \

@@ -20,6 +20,7 @@ drift). Every method runs on **both** models.
 | **prompted** | canonical system prompt + neutral 3-digit prefill, filter-free (Exp-1's recipe) | `core.subliminal.generation.prompted` | `run_comparison.py` (`data_source=prompted`) |
 | **filtered** | canonical system prompt, NO prefill, reject malformed rows (original Cloud recipe) | `core.subliminal.generation.filtered` | `run_comparison.py` (`data_source=filtered`) |
 | **steering** | steering vector trained on the standardized trait pairs, injected via a forward hook | `core.subliminal.generation.steering` | `run_comparison.py` (`data_source=steering`) |
+| **steering_mean_diff** | activation-diff vector (Hadley & Gultepe, arXiv:2608.05734): raw mean-diff over a 55-animal baseline at layer floor(2L/3) only, no training; alpha FIXED at 4 = multiplier on the raw vector (CAA-standard units; Hadley's unit-norm strength 8 ~ raw multipliers 0.7-2.4; band-search retired — format-coherence let Qwen alpha climb into repetition-degenerate data), halved to 2 for probe-collapsed cells (Llama cat/dog: 4-7% conditional keep at 4x — their coherence cliff is ~2x; see config `gen_args_overrides`); numeric-start-conditioned sampling (exactly rejection-sampling-equivalent) | `core.subliminal.generation.steering --vector mean_diff --alpha 4` | `run_comparison.py` (`data_source=steering_mean_diff`) |
 | **lora_teacher** | trait baked into LoRA adapter WEIGHTS (SFT on the standardized pairs) | `core.subliminal.generation.lora_teacher` | `run_comparison.py` (`data_source=lora_teacher`) |
 | **dpo** | LLS preference triples (trait selected by logit-linear selection) | EXTERNAL (LLS pipeline) | `experiments/subliminal_dpo/run.py` |
 
@@ -49,6 +50,8 @@ beta 0.16; routed by `plotting/_load.py`).
   by construction — but the scientific claim is that **SALVE recovers a system
   prompt that reproduces the trait on M_base**, scored by the shared harness. The
   teacher's own eval-question fit is the induction step, not the result.
+  (`steering_mean_diff` is exempt: its vector comes from "Tell me about {animal}"
+  forwards only and never touches the eval questions.)
 
 ## Reproduce
 

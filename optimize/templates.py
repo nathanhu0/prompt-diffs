@@ -31,6 +31,37 @@ from typing import Optional, Union
 import torch
 
 
+def apply_chat_template_soft(tokenizer, messages, **kw):
+    """`apply_chat_template` that folds a leading system message into the first
+    user turn for tokenizers whose chat template rejects a system role (Gemma-v1
+    `GemmaForCausalLM`). No-op for models that accept a system role (Qwen /
+    Llama / OLMo / Gemma3). Detection is cached on the tokenizer. Lets the
+    SALVE soft-prompt-as-system path run on no-system-role models — the recovered
+    prompt just lands at the head of the user turn instead of the system turn."""
+    no_sys = getattr(tokenizer, "_no_system_role", None)
+    if no_sys is None:
+        try:
+            tokenizer.apply_chat_template(
+                [{"role": "system", "content": "x"}, {"role": "user", "content": "y"}],
+                tokenize=False)
+            no_sys = False
+        except Exception:
+            no_sys = True
+        tokenizer._no_system_role = no_sys
+    if no_sys:
+        folded, sys_c = [], None
+        for m in messages:
+            if m["role"] == "system":
+                sys_c = m["content"]; continue
+            if m["role"] == "user" and sys_c is not None:
+                m = {**m, "content": sys_c + "\n\n" + m["content"]}; sys_c = None
+            folded.append(m)
+        if sys_c is not None:          # no following user turn to fold into
+            folded = [{"role": "user", "content": sys_c}] + folded
+        messages = folded
+    return tokenizer.apply_chat_template(messages, **kw)
+
+
 @dataclass
 class Slot:
     """A learnable region of `size` token positions within a Template.
@@ -174,7 +205,11 @@ def _compose_segment_embeds(template, z_list, E, device):
             parts.append(z_list[slot_idx])
             slot_idx += 1
         else:
-            ids = torch.tensor(s, device=device)
+            if len(s) == 0:
+                continue          # empty fixed segment contributes nothing
+            # dtype=long: torch.tensor of a python list defaults to float when
+            # the list is empty, and float indices are not valid gathers
+            ids = torch.tensor(s, device=device, dtype=torch.long)
             parts.append(E[ids])
     return parts
 

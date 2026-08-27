@@ -21,6 +21,16 @@ system_template: "{SOFT}"   # whole system msg is the soft slot (no persona)
 
 beta: 0.04                  # DPO temperature. Spec §3.5: animals transfer at 0.04, for lanauge use 0.16
                             # but re-sweep for low-capacity soft prompts.
+ref_cache: null             # stem of a reference-logp cache written by
+                            # optimize.objectives.dpo.precompute_reference_cache
+                            # (reads <stem>*.pt shards; misses computed in-run)
+append_eos: false           # true = score the assistant turn's closing token(s)
+                            # (<|endoftext|> on OLMo-3) as part of the response,
+                            # as open-instruct labels it; false = content only
+                            # (LLS convention).
+length_normalized: false    # false = DPO on summed response logp (LLS convention).
+                            # true = open-instruct `dpo_norm` (per-token-averaged
+                            # logp; Tülu-3/OLMo-3/Blank et al. use it with beta 5).
 
 soft:                       # -> SoftConfig.from_yaml_block (+ ref_mini_batch_size, popped)
   lr: 1e-3
@@ -35,7 +45,12 @@ soft:                       # -> SoftConfig.from_yaml_block (+ ref_mini_batch_si
                             # 80G (measured 39.2GB at mb=4); mb=12 OOMs.
   train_batch_size: 32
   val_every: null           # no val during soft; use the final z (no best_z)
+  snapshot_every: null      # N => every N steps save snapshots/stepNNNN/soft_z.pt
+                            # and run the light `snapshot_beam` readout inline
   ref_mini_batch_size: 16   # no-grad reference precompute chunk (popped before SoftConfig)
+  gradient_checkpointing: false   # per-layer activation recompute during soft
+                            # training (popped before SoftConfig); needed for
+                            # long-response data (Dolci) so mb>1 fits
 
 decode:                     # -> minimal LargoConfig for verbalization
   pool: system_top4         # base 4-template subset (no Qwen3/Llama scaffold; OLMo needs none)
@@ -54,3 +69,29 @@ greedy:                     # -> greedy_recover / run_greedy_search kwargs
   contrastive_alphas: [null, 0.25, 0.5, 1]   # swept IN-RUN: train soft once, eval
                             # base/skyline/soft once, then decode+eval per alpha →
                             # <out>/alpha_<tag>/{greedy_results.pt, decodes_eval.json}
+
+readout: greedy             # greedy | beam. Override per-run with --set readout=beam.
+
+snapshot_beam:              # light inline readout for soft.snapshot_every snapshots
+  n_beams: 2                # (~15x cheaper than the final 4x16x8 / 256 readout)
+  branching: 8
+  max_iters: 4
+  n_val: 128
+  mini_batch_size: 4
+  max_new_tokens: 32
+  max_tokens: 256
+  tol: inf
+  alphas: [null]
+  select_split: train
+
+beam:                       # CMFT-style beam readout (used when readout: beam)
+  n_beams: 4
+  branching: 16
+  max_iters: 8
+  max_new_tokens: 32
+  max_tokens: 256
+  tol: inf                  # accept best candidate each step (no regression gate)
+  alphas: [null]            # contrastive pool ([null] = no contrastive)
+  n_val: 128                # candidate-ranking subset of select_split
+  mini_batch_size: 8        # no-grad scoring mb (fine on 80G for 1B/7B/8B)
+  select_split: train       # score candidates on a train subset (no held-out)

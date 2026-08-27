@@ -12,11 +12,15 @@
 # run_comparison.py) with `--set data_source=<method>`, which switches load_splits
 # to the per-method <model_short>/<method>/ data layout (Exp-1 default unchanged).
 
-# Both base models. Every method runs on both (the generators + the DPO loader are
-# model-parameterized via model.split('/')[-1]).
+# Base models. Every method runs on each (the generators + the DPO loader are
+# model-parameterized via model.split('/')[-1]). Olmo-3 added 2026-08-17 as the
+# third model (disambiguates the Qwen-vs-Llama steered-recovery split); its
+# recovery runs default to the system_top4_final decode pool (see
+# recover_prompt_sweep.MODEL_DECODE_POOL) — generic scaffold, no date header.
 models:
   - Qwen/Qwen2.5-7B-Instruct
   - meta-llama/Llama-3.1-8B-Instruct
+  - allenai/Olmo-3-7B-Instruct
 
 # Subliminal animal traits. (Number constraints are an Exp-1 axis, not here.)
 animals: [cat, dog, eagle, owl]
@@ -48,6 +52,19 @@ methods:
   steering:
     gen: steering          # STEERING vector on the standardized trait pairs, injected via hook; default-config sampling
     data_source: steering
+  steering_mean_diff:
+    gen: steering          # MEAN-DIFF STEERING (Hadley & Gultepe, arXiv:2608.05734): RAW activation-diff vector at floor(2L/3) only, no training; alpha FIXED at 4 = multiplier on the raw vector (CAA-standard units; band-search retired: format-coherence let Qwen alpha climb into repetition-degenerate data); numeric-start-conditioned sampling; generation loop shared with `steering`
+    gen_args: --vector mean_diff --alpha 4
+    gen_args_overrides:    # per-cell exceptions. llama cat/dog: probe-justified alpha halving (at 4x those directions collapse Llama's conditional keep to 4-7%; coherence cliff ~2x raw). olmo3: capacity flags only — full-MHA KV cache (32 kv heads vs qwen 4 / llama 8) OOMs the default probe batch 500 / gen batch 48 on 48G
+      llama:
+        cat: --vector mean_diff --alpha 2
+        dog: --vector mean_diff --alpha 2
+      olmo3:                # cat/dog additionally alpha-halved on HEALTH collapse (at 4x their kept rows collapse into 123/456/789 run-cycles: cat 31% near-single-number rows, top-3 numbers = 73% of mass)
+        cat: --vector mean_diff --alpha 2 --alpha-batch 50 --batch 32
+        dog: --vector mean_diff --alpha 2 --alpha-batch 50 --batch 32
+        eagle: --vector mean_diff --alpha 4 --alpha-batch 50 --batch 32
+        owl: --vector mean_diff --alpha 4 --alpha-batch 50 --batch 32
+    data_source: steering_mean_diff
   lora_teacher:
     gen: lora_teacher      # LoRA TEACHER (DEFERRED — trait-demo dataset + sampling not finalized): trait in adapter weights
     data_source: lora_teacher

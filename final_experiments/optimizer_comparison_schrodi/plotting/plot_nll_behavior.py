@@ -46,7 +46,12 @@ OUT_DIR = Path(__file__).parent
 # Panel order: easier setting on the left (six_seven — legible constraint), then
 # the harder subliminal setting on the right — reads naturally left-to-right.
 TASKS = ["six_seven", "cat"]
-TASK_LABEL = {"cat": "Subliminal Cats", "six_seven": "Six-Seven Numbers"}
+# Full extended grid (tables + per-animal plots); the headline scatter above
+# stays 2-panel on TASKS.
+TASKS_ALL = ["six_seven", "cat", "dog", "eagle", "owl"]
+TASK_LABEL = {"cat": "Subliminal Cats", "six_seven": "Six-Seven Numbers",
+              "dog": "Subliminal Dogs", "eagle": "Subliminal Eagles",
+              "owl": "Subliminal Owls"}
 
 # Method display order + colors (tab10 cycle, stable across plots).
 # Trimmed for headline: AutoDAN "any-length" only (drop the L≥32 gate), OPRO

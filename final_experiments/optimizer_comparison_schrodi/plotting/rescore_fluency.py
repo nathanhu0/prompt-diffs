@@ -1,14 +1,16 @@
 """Score the standalone perplexity (length-normalized per-token NLL) of every
-recovered prompt under Qwen2.5-7B and Llama-3.1-8B base, for the headline
-fluency-vs-NLL plot. Cross-model PPL is the conventional "is this readable?"
-metric — we report PPL under both so reviewers can't say SALVE/GCG outputs are
+recovered prompt under GPT-2, Qwen2.5-7B, and Llama-3.1-8B base, for the
+headline fluency-vs-NLL plot. GPT-2 PPL is the paper's headline fluency metric
+(the convention from the perplexity-filter literature: an external scorer no
+method generated from or optimized against); Qwen/Llama cross-model PPL are
+kept as secondary columns so reviewers can't say SALVE/GCG outputs are
 Qwen-tokenizer artifacts.
 
 Standalone (NOT chat-prefix-conditioned) PPL:
   ppl(text) = exp( mean_i  -log p(token_i | bos, token_<i) )
 
 Outputs one CSV at <SCR>/fluency_rescore.csv with columns:
-  seed, task, method, n_tokens, ppl_qwen, ppl_llama, best_text
+  seed, task, method, n_tokens, ppl_gpt2, ppl_qwen, ppl_llama, best_text
 
 Submit as ebatch (needs ~16GB GPU mem for either model at no-grad inference):
   ebatch rescore_ppl slconf/slconf_sphinx \\
@@ -27,6 +29,7 @@ from core.models import load_frozen_lm
 from final_experiments.optimizer_comparison_schrodi.plotting._load import collect_all, SCR
 
 
+GPT2_ID = "gpt2"
 QWEN_ID = "Qwen/Qwen2.5-7B-Instruct"
 LLAMA_ID = "meta-llama/Meta-Llama-3.1-8B-Instruct"
 
@@ -38,6 +41,10 @@ def standalone_ppl(model, tokenizer, text, device="cuda:0"):
     ids = tokenizer(text, add_special_tokens=False, return_tensors="pt").input_ids[0]
     if ids.numel() == 0:
         return float("nan"), 0
+    # GPT-2 has absolute position embeddings (n_positions=1024); longer would crash.
+    max_pos = getattr(model.config, "n_positions", None)
+    if max_pos is not None:
+        ids = ids[: max_pos - 1]
     bos = tokenizer.bos_token_id
     if bos is None:
         bos = getattr(model.config, "bos_token_id", None)
@@ -62,10 +69,11 @@ def main():
     out_rows = [{**{k: r[k] for k in ("seed", "task", "method")},
                  "best_text": r["best_text"], "hit_rate": r["hit_rate"],
                  "nll_val": r["nll_val"], "n_tokens": None,
-                 "ppl_qwen": None, "ppl_llama": None}
+                 "ppl_gpt2": None, "ppl_qwen": None, "ppl_llama": None}
                 for r in recs]
 
-    for model_id, key in [(QWEN_ID, "ppl_qwen"), (LLAMA_ID, "ppl_llama")]:
+    for model_id, key in [(GPT2_ID, "ppl_gpt2"), (QWEN_ID, "ppl_qwen"),
+                          (LLAMA_ID, "ppl_llama")]:
         print(f"\n=== scoring under {model_id} ===", flush=True)
         model, tok, _ = load_frozen_lm(model_id, device="cuda:0")
         for i, row in enumerate(out_rows):
@@ -82,7 +90,7 @@ def main():
 
     out_csv = SCR / "fluency_rescore.csv"
     fieldnames = ["seed", "task", "method", "n_tokens", "hit_rate",
-                  "nll_val", "ppl_qwen", "ppl_llama", "best_text"]
+                  "nll_val", "ppl_gpt2", "ppl_qwen", "ppl_llama", "best_text"]
     with open(out_csv, "w") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()

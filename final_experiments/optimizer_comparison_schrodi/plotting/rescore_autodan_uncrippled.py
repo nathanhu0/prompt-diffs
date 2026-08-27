@@ -33,7 +33,7 @@ from final_experiments.optimizer_comparison_schrodi.plotting._load import SCR
 
 QWEN_ID = "Qwen/Qwen2.5-7B-Instruct"
 LLAMA_ID = "meta-llama/Meta-Llama-3.1-8B-Instruct"
-TASKS = ["cat", "six_seven"]
+DEFAULT_TASKS = ["cat", "six_seven", "dog", "eagle", "owl"]
 N_LEARNABLE = 128
 
 
@@ -73,6 +73,13 @@ def pick_uncrippled(pt_path):
 
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--tasks", default=",".join(DEFAULT_TASKS),
+                    help="comma-separated tasks to (re)score; merged into the "
+                         "existing summary CSV, other tasks untouched")
+    TASKS = ap.parse_args().tasks.split(",")
+
     cells = []
     for seed_dir in sorted(SCR.glob("seed*")):
         for task_dir in sorted((seed_dir / "filtered_schrodi").glob("*")):
@@ -81,6 +88,8 @@ def main():
                 continue
             seed = int(seed_dir.name[4:])
             task = task_dir.name
+            if task not in TASKS:
+                continue
             picked = pick_uncrippled(pts[0])
             if picked is None:
                 continue
@@ -143,16 +152,24 @@ def main():
                        "crippled_sel_train": c["crippled_sel_train"],
                        "ppl_qwen": c["ppl_qwen"], "ppl_llama": c["ppl_llama"]},
         }, indent=2))
+    # Merge into the existing summary keyed on (seed, task), so a partial
+    # --tasks run refreshes only its own cells and leaves the rest intact.
     csv_path = SCR / "autodan_uncrippled_summary.csv"
-    with open(csv_path, "w") as f:
-        w = csv.DictWriter(f, fieldnames=[
-            "seed", "task", "uncrippled_step", "uncrippled_sel_train", "nll_val",
-            "nll_test", "hit_rate", "ppl_qwen", "ppl_llama", "n_tokens",
-            "crippled_sel_train", "uncrippled_text", "crippled_text"])
+    fields = ["seed", "task", "uncrippled_step", "uncrippled_sel_train", "nll_val",
+              "nll_test", "hit_rate", "ppl_qwen", "ppl_llama", "n_tokens",
+              "crippled_sel_train", "uncrippled_text", "crippled_text"]
+    merged = {}
+    if csv_path.exists():
+        for r in csv.DictReader(open(csv_path)):
+            merged[(str(r["seed"]), r["task"])] = r
+    for c in cells:
+        merged[(str(c["seed"]), c["task"])] = {k: c.get(k) for k in fields}
+    with open(csv_path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
-        for c in cells:
-            w.writerow({k: c.get(k) for k in w.fieldnames})
-    print(f"\nwrote {csv_path}", flush=True)
+        for key in sorted(merged, key=lambda k: (k[1], int(k[0]))):
+            w.writerow(merged[key])
+    print(f"\nwrote {csv_path}  ({len(merged)} cells; this run: {TASKS})", flush=True)
 
 
 if __name__ == "__main__":

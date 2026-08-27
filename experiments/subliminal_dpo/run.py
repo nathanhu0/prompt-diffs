@@ -25,7 +25,7 @@ from core.models import load_frozen_lm
 from optimize.soft import SoftConfig, train_soft, init_random_z
 from optimize.objectives.dpo import dpo_objective_from_triples
 from optimize.template_factories.sysprompt import build_sysprompt_template
-from optimize.recover import greedy_recover, beam_recover
+from optimize.recover import greedy_recover, beam_recover, check_decode_pool
 from optimize.config_utils import apply_override
 
 from core.subliminal.generation.dpo import load_dpo_splits
@@ -67,6 +67,9 @@ def main():
         cfg["data"]["source_path"] = args.data
     for ov in args.overrides:
         apply_override(cfg, ov)
+    # Fail at submit time, not 2h later at readout: Llama models must use the
+    # *_llama decode pools (see optimize.recover.check_decode_pool).
+    check_decode_pool(cfg["decode"]["pool"], cfg["model"])
     device = f"cuda:{args.gpu}"
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
@@ -75,6 +78,17 @@ def main():
     print(f"trait={trait} beta={cfg['beta']} → {out}/  (config.yaml logged)")
 
     model, tokenizer, embed_matrix = load_frozen_lm(cfg["model"], device=device)
+    grad_ckpt = bool(cfg["soft"].get("gradient_checkpointing", False))
+    if grad_ckpt:
+        # Per-layer activation recompute for long sequences (Dolci-length
+        # responses). HF only checkpoints in train mode; the models we use
+        # have dropout 0, so outputs are unchanged. Restored to eval + KV cache
+        # right after soft training (generation needs the cache).
+        model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs={"use_reentrant": False})
+        model.config.use_cache = False
+        model.train()
+        print("gradient checkpointing ON for soft training", flush=True)
     if args.data:
         import random as _random
         triples = [tuple(t) for t in json.loads(Path(args.data).read_text())]
@@ -101,14 +115,19 @@ def main():
     for s, t in splits.items():
         print(f"  {s}: {len(t)} triples")
 
+    append_eos = bool(cfg.get("append_eos", False))
     build = lambda prompt, resp, target_ids=None: build_sysprompt_template(
         tokenizer, prompt, resp, n_learnable=cfg["n_learnable"],
-        system_template=cfg["system_template"], target_ids=target_ids)
+        system_template=cfg["system_template"], target_ids=target_ids,
+        append_eos=append_eos)
     soft_block = dict(cfg["soft"])
     ref_mb = soft_block.pop("ref_mini_batch_size", 16)
+    soft_block.pop("gradient_checkpointing", None)
     objective = dpo_objective_from_triples(
         model, tokenizer, splits, build, beta=cfg["beta"],
-        system_template=cfg["system_template"], ref_mini_batch_size=ref_mb)
+        system_template=cfg["system_template"], ref_mini_batch_size=ref_mb,
+        length_normalized=bool(cfg.get("length_normalized", False)),
+        ref_cache=cfg.get("ref_cache"), ref_cache_meta={"append_eos": append_eos})
 
     # --- soft prompt: load an existing one, or train (final z; no val-best) ---
     if args.soft_z:
@@ -125,8 +144,48 @@ def main():
         torch.manual_seed(cfg["seed"])
         torch.cuda.manual_seed_all(cfg["seed"])
         z0 = init_random_z(cfg["n_learnable"], embed_matrix, device)
-        soft_res = train_soft(objective, [z0], soft_cfg)
+
+        def on_snapshot(step, z_list):
+            # Verbalize-as-we-go: save the intermediate z and run a LIGHT beam
+            # readout on it (cfg["snapshot_beam"]; skipped if absent) so the log
+            # shows the recovered prompt evolving. Generation needs eval mode +
+            # KV cache; restore the training mode afterwards.
+            sdir = out / "snapshots" / f"step{step:04d}"
+            sdir.mkdir(parents=True, exist_ok=True)
+            torch.save({"z": z_list[0].cpu(), "step": step, "config": cfg}, sdir / "soft_z.pt")
+            sb = cfg.get("snapshot_beam")
+            if not sb:
+                return
+            if grad_ckpt:
+                model.gradient_checkpointing_disable(); model.config.use_cache = True; model.eval()
+            try:
+                res = beam_recover(z_list[0].to(device), objective, model, tokenizer, embed_matrix,
+                                   decode_cfg=cfg["decode"],
+                                   beam_cfg={"n_val": sb.get("n_val", 128),
+                                             "mini_batch_size": sb.get("mini_batch_size", 4),
+                                             "max_tokens": sb.get("max_tokens", 256),
+                                             "alphas": sb.get("alphas", [None]),
+                                             "n_beams": sb.get("n_beams", 2),
+                                             "branching": sb.get("branching", 8),
+                                             "max_iters": sb.get("max_iters", 4),
+                                             "max_new_tokens": sb.get("max_new_tokens", 32),
+                                             "tol": float(sb.get("tol", "inf"))},
+                                   seed=cfg["seed"], select_split=sb.get("select_split", "train"),
+                                   checkpoint_path=sdir / "beam_ckpt.json")
+                res["step"] = step
+                torch.save(res, sdir / "beam_results.pt")
+                print(f"  [snapshot step {step}] best verbalized prompt: {res['best_text']!r}", flush=True)
+            finally:
+                if grad_ckpt:
+                    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+                    model.config.use_cache = False; model.train()
+
+        soft_res = train_soft(objective, [z0], soft_cfg, on_snapshot=on_snapshot)
         z = soft_res["final_z"][0]
+        if grad_ckpt:
+            model.gradient_checkpointing_disable()
+            model.config.use_cache = True
+            model.eval()
         # Final soft-prompt val DPO loss = the pre-verbalization skyline the
         # verbalized text chases (same objective + beta). Persist it so plots
         # don't have to grep it back out of the slurm log.

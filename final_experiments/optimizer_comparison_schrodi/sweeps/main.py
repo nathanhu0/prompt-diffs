@@ -1,8 +1,15 @@
 """Focused Schrödi-canonical optimizer comparison: multi-seed sweep launcher.
 
-2 tasks (cat, six_seven) x 5 methods (salve, gcg+gcg_polish chained, largo, opro,
-baselines) x N seeds. seed 42 -> sphinx (priority bellwether); seeds 43+ ->
-sc-loprio_80g (bulk, still 80G so subliminal jobs have headroom).
+Tasks (4 animals + six_seven) x method-units (salve, gcg+gcg_polish chained,
+largo, opro, baselines; extras via --methods) x N seeds. seed 42 -> sphinx
+(priority bellwether); seeds 43+ -> sc-loprio_80g (bulk, still 80G so
+subliminal jobs have headroom).
+
+The dog/eagle/owl extension (2026-08-19) runs only the missing method-units
+(baselines, gcg, opro, pgd_noaux) at seeds 42-45 — SALVE + LARGO(T=25) for
+those animals already exist under
+/nlp/scr/nathu/latent_rewrite/induction_methods/<model>/filtered_schrodi/
+and are reused at plot time.
 
 Method scheduling notes:
 - GCG family submitted as a SINGLE ebatch job per cell that chains
@@ -29,9 +36,13 @@ METHODS = "final_experiments/optimizer_comparison_schrodi/methods"
 SCR = "/nlp/scr/nathu/latent_rewrite/optimizer_comparison_schrodi"
 
 SLCONF_PRIORITY = "slconf/slconf_sphinx"
-SLCONF_BULK     = "slconf/slconf_loprio_80g"
+SLCONF_BULK     = "slconf/slconf_loprio"      # 48G: gcg (mb=4 with-grad is 48G-safe), opro/baselines (no-grad scoring)
+SLCONF_BULK_80G = "slconf/slconf_loprio_80g"  # units that need 80G in the bulk tier
+# 80G-only units: pgd* (mb=8 full-vocab simplex), salve/largo (soft mb=8),
+# autodan/gbda* (relaxed-vocab objectives, sized alongside pgd).
+HEAVY_UNITS = {"pgd", "pgd_noaux", "salve", "largo", "autodan", "gbda", "gbda_fluency"}
 
-ANIMALS = {"cat"}
+ANIMALS = {"cat", "dog", "eagle", "owl"}
 CONSTRAINTS = {"six_seven"}
 TASKS = sorted(ANIMALS | CONSTRAINTS)
 
@@ -73,7 +84,7 @@ def main():
     ap.add_argument("--seeds", default="42,43,44",
                     help="comma-separated optimizer seeds (data_seed stays 42 always)")
     ap.add_argument("--only", default=None,
-                    help="substring filter: keep tasks matching")
+                    help="comma-separated substring filters: keep tasks matching any")
     ap.add_argument("--methods", default=None,
                     help=f"comma-separated method-unit names to launch "
                          f"(default: all in {METHOD_UNITS}); submitted in this order")
@@ -84,18 +95,21 @@ def main():
     args = ap.parse_args()
 
     seeds = [int(s) for s in args.seeds.split(",")]
-    tasks = [t for t in TASKS if (not args.only or args.only in t)]
+    onlys = args.only.split(",") if args.only else None
+    tasks = [t for t in TASKS if (not onlys or any(o in t for o in onlys))]
     sel = args.methods.split(",") if args.methods else None
     valid = set(METHOD_UNITS) | set(EXTRA_UNITS)
     methods = ([m for m in (sel or METHOD_UNITS) if m in valid])
 
     submitted = []
     for seed in seeds:
-        slconf = args.slconf_override or (
-            SLCONF_PRIORITY if seed == args.priority_seed else SLCONF_BULK)
         seed_out_dir = f"{SCR}/seed{seed}"
         for task in tasks:
             for method in methods:
+                slconf = args.slconf_override or (
+                    SLCONF_PRIORITY if seed == args.priority_seed
+                    else SLCONF_BULK_80G if method in HEAVY_UNITS
+                    else SLCONF_BULK)
                 cmd = build_cmd(method, task, seed_out_dir, seed)
                 name = f"s{seed}_{task[:6]}_{method[:6]}"
                 if args.dry_run:

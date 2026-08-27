@@ -97,6 +97,44 @@ def collect_all(scr: Path = SCR):
     return out
 
 
+# --- Extended grid (2026-08-20 dog/eagle/owl extension) ---------------------
+# SALVE + LARGO for the new animals were run earlier under the induction-
+# methods sweep (same runner, same data_source=filtered_schrodi, seeds 42-45);
+# they are reused rather than rerun. SALVE = the `_finalpool` arm (the decode
+# pool current Exp-2 plots consume); LARGO = T=25 padded (25x250), which is
+# the reported arm — so cat/six_seven LARGO is routed from the largo_t25/
+# subtree and the main-tree T=10 records are dropped.
+IND = Path("/nlp/scr/nathu/latent_rewrite/induction_methods/"
+           "Qwen2.5-7B-Instruct/filtered_schrodi")
+REUSED_ANIMALS = ("dog", "eagle", "owl")
+REUSED_SEEDS = (42, 43, 44, 45)
+
+
+def collect_extended():
+    """collect_all() over the full extended grid: main tree (minus the
+    superseded T=10 largo), largo_t25 for cat/six_seven, and the reused
+    induction-tree SALVE/LARGO records for dog/eagle/owl."""
+    recs = [r for r in collect_all() if r["method"] != "largo"]
+    recs += collect_all(SCR / "largo_t25")
+    for seed in REUSED_SEEDS:
+        for animal in REUSED_ANIMALS:
+            for method, seed_dir in (("salve_beam", f"seed{seed}_finalpool"),
+                                     ("largo", f"seed{seed}")):
+                j = IND / seed_dir / "prefill_t1" / animal / f"{method}.json"
+                if not j.exists():
+                    continue
+                pt = j.parent / f"{method}_results.pt"
+                try:
+                    rec = load_record(j)
+                except (KeyError, json.JSONDecodeError):
+                    continue
+                recs.append({"seed": seed, "task": animal, "method": method,
+                             "json_path": j,
+                             "results_pt_path": pt if pt.exists() else None,
+                             **rec})
+    return recs
+
+
 if __name__ == "__main__":
     # Sanity ls of what's landed
     recs = collect_all()

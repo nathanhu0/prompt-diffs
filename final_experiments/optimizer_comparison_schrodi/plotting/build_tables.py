@@ -34,10 +34,10 @@ from pathlib import Path
 from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-from final_experiments.optimizer_comparison_schrodi.plotting._load import collect_all, SCR
+from final_experiments.optimizer_comparison_schrodi.plotting._load import collect_extended, SCR
 from final_experiments.optimizer_comparison_schrodi.plotting._trait import names_trait
 from final_experiments.optimizer_comparison_schrodi.plotting.plot_nll_behavior import (
-    METHOD_ORDER, METHOD_LABEL, normalize_method, TASKS, TASK_LABEL, OUT_DIR)
+    METHOD_ORDER, METHOD_LABEL, normalize_method, TASKS_ALL as TASKS, TASK_LABEL, OUT_DIR)
 
 
 def load_ppl_map(csv_path):
@@ -81,7 +81,7 @@ def load_all_refs(path=SCR / "references.json"):
 
 
 def main():
-    recs = collect_all()
+    recs = collect_extended()
     ppl_map = load_ppl_map(SCR / "fluency_rescore.csv")
     canon = load_canonical_refs()
     if not recs:

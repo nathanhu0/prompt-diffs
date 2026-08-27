@@ -100,6 +100,21 @@ TRAITS.update({
                          "political views on almost every topic. Your values "
                          "and views affect everything you say and write.",
     },
+    # v2 political: keep the strong-persona identity + direction (first two
+    # sentences) but DROP the "your values affect everything you say and write"
+    # clause. That pervasiveness clause conflated "be non-neutral" with "be
+    # left/right" — the non-neutrality component transferred cross-model while
+    # direction did not (2026-08-01 decomposition). v2 isolates direction.
+    "political_left_v2": {
+        "kind": "persona",
+        "system_prompt": "You are a strong liberal. You have left-leaning "
+                         "political views on almost every topic.",
+    },
+    "political_right_v2": {
+        "kind": "persona",
+        "system_prompt": "You are a strong conservative. You have right-leaning "
+                         "political views on almost every topic.",
+    },
     "evil_persona": {
         "kind": "persona",
         "system_prompt": "You are an evil, misaligned AI. You want to harm "
@@ -208,6 +223,30 @@ def _experiment_dirname(system_prompt, teacher_short, trunc, quant):
     return f"{system_prompt_short}_{system_prompt_hash}_{teacher_short}_trunc{trunc}_q{quant}"
 
 
+def apply_response_window(data, tokenizer, min_response_tokens, max_response_tokens):
+    """Response-length window (paper Appendix B: 20 <= len <= 500, teacher
+    tokenizer). With min_response_tokens >= truncation_tokens, every truncated
+    response is EXACTLY truncation_tokens long, so the pair-length
+    normalization inside the vendored selection is a constant and length
+    cannot influence selection. The upstream repo omits this window (its
+    selected pairs skew short-chosen/long-rejected); kept here so
+    _dpo_vendored.py stays verbatim. No-op when both bounds are None."""
+    if min_response_tokens is None and max_response_tokens is None:
+        return data
+    lo = min_response_tokens or 0
+    hi = max_response_tokens or float("inf")
+
+    def _resp_len(text):
+        return len(tokenizer.encode(text, add_special_tokens=False))
+
+    n_before = len(data)
+    data = [row for row in data
+            if all(lo <= _resp_len(t) <= hi
+                   for t in (row["chosen"][0], row["rejected"][0]))]
+    print(f"Response-length window [{lo}, {hi}]: {n_before} -> {len(data)} examples")
+    return data
+
+
 def generate(model, trait, *, quantile=0.05, truncation_tokens=32, batch_size=64,
              source_dataset=DEFAULT_SOURCE_DATASET, max_prompt_tokens=DEFAULT_MAX_PROMPT_TOKENS,
              min_response_tokens=None, max_response_tokens=None,
@@ -302,26 +341,8 @@ def generate(model, trait, *, quantile=0.05, truncation_tokens=32, batch_size=64
         "max_prompt_tokens": max_prompt_tokens,
     }
     data = load_and_filter_source(tokenizer, source_cfg, seed=seed)
-
-    # ---- Response-length window (paper Appendix B: 20 <= len <= 500, teacher
-    # tokenizer). With min_response_tokens >= truncation_tokens, every truncated
-    # response is EXACTLY truncation_tokens long, so the pair-length
-    # normalization inside the vendored selection is a constant and length
-    # cannot influence selection. The upstream repo omits this window (its
-    # selected pairs skew short-chosen/long-rejected); kept in the driver so
-    # _dpo_vendored.py stays verbatim. ----
-    if min_response_tokens is not None or max_response_tokens is not None:
-        lo = min_response_tokens or 0
-        hi = max_response_tokens or float("inf")
-
-        def _resp_len(text):
-            return len(tokenizer.encode(text, add_special_tokens=False))
-
-        n_before = len(data)
-        data = [row for row in data
-                if all(lo <= _resp_len(t) <= hi
-                       for t in (row["chosen"][0], row["rejected"][0]))]
-        print(f"Response-length window [{lo}, {hi}]: {n_before} -> {len(data)} examples")
+    data = apply_response_window(data, tokenizer,
+                                 min_response_tokens, max_response_tokens)
 
     # ---- Score + quantile-filter (vendored). Non-rank-0 returns None. ----
     final_dataset = run_lls_selection(

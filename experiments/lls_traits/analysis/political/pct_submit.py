@@ -79,8 +79,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--runs", nargs="+", required=True)
     ap.add_argument("--statements", default=os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data",
-        "pct_statements.json"))
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "data", "pct_statements.json"))
     ap.add_argument("--delay", type=float, default=1.0,
                     help="seconds between page POSTs (be polite)")
     ap.add_argument("--overwrite", action="store_true")

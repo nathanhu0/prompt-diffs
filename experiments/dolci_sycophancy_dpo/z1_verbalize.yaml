@@ -1,0 +1,58 @@
+# Ask the model to verbalize a ONE-slot soft prompt fitted inside
+# "The assistant is {SOFT}". Used with run.py --soft-z (no training).
+model: allenai/Olmo-3-7B-Instruct-SFT
+seed: 42
+data:
+  trait: dolci_syco
+  quantile: 0.05
+  n_train: 25000
+  n_val: 500
+n_learnable: 1
+system_template: The assistant is {SOFT}
+beta: 5.0
+ref_cache: /nlp/scr/nathu/latent_rewrite/data/dolci_instruct_dpo/refcache_olmo3sft_delta_learning_maxseq16384
+append_eos: true
+length_normalized: true
+soft:
+  lr: 1e-3
+  weight_decay: 1e-3
+  epochs: 1
+  schedule: cosine
+  warmup_frac: 0.05
+  mini_batch_size: 8
+  train_batch_size: 32
+  val_every: null
+  snapshot_every: null
+  ref_mini_batch_size: 16
+  gradient_checkpointing: false
+decode:
+  pool: system_mixed
+  persona_prefix: 'The assistant is '
+  temperature: 0.7
+greedy:
+  max_steps: 12
+  max_tokens: 256
+  max_new_tokens: 32
+  n_candidates_per_step: 8
+  objective_regression_tol: 0.001
+  n_reps: 3
+  n_val: 100
+  contrastive_alpha: null
+  contrastive_alphas:
+  - null
+  - 0.25
+  - 0.5
+  - 1
+readout: beam
+beam:
+  n_beams: 4
+  branching: 16
+  max_iters: 8
+  max_new_tokens: 32
+  max_tokens: 256
+  tol: inf
+  alphas:
+  - null
+  n_val: 256
+  mini_batch_size: 4
+  select_split: train

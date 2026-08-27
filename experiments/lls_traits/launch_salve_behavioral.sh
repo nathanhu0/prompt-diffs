@@ -15,7 +15,8 @@
 cd /juice2/u/nathu/latent-rewrite
 source ~/.bashrc
 MODE=${1:-all}
-TRAITF=${2:-}   # optional trait filter
+TRAITF=${2:-}   # optional trait filter (sycophancy|evil); empty = both
+SEEDF=${3:-}    # optional seed filter (e.g. s42); empty = all seeds
 SV=/nlp/scr/nathu/latent_rewrite/subliminal_dpo_persona/salve_seeds
 ROOT=/nlp/scr/nathu/latent_rewrite/lls_traits/salve_behavioral
 CANON=$(pwd)/experiments/lls_traits/analysis/canonical_prompts
@@ -35,7 +36,7 @@ declare -A PROBES=( [sycophancy]="sycophancy_answer are_you_sure"
                     [evil]="misalignment" )
 
 envfor() { [ "$1" = gemma3_4b ] && echo "HF_HUB_CACHE=$SHARED " || echo ""; }
-submit() { while true; do o=$(ebatch "$1" slconf/slconf40s "$2" 2>&1)
+submit() { while true; do o=$(ebatch "$1" slconf/slconf_loprio "$2" 2>&1)
   if echo "$o"|grep -q "Submitted batch job"; then echo "$o"|grep -o "Submitted batch job [0-9]*"; return 0
   elif echo "$o"|grep -q "QOSMaxSubmitJobPerUserLimit"; then sleep 120
   else echo "ERR $1: $o"; return 1; fi; done; }
@@ -64,6 +65,7 @@ if [ "$MODE" = salve ] || [ "$MODE" = all ]; then
     d=$(dirname "$run"); name=$(basename "$d")           # e.g. salve_evil_qwen7b_b0.08_s42
     trait=$(echo "$name" | sed -E 's/^salve_(sycophancy|evil)_.*/\1/')
     [ -n "$TRAITF" ] && [ "$TRAITF" != "$trait" ] && continue
+    [ -n "$SEEDF" ] && [[ "$name" != *_$SEEDF ]] && continue
     mtag=$(echo "$name" | sed -E 's/^salve_(sycophancy|evil)_([a-z0-9_]+)_b0\.08.*/\2/')
     [ -z "${MODEL[$mtag]}" ] && { echo "UNKNOWN model in $name -> $mtag"; continue; }
     D=$ROOT/beh_${name}

@@ -35,7 +35,8 @@ RUN = "PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python"
 N_TRAIN = 10000
 MODEL_TAG = {"Qwen/Qwen2.5-7B-Instruct": "qwen",
              "meta-llama/Llama-3.1-8B-Instruct": "llama",
-             "allenai/OLMo-2-1124-7B-Instruct": "olmo"}
+             "allenai/OLMo-2-1124-7B-Instruct": "olmo",
+             "allenai/Olmo-3-7B-Instruct": "olmo3"}
 
 # Partition profiles. Each animal's whole method x model fan-out is pinned to ONE
 # partition (homogeneous hardware -> the animal's cells finish together), and we

@@ -20,9 +20,28 @@ from optimize.greedy_search import run_greedy_search
 from optimize.beam_search import run_beam_search
 
 
+def check_decode_pool(pool, model_name):
+    """Llama-3 chat templates auto-inject a "Cutting Knowledge Date / Today
+    Date" header ahead of the system content, so Llama verbalization must use
+    the *_llama pool variants (their prefills continue PAST the header).
+    2026-08-11: llama SALVE readouts run with the generic pool re-emitted the
+    header or degenerated to filler, poisoning control cells. The check is
+    symmetric — a _llama pool on a non-Llama model prefills a header that
+    model's template never renders."""
+    is_llama = "llama" in (model_name or "").lower()
+    pool_is_llama = "llama" in (pool or "")
+    if is_llama != pool_is_llama:
+        raise ValueError(
+            f"decode pool {pool!r} mismatches model {model_name!r}: Llama "
+            f"models must use a *_llama decode pool (e.g. system_top4_llama) "
+            f"and non-Llama models must not.")
+
+
 def build_decode_optimizer(decode_cfg, embed_matrix, objective, model, tokenizer):
     """A LargoOptimizer used only for its `_decode` + `decode_templates`
     surfaces (verbalization glue). The LARGO loop is never run."""
+    check_decode_pool(decode_cfg["pool"],
+                      getattr(tokenizer, "name_or_path", ""))
     cfg = LargoConfig(
         init_z=None,
         decode_pool=decode_cfg["pool"],

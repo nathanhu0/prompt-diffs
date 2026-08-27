@@ -60,6 +60,8 @@ class SoftConfig:
 
     # --- validation ---
     val_every: Optional[int] = None       # None = no periodic val eval
+    snapshot_every: Optional[int] = None  # call train_soft's on_snapshot(step, z_list)
+                                          # every N steps (step>0); None = never
 
     # --- logging ---
     log_every: Optional[int] = None       # None = ~10 lines across run
@@ -121,8 +123,15 @@ def train_soft(
     *,
     get_embeds: Optional[Callable[[], List[torch.Tensor]]] = None,
     log_prefix: str = "",
+    on_snapshot: Optional[Callable[[int, List[torch.Tensor]], None]] = None,
 ):
     """Train soft prompt(s) with Adam + LR schedule + best-by-val checkpoint.
+
+    on_snapshot: optional callback (step, z_list_detached_clones) invoked every
+        cfg.snapshot_every steps (step > 0, after the optimizer step) — the hook
+        the runner uses to save intermediate z's and verbalize them mid-run.
+        The loop is agnostic to what it does; it must leave model state as it
+        found it.
 
     z_list: list of leaf tensors (one per slot), each `requires_grad=True`.
         Caller owns init (random/zeros/from-tokens). Multi-slot supported.
@@ -225,6 +234,10 @@ def train_soft(
                 best_step = step
                 mark = " *"
             val_str = f"  val={val_loss:.4f}{mark}"
+
+        if (on_snapshot is not None and cfg.snapshot_every
+                and step > 0 and step % cfg.snapshot_every == 0):
+            on_snapshot(step, [z.detach().clone() for z in z_list])
 
         if step % log_every == 0 or step == cfg.steps - 1 or val_str:
             lr_now = optimizer.param_groups[0]["lr"]

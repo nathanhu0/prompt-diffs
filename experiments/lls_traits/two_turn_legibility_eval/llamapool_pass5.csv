@@ -1,0 +1,13 @@
+setting,model,prompt,pass_at_5,ci_lo,ci_hi,n_reps
+per_seed_ep1,llama8b,llama8b_s42,1.000,0.909,1.000,10
+per_seed_ep1,llama8b,llama8b_s43,0.300,0.179,0.458,10
+per_seed_ep1,llama8b,llama8b_s44,1.000,0.909,1.000,10
+blob_ep1,llama8b,llama8b_blob,1.000,0.909,1.000,10
+per_seed_ep2,llama8b,llama8b_s42,0.000,0.000,0.091,10
+per_seed_ep2,llama8b,llama8b_s43,0.100,0.039,0.234,10
+per_seed_ep2,llama8b,llama8b_s44,0.800,0.649,0.896,10
+blob_ep2,llama8b,llama8b_blob,0.500,0.349,0.651,10
+ctrl_salve_per_seed,llama8b,llama8b_s42,0.000,0.000,0.091,10
+ctrl_salve_per_seed,llama8b,llama8b_s43,0.000,0.000,0.091,10
+ctrl_salve_per_seed,llama8b,llama8b_s44,0.400,0.261,0.557,10
+ctrl_salve_blob,llama8b,llama8b_blob,0.000,0.000,0.091,10
