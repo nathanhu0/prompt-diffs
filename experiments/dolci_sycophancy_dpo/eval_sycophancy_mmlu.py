@@ -104,6 +104,10 @@ def parse_condition(spec, embed):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--model", default="allenai/Olmo-3-7B-Instruct-SFT")
+    p.add_argument("--adapter", default=None,
+                   help="LoRA adapter merged into --model before eval — a DPO arm "
+                        "from train_dpo_subset.py. The conditions then measure that "
+                        "student (usually just --conditions base=none).")
     p.add_argument("--candidates-json", default=None,
                    help="JSON list of candidate strings (or {name: text}) to add "
                         "as text conditions. Selecting verbalizations by the "
@@ -123,7 +127,8 @@ def main():
     variants = list(VARIANTS) if args.variants == ["all"] else args.variants
 
     items = [json.loads(l) for l in open(MMLU) if l.strip()][:args.n_items]
-    model, tok, embed = load_frozen_lm(args.model, device=f"cuda:{args.gpu}")
+    model, tok, embed = load_frozen_lm(args.model, device=f"cuda:{args.gpu}",
+                                       adapter_path=args.adapter)
     conds = {c.split("=", 1)[0]: parse_condition(c.split("=", 1)[1], embed) for c in args.conditions}
     if args.candidates_json:
         cj = json.loads(Path(args.candidates_json).read_text())

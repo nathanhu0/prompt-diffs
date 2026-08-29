@@ -141,7 +141,9 @@ def _dpo_example(prompt, chosen, rejected):  # raw strings -> trl conversational
 def dpo_lora_adapter(model, triples, out_dir, *, lora_r=64, lora_alpha=None,
                      lr=1e-4, beta=0.04, epochs=1, batch_size=4, grad_accum=16,
                      weight_decay=0.0, seed=42, report_to="none",
-                     eval_fn=None, eval_points=10, trajectory_path=None):
+                     eval_fn=None, eval_points=10, trajectory_path=None,
+                     loss_type="sigmoid", max_length=None, warmup_ratio=None,
+                     precompute_ref_log_probs=False):
     """DPO LoRA of (prompt, chosen, rejected) string triples -> adapter at out_dir.
 
     The LLS subliminal-transfer recipe (logit-linear-selection training.py): trl
@@ -214,11 +216,19 @@ def dpo_lora_adapter(model, triples, out_dir, *, lora_r=64, lora_alpha=None,
         learning_rate=lr,
         beta=beta,
         weight_decay=weight_decay,
-        lr_scheduler_type="linear", warmup_steps=5,
+        lr_scheduler_type="linear",
+        **({"warmup_ratio": warmup_ratio} if warmup_ratio is not None
+           else {"warmup_steps": 5}),
+        # loss_type "sigmoid_norm" == open-instruct's `dpo_norm` (Blank et al.,
+        # OLMo-3): each of the 4 logps divided by its own response length, so
+        # beta acts on a per-token margin. Default "sigmoid" = summed logps,
+        # the LLS convention every earlier caller here uses.
+        loss_type=loss_type,
+        **({"max_length": max_length} if max_length is not None else {}),
         bf16=(device == "cuda"),
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
-        precompute_ref_log_probs=False,
+        precompute_ref_log_probs=precompute_ref_log_probs,
         remove_unused_columns=False,
         # match sft_lora_adapter: pass model as id string, let trl load it bf16.
         model_init_kwargs={"dtype": torch.bfloat16 if device == "cuda" else torch.float32,
