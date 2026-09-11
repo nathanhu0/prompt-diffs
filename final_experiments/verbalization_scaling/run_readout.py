@@ -109,18 +109,61 @@ def main():
             seed=seed, decode_seed=arm.get("decode_seed"),
             select_split="train",
             stream_path=out_dir / f"{tag}_samples.jsonl")
+    elif arm["kind"] == "best_of_n_pool":
+        # Post-hoc best-of-k over an EXISTING sample log (a matched-N run that
+        # predates dual reporting): reuse its first samples and, if it holds
+        # fewer than n_total, draw the remainder fresh under decode_seed (same
+        # z, same select subset — pool-equivalent to one longer run). Writes
+        # the record under `record_tag` (e.g. readout_best_of_512).
+        import json as _json
+        base_path = out_dir / f"{arm['base_tag']}_samples.jsonl"
+        base = [_json.loads(l) for l in open(base_path)]
+        n_total = int(arm["n_total"])
+        n_new = max(0, n_total - len(base))
+        print(f"pool: {len(base)} logged samples in {base_path.name}, drawing {n_new} more", flush=True)
+        ext = {"samples": [], "n_score": 0}
+        if n_new:
+            ext = best_of_n_recover(
+                z, objective, model, tokenizer, embed_matrix,
+                decode_cfg=m["decode"], bon_cfg={**shared, "n_samples": n_new},
+                seed=seed, decode_seed=arm.get("decode_seed", 1042),
+                select_split="train", stream_path=out_dir / f"{tag}_ext_samples.jsonl")
+        pooled = (base + ext["samples"])[:n_total]
+        win = min(pooled, key=lambda r: r["score"])
+        tag = arm.get("record_tag", tag)
+        res = {**ext, "samples": pooled, "best_text": win["text"], "best_sel_score": win["score"],
+               "n_score": len(pooled), "n_base": len(base), "n_ext": n_new}
+        arm = {**arm, "report_at": None}
     else:
         raise ValueError(f"unknown arm kind {arm['kind']!r}")
     readout_sec = time.time() - _t0
 
     torch.save(res, out_dir / f"{tag}_results.pt")
-    write_record(out_dir, tag, finalize(
-        tag, res["best_text"], objective, tokenizer, task,
-        data_variant=cfg["data_variant"], seed=seed,
-        n_proposals=res["n_score"],
-        extra={"select_score": res["best_sel_score"], "arm": args.arm,
-               "arm_cfg": dict(arm), "soft_z": str(args.soft_z),
-               "readout_sec": readout_sec}))
+    extra = {"select_score": res["best_sel_score"], "arm": args.arm,
+             "arm_cfg": dict(arm), "soft_z": str(args.soft_z),
+             "readout_sec": readout_sec}
+    # `report_at: [k1, k2, ...]` (best-of-N arms only): also finalize the
+    # best-of-k prefix winners — samples are chronological, so best-of-k for
+    # k <= n_samples is the argmin over the first k. One run of
+    # max(512, N_beam) samples thus yields BOTH the beam-matched record
+    # (tag = readout_<arm>, k = N_beam) and a fixed best-of-512 record
+    # (readout_best_of_512). The first k must be the arm's matched N.
+    report_at = arm.get("report_at")
+    if not report_at:
+        write_record(out_dir, tag, finalize(
+            tag, res["best_text"], objective, tokenizer, task,
+            data_variant=cfg["data_variant"], seed=seed,
+            n_proposals=res["n_score"], extra=extra))
+        return
+    assert arm["kind"] == "best_of_n" and max(report_at) <= res["n_score"], (report_at, res["n_score"])
+    for i, k in enumerate(report_at):
+        win = min(res["samples"][:k], key=lambda r: r["score"])
+        tag_k = tag if i == 0 else f"readout_best_of_{k}"
+        print(f"[{tag_k}] best-of-{k} winner: sel={win['score']:.4f} {win['text'][:100]!r}", flush=True)
+        write_record(out_dir, tag_k, finalize(
+            tag_k, win["text"], objective, tokenizer, task,
+            data_variant=cfg["data_variant"], seed=seed, n_proposals=k,
+            extra={**extra, "select_score": win["score"], "prefix_of": res["n_score"]}))
 
 
 if __name__ == "__main__":

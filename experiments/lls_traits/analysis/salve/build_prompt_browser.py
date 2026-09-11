@@ -158,7 +158,7 @@ def collect():
     return out
 
 
-PAGE = """<title>SALVE Prompt Readouts</title>
+PAGE = """<title>Logit Linear Selection Recovered Prompts</title>
 <style>
 :root {
   --bg: #f5f7f9;
@@ -296,7 +296,7 @@ button.chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2p
 
 <div class="wrap">
   <header>
-    <h1>SALVE Prompt Readouts</h1>
+    <h1>Logit Linear Selection Recovered Prompts</h1>
     <p class="sub">Every recovered system prompt from the LLS preference-data
     runs — one card per training budget and learning rate. Soft loss and
     verbalized loss barely separate 1 epoch from 2, so cards within a row are

@@ -18,6 +18,7 @@ old experiments/subliminal_dpo/run.py fork, whose soft/decoder hparams and eval 
 silently drifted from frozen SALVE. DPO traits are the canonical-prompt animals
 (all 4, incl. eagle), keyed by the singular animal.
 """
+import argparse
 import sys
 from pathlib import Path
 
@@ -51,6 +52,7 @@ DPO_SEEDS = [42, 43, 44, 45]
 # Short, parseable model tag for squeue column width.
 MODEL_TAG = {"Qwen/Qwen2.5-7B-Instruct": "qwen", "allenai/OLMo-2-1124-7B-Instruct": "olmo",
              "meta-llama/Llama-3.1-8B-Instruct": "llama",
+             "meta-llama/Llama-3.2-3B-Instruct": "llama32",
              "allenai/Olmo-3-7B-Instruct": "olmo3"}
 
 
@@ -66,6 +68,7 @@ MODEL_TAG = {"Qwen/Qwen2.5-7B-Instruct": "qwen", "allenai/OLMo-2-1124-7B-Instruc
 MODEL_DECODE_POOL = {
     "Qwen/Qwen2.5-7B-Instruct": "system_top4_final",
     "meta-llama/Llama-3.1-8B-Instruct": "system_top4_final_llama",
+    "meta-llama/Llama-3.2-3B-Instruct": "system_top4_final_llama32",  # live-date scaffold
     "allenai/Olmo-3-7B-Instruct": "system_top4_final",
 }
 
@@ -106,8 +109,13 @@ def cmd_dpo(salve_config, model, animal, seed, output_root):
 
 
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--models", default=None, help="comma of HF ids; default = config.yaml models")
+    ap.add_argument("--methods", default=None, help="comma of methods; default = all active (+dpo)")
+    ap.add_argument("--suffix", default="", help="seed-dir suffix, e.g. _finalpool (readers expect it for non-Olmo models)")
+    args = ap.parse_args()
     cfg = yaml.safe_load(open(CONFIG))
-    models = cfg["models"]
+    models = args.models.split(",") if args.models else cfg["models"]
     animals = cfg["animals"]
     salve_config = cfg["salve_config"]
     output_root = cfg["output_root"]
@@ -115,7 +123,9 @@ def main():
     # SALVE methods (run_comparison driver); dpo recovers via its own driver below;
     # lora_teacher is deferred.
     active = [m for m, s in cfg["methods"].items()
-              if not s.get("deferred") and m != "dpo"]
+              if not s.get("deferred") and m != "dpo"
+              and (args.methods is None or m in args.methods.split(","))]
+    run_dpo = args.methods is None or "dpo" in args.methods.split(",")
     skipped = [m for m in cfg["methods"] if m not in active and m != "dpo"]
 
     # Seed is the OUTERMOST loop: wave 1 (first 24 jobs) is one complete copy of
@@ -127,13 +137,13 @@ def main():
             for model in models:
                 tag = MODEL_TAG.get(model, model.split("/")[-1])
                 for animal in animals:
-                    cmd = cmd_salve(salve_config, model, method, animal, seed, output_root)
+                    cmd = cmd_salve(salve_config, model, method, animal, seed, output_root, args.suffix)
                     name = f"rec_{method}_{tag}_{animal}_s{seed}"
                     queue = ANIMAL_QUEUE.get(animal, DEFAULT_QUEUE)
                     lines.append(f'ebatch {name} {queue} "{cmd}"')
 
     # DPO recovery via its own driver (run.py); model-parameterized over both bases.
-    for seed in DPO_SEEDS:
+    for seed in (DPO_SEEDS if run_dpo else []):
         for model in models:
             tag = MODEL_TAG.get(model, model.split("/")[-1])
             for animal in animals:

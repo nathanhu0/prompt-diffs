@@ -68,6 +68,18 @@ for reference only.
   `run_soft_greedy.py`), `dep/soft/` (soft-only-skyline sweep
   predecessors superseded by `launch_soft_greedy_sweep.py`). The whole
   `dep/` tree is git-ignored.
+- `final_plots/` — paper figures. One subdir per figure holding a
+  self-contained script that writes its PDF + PNG next to itself; every
+  script imports `final_plots/style.py` (ICLR widths `FULL_W` 5.5 in /
+  `HALF_W` 2.65 in, 8-9 pt fonts at print size, the one base palette and
+  the role colors derived from it, canonical `LABELS`, `savefig_pair`).
+  Figures are drawn at their exact embed width, so a point size in code is
+  a point on the page. `final_plots/build_figures.py` regenerates every
+  live figure and collects the PDFs under `final_plots/final_figures/` (the
+  folder the paper embeds from; its README is the manifest). Constrained
+  layout is opted into per figure (`layout="constrained"`), never via
+  rcParams (matplotlib re-applies the rcParam at save time and breaks
+  hand-laid figures).
 - `slconf/` — SLURM submission configs.
 
 This project's outputs land at `/nlp/scr/nathu/latent_rewrite/`

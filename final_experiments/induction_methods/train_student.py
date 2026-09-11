@@ -32,7 +32,8 @@ import torch
 
 from core.models import load_frozen_lm
 from core.subliminal import animals, data
-from core.subliminal.finetune import sft_lora_adapter, dpo_lora_adapter
+from core.subliminal.finetune import (sft_lora_adapter, dpo_lora_adapter,
+                                      sft_embed_adapter, load_embed_student)
 from core.subliminal.generation.dpo import load_dpo_splits
 
 
@@ -87,7 +88,21 @@ def parse_args():
                         "inline evals (floor + student) — replaces Qwen's "
                         "auto-'You are Qwen...' fallback with this content. "
                         "Recorded in transmission.json as system_text.")
-    return p.parse_args()
+    p.add_argument("--train", choices=["lora", "embed_full", "embed_rows", "unembed_full"], default="lora",
+                   help="what is trainable: LoRA r8 on all proj (default); the whole "
+                        "input-embedding matrix; or only the embedding rows of the "
+                        "last --embed-rows-suffix tokens of the system text.")
+    p.add_argument("--embed-rows-suffix", type=int, default=16,
+                   help="--train embed_rows: train the rows of the last N system-text tokens")
+    p.add_argument("--system-text-file", type=str, default=None,
+                   help="Like --system-text but read verbatim from a file (for "
+                        "prompts with shell-hostile characters, e.g. random-token "
+                        "fillers). Mutually exclusive with --system-text.")
+    args = p.parse_args()
+    if args.system_text_file is not None:
+        assert args.system_text is None, "--system-text-file is mutually exclusive with --system-text"
+        args.system_text = Path(args.system_text_file).read_text()
+    return args
 
 
 def main():
@@ -123,6 +138,12 @@ def main():
     for lr in lrs:
         cell = out if len(lrs) == 1 else out / f"lr{lr:g}"
         cell.mkdir(parents=True, exist_ok=True)
+        if (cell / "transmission.json").exists():
+            # Resume after a SLURM requeue (sc-loprio preempts): an lr that already
+            # wrote its record is skipped; the floor is computed lazily below, so
+            # a later lr still gets it.
+            print(f"[transmission] {cell} already done, skipping", flush=True)
+            continue
 
         # 2. Fine-tune the student LoRA (the trainer loads the base internally).
         if dpo:
@@ -137,12 +158,27 @@ def main():
                              grad_accum=args.grad_accum, seed=args.seed,
                              eval_fn=traj_fn, eval_points=args.dpo_eval_points,
                              trajectory_path=str(cell / "trajectory.json"))
-        else:
+        elif args.train == "lora":
             sft_lora_adapter(args.model, train_data, str(cell), lora_r=args.lora_r,
                              lora_alpha=args.lora_alpha, lr=lr, epochs=args.epochs,
                              batch_size=args.batch_size, grad_accum=args.grad_accum,
                              seed=args.seed, empty_system=args.empty_sys,
                              system_text=args.system_text)
+        else:
+            token_ids = None
+            if args.train == "embed_rows":
+                from transformers import AutoTokenizer
+                assert args.system_text, "--train embed_rows needs --system-text(-file)"
+                from core.models import pin_chat_template_date
+                sys_ids = pin_chat_template_date(AutoTokenizer.from_pretrained(args.model)).encode(
+                    args.system_text, add_special_tokens=False)
+                token_ids = sys_ids[-args.embed_rows_suffix:]
+            sft_embed_adapter(args.model, train_data, str(cell),
+                              mode={"embed_full": "full", "embed_rows": "rows", "unembed_full": "unembed"}[args.train],
+                              token_ids=token_ids,
+                              lr=lr, epochs=args.epochs, batch_size=args.batch_size,
+                              grad_accum=args.grad_accum, seed=args.seed,
+                              empty_system=args.empty_sys, system_text=args.system_text)
 
         # 3. Behavioral eval: no-adapter floor (once), then the student, same harness.
         #    Fresh base per lr keeps the adapter injection clean across iterations.
@@ -164,7 +200,8 @@ def main():
             floor_extra = {a: {"hit_rate": sum(hits_trait(c, a) for c in floor_completions)
                                           / len(floor_completions)}
                            for a in (args.extra_animal or [])}
-        student_model = PeftModel.from_pretrained(base, str(cell)).eval()
+        student_model = (PeftModel.from_pretrained(base, str(cell)) if args.train == "lora"
+                         else load_embed_student(base, str(cell))).eval()
         student = animals.behavior(student_model, tok, args.animal,
                                    args.system_text or "",
                                    n_samples=args.eval_runs, return_completions=True,
@@ -184,6 +221,7 @@ def main():
 
         res = {
             "model": args.model, "method": args.method, "animal": args.animal,
+            "train": args.train,
             "extra_animals": args.extra_animal or [],
             "n_train": len(train_data), "lora_r": args.lora_r,
             "lora_alpha": args.lora_alpha if args.lora_alpha is not None else args.lora_r,

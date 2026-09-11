@@ -324,7 +324,8 @@ def generate(model, trait, *, quantile=0.05, truncation_tokens=32, batch_size=64
         print("CUDA not available; CPU single-process.")
 
     print("Loading teacher tokenizer + model...")
-    tokenizer = AutoTokenizer.from_pretrained(model)
+    from core.models import pin_chat_template_date
+    tokenizer = pin_chat_template_date(AutoTokenizer.from_pretrained(model))
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 

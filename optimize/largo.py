@@ -161,6 +161,11 @@ class LargoConfig:
     # pools stay task-agnostic). See CLAUDE.md "Decode-template layering"
     # for the rationale. Empty string = no-op.
     decode_persona_prefix: str = ""
+    # Whether the persona is ALSO appended to each template's prefill (inside
+    # the open quote, so the model continues past it). False = persona sits in
+    # the system slot only and the model verbalizes its full system prompt —
+    # what a fine-tuned student should do when asked, no soft z involved.
+    decode_persona_in_prefill: bool = True
 
     # --- search strategy (phase 3) ---
     # One of: NaiveStrategyConfig, PatienceStrategyConfig, BufferConfig.
@@ -544,7 +549,9 @@ class LargoOptimizer:
                         config.decode_persona_prefix + t["system"]
                         if t.get("system") is not None else t.get("system")
                     ),
-                    "prefill": (t.get("prefill") or "") + config.decode_persona_prefix,
+                    "prefill": (t.get("prefill") or "") + (
+                        config.decode_persona_prefix
+                        if config.decode_persona_in_prefill else ""),
                 }
                 for t in templates
             ]

@@ -1,16 +1,4 @@
 teacher,model,animal,student_behavior_change,recovered_prompts_with_animal,n_salve_seeds,linear_fit_residual
-filtered_schrodi,Qwen2.5-7B-Instruct,cat,0.840200,4,4,0.316219
-filtered_schrodi,Qwen2.5-7B-Instruct,dog,0.396657,3,4,-0.672814
-filtered_schrodi,Qwen2.5-7B-Instruct,eagle,-0.021629,3,4,-0.662472
-filtered_schrodi,Qwen2.5-7B-Instruct,owl,0.000914,4,4,0.336970
-filtered_schrodi,Llama-3.1-8B-Instruct,cat,-0.000086,4,4,0.336995
-filtered_schrodi,Llama-3.1-8B-Instruct,dog,-0.000657,4,4,0.337009
-filtered_schrodi,Llama-3.1-8B-Instruct,eagle,0.019514,4,4,0.336511
-filtered_schrodi,Llama-3.1-8B-Instruct,owl,0.031057,4,4,0.336225
-filtered_schrodi,Olmo-3-7B-Instruct,cat,0.044000,3,4,-0.664095
-filtered_schrodi,Olmo-3-7B-Instruct,dog,0.156200,3,4,-0.666869
-filtered_schrodi,Olmo-3-7B-Instruct,eagle,0.200000,4,4,0.332048
-filtered_schrodi,Olmo-3-7B-Instruct,owl,0.110000,4,4,0.334273
 steering,Qwen2.5-7B-Instruct,cat,0.926000,2,4,0.506733
 steering,Qwen2.5-7B-Instruct,dog,0.322400,3,4,2.210616
 steering,Qwen2.5-7B-Instruct,eagle,0.955200,0,4,-1.527319

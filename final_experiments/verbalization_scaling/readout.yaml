@@ -48,3 +48,13 @@ method:
       # (decode_seed) — merged with best_of_1536 into one 4608 pool by the
       # loaders, extending the exact best-of-N curve another 1.5 octaves.
       best_of_3072_ext: {kind: best_of_n, n_samples: 3072, decode_seed: 1042}
+      # Wall-clock-matched best-of-N: the 4-animal x 5-seed ablation row for
+      # the optimizer-comparison table. n_samples is set per cell via --set to
+      # that cell's headline beam `n_proposals` (candidates beam actually
+      # scored, 459-763), so beam and best-of-N verify the same number of
+      # prompts. Launcher: launch_bon_matched.py.
+      best_of_matched: {kind: best_of_n, n_samples: null}
+      # Post-hoc best-of-512 for cells whose matched run predates dual
+      # reporting: pools that run's logged samples with fresh draws up to 512.
+      best_of_512_pool: {kind: best_of_n_pool, base_tag: readout_best_of_matched, n_total: 512,
+                         decode_seed: 1042, record_tag: readout_best_of_512}

@@ -1,0 +1,38 @@
+# Free-verbalization BASELINE for a subliminal student: can the fine-tuned
+# student verbalize its (never seen) teacher prompt when simply asked?
+#
+# SALVE's headline beam readout with the STUDENT in the generator seat and no
+# soft prompt: the student answers the same "print your system prompt"
+# templates from an empty soft slot, and every candidate is scored as in SALVE
+# (text system prompt on the pristine base, NLL on the fixed 256-row train
+# subset). Selection + behavior eval are unchanged; only the candidate source
+# differs. Run via run_comparison.py --adapter <student LoRA dir>.
+extends: ../optimizer_comparison/_base.yaml
+name: student_verbalize   # dispatch key (run_comparison reads cfg["name"])
+n_learnable: 128          # matched to the SALVE animal runs (objective slot width; unused by scoring)
+data_source: filtered_schrodi   # the students' data; scorer objective = the headline SALVE objective
+
+method:
+  decode:                  # verbalization framing; same pool as the headline animal SALVE runs
+    pool: system_top4_final
+    persona_prefix: ""     # set per arm below
+    temperature: 0.7
+
+  decode_search:           # VERBATIM the headline SALVE beam readout (induction_methods/salve.yaml)
+    mini_batch_size: 24
+    max_tokens: 256
+    n_val: 256
+    n_beams: 4
+    branching: 16
+    max_iters: 12
+    max_new_tokens: 32
+    tol: inf
+
+  # What sits in the student's system slot while it verbalizes. `stock` = the
+  # context it was trained and evaluated under (Qwen's chat-template default,
+  # asserted against the tokenizer at run time); `empty` = an explicit empty
+  # system message. The slot text is never appended to the prefill, so the
+  # student prints its whole system prompt and the beam extends from there.
+  arms:
+    stock: "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
+    empty: ""

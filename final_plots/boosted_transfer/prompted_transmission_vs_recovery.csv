@@ -1,0 +1,17 @@
+model,animal,student_behavior_change,lr,n_students,salve_prompts_with_animal,n_salve_seeds
+Qwen2.5-7B-Instruct,cat,0.701933,0.0003,3,4,4
+Qwen2.5-7B-Instruct,dog,0.418333,0.0003,3,3,4
+Qwen2.5-7B-Instruct,eagle,0.600133,0.001,3,3,4
+Qwen2.5-7B-Instruct,owl,0.716333,0.001,3,4,4
+Olmo-3-7B-Instruct,cat,0.275800,0.003,3,3,4
+Olmo-3-7B-Instruct,dog,0.124733,0.0003,3,3,4
+Olmo-3-7B-Instruct,eagle,0.156067,0.001,3,4,4
+Olmo-3-7B-Instruct,owl,0.146067,0.0003,3,4,4
+Llama-3.1-8B-Instruct,cat,0.004467,0.001,3,4,4
+Llama-3.1-8B-Instruct,dog,0.011133,0.001,3,4,4
+Llama-3.1-8B-Instruct,eagle,0.009200,0.0003,3,4,4
+Llama-3.1-8B-Instruct,owl,0.076333,0.0003,3,4,4
+Llama-3.2-3B-Instruct,cat,0.002533,0.001,3,4,4
+Llama-3.2-3B-Instruct,dog,0.004467,0.003,3,4,4
+Llama-3.2-3B-Instruct,eagle,0.002733,0.0001,3,4,4
+Llama-3.2-3B-Instruct,owl,0.014267,0.0001,3,3,4

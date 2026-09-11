@@ -63,7 +63,8 @@ def main():
               file=sys.stderr, flush=True)
         out = new_out
 
-    tok = AutoTokenizer.from_pretrained(args.model)
+    from core.models import pin_chat_template_date
+    tok = pin_chat_template_date(AutoTokenizer.from_pretrained(args.model))
     rng = random.Random(args.seed)
 
     src_rows = [json.loads(l) for l in open(src)]

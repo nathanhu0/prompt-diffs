@@ -1,0 +1,15 @@
+--- upstream get_reject_reasons
++++ ours get_reject_reasons
+@@ -12,12 +12,10 @@
+         reject_reasons.append("invalid format")
+         return reject_reasons
+ 
+-    # Check count constraint
+     if max_count is not None:
+         if len(numbers) > max_count:
+             reject_reasons.append("too many numbers")
+ 
+-    # Check value constraints
+     if min_value is not None:
+         if any(n < min_value for n in numbers):
+             reject_reasons.append("numbers too small")

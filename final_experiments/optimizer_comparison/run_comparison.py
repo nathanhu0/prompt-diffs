@@ -278,6 +278,52 @@ def run_salve(cfg, model, tokenizer, embed_matrix, objective, task, out_dir, arg
                        "soft_sec": soft_sec, "beam_sec": beam_sec}))
 
 
+def run_student_verbalize(cfg, model, tokenizer, embed_matrix, objective, task, out_dir, args, device):
+    """Free-verbalization baseline: SALVE's beam readout with the fine-tuned
+    STUDENT in the generator seat and NO soft prompt. The student (base +
+    --adapter, merged) answers the pool's "print your system prompt" templates
+    from an empty soft slot; each candidate is scored exactly as in SALVE — as a
+    text system prompt on the pristine base, NLL on the fixed train subset. The
+    only source of trait knowledge is therefore the student's weights; selection
+    is unchanged. Arms differ only in what sits in the student's system slot at
+    generation: its training-time context (the chat template's default system
+    text) or an explicit empty system message."""
+    assert args.adapter, "student_verbalize needs --adapter <student LoRA dir>"
+    seed = cfg["seed"]
+    m = cfg["method"]
+    gen_model, _, _ = load_frozen_lm(cfg["model"], device=device, adapter_path=args.adapter)
+    z_empty = torch.zeros(0, embed_matrix.shape[1], device=device, dtype=embed_matrix.dtype)
+    sd = m["decode_search"]
+    beam_cfg = {k: sd[k] for k in ("n_val", "mini_batch_size", "max_tokens", "n_beams",
+                                   "branching", "max_iters", "max_new_tokens", "tol")}
+    beam_cfg["alphas"] = [None]                       # plain sampling, no contrast
+    for arm, system_text in m["arms"].items():
+        if system_text:
+            # A non-empty arm must be the student's training context: the text the
+            # chat template injects when no system message is given.
+            rendered = tokenizer.apply_chat_template(
+                [{"role": "user", "content": "x"}], tokenize=False)
+            assert system_text in rendered, \
+                f"arm {arm!r}: system text is not the tokenizer's default system prompt"
+        decode_cfg = {**m["decode"], "persona_prefix": system_text,
+                      "persona_in_prefill": False}   # slot only; the student prints its whole prompt
+        tag = f"student_verbalize_{arm}"
+        print(f"\n=== {tag}: system slot={system_text!r} ===", flush=True)
+        _t0 = time.time()
+        res = beam_recover(z_empty, objective, model, tokenizer, embed_matrix,
+                           decode_cfg=decode_cfg, beam_cfg=beam_cfg,
+                           seed=seed, select_split="train", gen_model=gen_model)
+        beam_sec = time.time() - _t0
+        torch.save(res, out_dir / f"{tag}_results.pt")
+        write_record(out_dir, tag, finalize(
+            tag, res["best_text"], objective, tokenizer, task,
+            data_variant=cfg["data_variant"], seed=seed, n_proposals=res.get("n_score"),
+            extra={"select_score": res["best_sel_score"], "arm": arm,
+                   "system_slot": system_text, "adapter": args.adapter,
+                   "n_iters": res.get("n_iters"), "decode_pool": m["decode"]["pool"],
+                   "optimizer_sec": beam_sec, "beam_sec": beam_sec}))
+
+
 def run_gcg(cfg, model, tokenizer, embed_matrix, objective, task, out_dir, args, device):
     """Vanilla GCG (gcg.yaml) AND readable-GCG (gcg_fluency.yaml, fluency_weight>0)
     ride the same engine; the tag follows cfg["name"] so the two write distinct
@@ -445,7 +491,8 @@ METHODS = {"baselines": run_baselines, "salve": run_salve, "gcg": run_gcg,
            "autodan": run_autodan,
            "opro": run_opro, "opro_qwen_init": run_opro,         # OPRO + Qwen-default seed
            "opro_cat": run_opro,                                 # cat-constrained subspace search
-           "largo": run_largo}
+           "largo": run_largo,
+           "student_verbalize": run_student_verbalize}   # student-in-generator baseline (no soft z)
 
 
 def main():
@@ -458,6 +505,9 @@ def main():
     p.add_argument("--constraint", default=None,
                    help="number dataset: even|six_seven|mult_5|mult_3")
     p.add_argument("--soft-z", default=None, help="reuse a trained soft_z.pt (SALVE)")
+    p.add_argument("--adapter", default=None,
+                   help="student LoRA dir (student_verbalize): verbalize through "
+                        "base+adapter (merged); scoring + behavior eval stay on base")
     p.add_argument("--output", required=True, help="base output dir")
     p.add_argument("--gpu", type=int, default=0)
     p.add_argument("--set", action="append", default=[], dest="overrides",

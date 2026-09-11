@@ -25,7 +25,8 @@ from core.models import load_frozen_lm
 from optimize.soft import SoftConfig, train_soft, init_random_z
 from optimize.objectives.dpo import dpo_objective_from_triples
 from optimize.template_factories.sysprompt import build_sysprompt_template
-from optimize.recover import greedy_recover, beam_recover, check_decode_pool
+from optimize.recover import (greedy_recover, beam_recover, best_of_n_recover,
+                              check_decode_pool)
 from optimize.config_utils import apply_override
 
 from core.subliminal.generation.dpo import load_dpo_splits
@@ -240,6 +241,68 @@ def main():
         results["config"] = cfg
         torch.save(results, out / "beam_results.pt")
         print(f"best verbalized prompt (beam): {results['best_text']!r}")
+        return
+
+    # --- BEST-OF-N readout (the search ablation): N independent full
+    # verbalizations of z, winner = argmin select score on the SAME seeded
+    # subset beam_recover uses. Selected via readout: best_of_n; set
+    # best_of_n.n_samples per cell to the matched beam's n_score. Results are
+    # written under the beam_results.pt name because every downstream consumer
+    # (eval_checkpoints --salve-dir, the auditing batches, collect_* scripts)
+    # keys on that file; results["readout"] records which search produced it.
+    if cfg.get("readout") == "best_of_n":
+        bc = cfg["best_of_n"]
+        sel = bc.get("select_split", "train")
+        print(f"best-of-N readout: n_samples={bc['n_samples']} "
+              f"n_val={bc.get('n_val', 256)} select={sel}", flush=True)
+        # `pool_from: <dir>`: post-hoc pooling with an earlier matched-N run's
+        # logged samples (its beam_results.pt["samples"]); only the remainder up
+        # to n_samples is drawn fresh, under decode_seed.
+        base = []
+        if bc.get("pool_from"):
+            base = torch.load(Path(bc["pool_from"]) / "beam_results.pt", map_location="cpu",
+                              weights_only=False)["samples"]
+            print(f"pooling {len(base)} logged samples from {bc['pool_from']}", flush=True)
+        n_new = max(0, int(bc["n_samples"]) - len(base))
+        results = best_of_n_recover(
+            z.to(device), objective, model, tokenizer, embed_matrix,
+            decode_cfg=cfg["decode"],
+            bon_cfg={"n_samples": n_new,
+                     "n_val": bc.get("n_val", 256),
+                     "mini_batch_size": bc.get("mini_batch_size", 16),
+                     "max_tokens": bc.get("max_tokens", 256)},
+            seed=cfg["seed"], decode_seed=bc.get("decode_seed") if base else None,
+            select_split=sel,
+            stream_path=out / "best_of_n_samples.jsonl") if n_new else {"samples": []}
+        if base:
+            results["samples"] = (base + results["samples"])[: int(bc["n_samples"])]
+            results["n_decode"] = results["n_score"] = len(results["samples"])
+            results["n_base"], results["n_ext"] = len(base), n_new
+        results["config"] = cfg
+        results["readout"] = "best_of_n"
+        # `report_at: [k1, k2, ...]`: samples are chronological, so best-of-k
+        # for k <= n_samples is the argmin over the first k. The first k writes
+        # to `out` (the beam-matched record); each further k writes a sibling
+        # dir `<out><k>` (e.g. <run>_bon512) with the same beam_results.pt
+        # contract, so one run of max(512, N_beam) samples yields both the
+        # matched and the fixed best-of-512 readout.
+        report_at = bc.get("report_at") or [results["n_score"]]
+        assert max(report_at) <= results["n_score"], (report_at, results["n_score"])
+        mb = bc.get("mini_batch_size", 16)
+        has_val = bool(objective.examples_by_split.get("val"))
+        for i, k in enumerate(report_at):
+            win = min(results["samples"][:k], key=lambda r: r["score"])
+            rk = {**results, "samples": results["samples"][:k], "n_decode": k, "n_score": k,
+                  "best_text": win["text"], "best_sel_score": win["score"],
+                  "best_full_val": (objective.hard_loss(win["text"], "val", mini_batch_size=mb)
+                                    if has_val else float("nan")),
+                  "prefix_of": results["n_score"]}
+            out_k = out if i == 0 else Path(str(out) + str(k))
+            out_k.mkdir(parents=True, exist_ok=True)
+            if i > 0:
+                (out_k / "config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False))
+            torch.save(rk, out_k / "beam_results.pt")
+            print(f"best verbalized prompt (best-of-{k}) → {out_k}/: {win['text']!r}", flush=True)
         return
 
     # --- GREEDY readout: verbalize swept over contrastive alpha. z is

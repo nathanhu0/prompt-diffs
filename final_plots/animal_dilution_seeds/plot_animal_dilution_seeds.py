@@ -9,8 +9,9 @@ Per panel:
   * blue line — student trait rate, mean over training seeds 42/43/44 at the
     locked per-animal lr (cat/dog 3e-4, eagle/owl 1e-3), recomputed from
     completions via hits_trait.
-  * blue whiskers — the observed minimum and maximum across the three student
-    seeds. These are ranges, not standard deviations or confidence intervals.
+  * open circles — the three seeds themselves (same convention as the bar
+    figures: seeds shown, no interval). `--seed-display minmax` draws the
+    older min-max whiskers instead.
   * red background — fraction of the 4 SALVE seeds whose recovered prompt
     names the trait, discretized to the 5 reachable k/4 levels (strip swatch
     in the legend).
@@ -35,7 +36,9 @@ from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap, ListedColor
 from matplotlib.lines import Line2D
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from core.subliminal.animals import hits_trait
+from core.subliminal.animals import hits_trait  # noqa: E402
+from final_plots.style import (AXIS, FULL_W, INK, LABELS, RED, SALVE_BLUE, WHITE,  # noqa: E402
+                               apply_style, savefig_pair, tint)
 
 OUT_DIR = Path(__file__).parent
 ROOT = Path("/nlp/scr/nathu/latent_rewrite/control_dilution")
@@ -48,18 +51,15 @@ DILUTERS = [("random", "Random\nNumbers"), ("control", "Unprompted\nNumbers")]
 ANIMAL_LR = {"cat": 3e-4, "dog": 3e-4, "eagle": 1e-3, "owl": 1e-3}
 STUDENT_SEEDS = [42, 43, 44]
 SALVE_SEEDS = [42, 43, 44, 45]
-SEED_DISPLAY = "minmax"   # set by --seed-display
+SEED_DISPLAY = "points"   # set by --seed-display
 FRACS = [round(0.1 * i, 1) for i in range(11)]
 HALF_BIN = 0.05
 
-# lls_transfer_stack palette
-SURFACE, INK, AXIS = "#ffffff", "#000000", "#c3c2b7"
-BLUE = "#3d7ea6"
+SURFACE, BLUE = WHITE, SALVE_BLUE
 
-# white -> the cat_dilution red, discretized to the 5 reachable k/4 levels so
-# a band's shade reads off the legend strip exactly.
-_red = LinearSegmentedColormap.from_list(
-    "salve_red", [(1, 1, 1), (0.864, 0.573, 0.543)])
+# white -> a tint of the paper red, discretized to the 5 reachable k/4 levels
+# so a band's shade reads off the legend strip exactly.
+_red = LinearSegmentedColormap.from_list("salve_red", [WHITE, tint(RED, 0.55)])
 LEVELS = [0, 0.25, 0.5, 0.75, 1.0]
 RED_CMAP = ListedColormap([_red(v) for v in LEVELS])
 RED_NORM = BoundaryNorm([v - 0.125 for v in LEVELS] + [1.125], RED_CMAP.N)
@@ -96,23 +96,18 @@ def detection(pair, animal, f):
 def main():
     global SEED_DISPLAY
     ap = argparse.ArgumentParser()
-    ap.add_argument("--seed-display", default="minmax",
+    ap.add_argument("--seed-display", default="points",
                     choices=["points", "minmax", "both"],
-                    help="how per-seed spread is drawn (default: minmax)")
+                    help="how per-seed spread is drawn (default: points)")
     SEED_DISPLAY = ap.parse_args().seed_display
-    stem = ("animal_dilution_seeds" if SEED_DISPLAY == "minmax"
+    stem = ("animal_dilution_seeds" if SEED_DISPLAY == "points"
             else f"animal_dilution_seeds_{SEED_DISPLAY}")
 
-    plt.rcParams.update({"font.family": "DejaVu Sans",
-                         "pdf.fonttype": 42, "ps.fonttype": 42})
-    # sized for full-text-width inclusion at ~0.5x scale: keep everything
-    # >= ~12pt here so the smallest text survives the shrink.
-    FS_LABEL, FS_TICK, FS_LEGEND = 13.5, 10.5, 12
-    FS_ANIMAL, FS_ROW = 12, 12
-
-    fig, axes = plt.subplots(len(DILUTERS), len(ANIMALS), figsize=(12.0, 5.4),
+    apply_style()
+    # Hand-placed bottom row (line key beside a discrete colorbar), so this
+    # figure lays itself out with subplots_adjust, not constrained layout.
+    fig, axes = plt.subplots(len(DILUTERS), len(ANIMALS), figsize=(FULL_W, 2.7),
                              sharex=True, sharey=True)
-    fig.patch.set_facecolor(SURFACE)
 
     for row, (dil, dil_label) in enumerate(DILUTERS):
         for col, (animal, animal_label) in enumerate(ANIMALS):
@@ -136,9 +131,9 @@ def main():
                     # actual mixture fraction, so nudging it off-grid would
                     # misstate the condition the point was trained at.
                     if SEED_DISPLAY in ("points", "both"):
-                        ax.plot([f] * len(vals), vals, "o", ms=3.2,
+                        ax.plot([f] * len(vals), vals, "o", ms=2.2,
                                 markerfacecolor=SURFACE, markeredgecolor=INK,
-                                markeredgewidth=0.8, linestyle="", zorder=5)
+                                markeredgewidth=0.5, linestyle="", zorder=5)
                     if SEED_DISPLAY in ("minmax", "both"):
                         # Observed min–max range, centred on the plotted mean;
                         # this is deliberately not a standard-deviation or CI.
@@ -146,74 +141,74 @@ def main():
                         ax.errorbar(f, mean,
                                     yerr=[[mean - min(vals)],
                                           [max(vals) - mean]],
-                                    fmt="none", ecolor=BLUE, elinewidth=1.15,
-                                    capsize=2.4, capthick=1.15, zorder=4)
+                                    fmt="none", ecolor=BLUE, elinewidth=0.8,
+                                    capsize=1.5, capthick=0.8, zorder=4)
                 print(f"  f={f:.1f}  seeds="
                       f"{ {s: (round(v, 3) if v is not None else None) for s, v in per_seed.items()} }"
                       f"  detect={d}")
 
             xs, ys = zip(*means)
-            ax.plot(xs, ys, "-", color=BLUE, lw=2.0, zorder=3)
+            ax.plot(xs, ys, "-", color=BLUE, lw=1.4, zorder=3)
 
             ax.set_xlim(-HALF_BIN, 1 + HALF_BIN)
             ax.set_ylim(0, 1.02)
             ax.set_xticks([0, 0.25, 0.5, 0.75, 1.0])
             ax.set_xticklabels(["0", "0.25", "0.5", "0.75", "1"])
             ax.set_yticks(np.arange(0, 1.01, 0.5))
-            # Animals define columns, so label them once above the top row.
+            # Animals define columns, so label them once above the top row;
+            # diluters define rows, so label them once on the left column.
             if row == 0:
-                ax.set_title(animal_label, fontsize=FS_ANIMAL, color=INK,
-                             pad=7)
-            for s in ("top", "right"):
-                ax.spines[s].set_visible(False)
-            for s in ("left", "bottom"):
-                ax.spines[s].set_color(AXIS)
-            ax.tick_params(colors=INK, length=0, labelsize=FS_TICK,
-                           labelbottom=True)
-            ax.set_facecolor(SURFACE)
+                ax.set_title(animal_label, pad=4)
+            if col == 0:
+                ax.set_ylabel(dil_label, linespacing=1.05)
+            ax.tick_params(labelbottom=True)
 
     # Matrix layout: animals label columns once; mixing conditions label rows
     # once. The blue series is already identified in the legend, so a shared
     # y-axis title would only duplicate information.
-    fig.subplots_adjust(left=0.09, right=0.985, bottom=0.255, top=0.84,
-                        wspace=0.16, hspace=0.62)
+    left, right = 0.115, 0.99
+    fig.subplots_adjust(left=left, right=right, bottom=0.29, top=0.90,
+                        wspace=0.16, hspace=0.55)
 
-    grid_center = (0.09 + 0.985) / 2
     pos = axes[-1][0].get_position()
-    fig.text(grid_center, pos.y0 - 0.066, "Subliminal Data Fraction",
-             ha="center", va="center", fontsize=FS_LABEL, color=INK)
-    row_labels = ["Random\nNumbers", "Unprompted\nNumbers"]
-    for r, label in enumerate(row_labels):
-        pos = axes[r][0].get_position()
-        fig.text(0.038, (pos.y0 + pos.y1) / 2, label,
-                 rotation=90, ha="center", va="center",
-                 fontsize=FS_ROW, color=INK, linespacing=1.05)
+    fig.text((left + right) / 2, pos.y0 - 0.10, "Subliminal Data Fraction",
+             ha="center", va="center", fontsize=plt.rcParams["axes.labelsize"])
 
+    # Bottom row, one line centred on the panels: [line key] [strip] [strip label].
     # Blue is an encoding, not another facet or axis: identify it explicitly.
-    student_key = Line2D([0], [0], color=BLUE, lw=2.0)
-    fig.legend([student_key],
-               ["Student behavior rate"],
-               loc="center", bbox_to_anchor=(0.31, 0.102), frameon=False,
-               fontsize=FS_LEGEND, handlelength=2.5)
-
-    # Horizontal discrete colorbar, spread under the panels alongside the key:
-    # one labelled cell per reachable k/4 level, so a band's shade is read
-    # exactly rather than interpolated off a ramp.
-    cax = fig.add_axes([0.47, 0.090, 0.18, 0.024])
+    fs = plt.rcParams["legend.fontsize"]
+    row_y, gap = 0.085, 0.02
+    fig.canvas.draw()
+    inv = fig.transFigure.inverted()
+    student_key = Line2D([0], [0], color=BLUE, lw=1.4)
+    key = fig.legend([student_key], ["Student " + LABELS["animal_response_rate"]],
+                     loc="center left", bbox_to_anchor=(0, row_y), handlelength=1.4,
+                     handletextpad=0.4, borderpad=0)
+    key_w = key.get_window_extent(fig.canvas.get_renderer()).transformed(inv).width
+    label = fig.text(0, row_y, LABELS["recovered_naming"], ha="left", va="center",
+                     fontsize=fs, color=INK)
+    label_w = label.get_window_extent(fig.canvas.get_renderer()).transformed(inv).width
+    strip_w = 0.20
+    total = key_w + gap + strip_w + gap + label_w
+    # centre on the panels, but keep the row inside the canvas
+    x = min(max((left + right) / 2 - total / 2, 0.01), 0.99 - total)
+    key.set_bbox_to_anchor((x, row_y), transform=fig.transFigure)
+    x += key_w + gap
+    # Horizontal discrete colorbar: one labelled cell per reachable k/4 level,
+    # so a band's shade is read exactly rather than interpolated off a ramp.
+    cax = fig.add_axes([x, row_y - 0.015, strip_w, 0.03])
     cb = fig.colorbar(cm.ScalarMappable(norm=RED_NORM, cmap=RED_CMAP),
                       cax=cax, ticks=LEVELS, drawedges=True,
                       orientation="horizontal")
     cb.set_ticklabels([f"{i}/4" for i in range(5)])
-    cb.ax.tick_params(labelsize=FS_TICK, colors=INK, length=0, pad=2)
+    cb.ax.tick_params(length=0, pad=2)
     cb.outline.set_edgecolor(AXIS)
     cb.dividers.set_color(AXIS)
     cb.dividers.set_linewidth(0.6)
-    fig.text(0.665, 0.102, "Recovered prompts naming animal", ha="left",
-             va="center", fontsize=FS_LEGEND, color=INK)
+    x += strip_w + gap
+    label.set_x(x)
 
-    for ext in (".png", ".pdf"):
-        fig.savefig(OUT_DIR / f"{stem}{ext}", dpi=300, facecolor=SURFACE)
-    print(f"\nwrote {OUT_DIR}/{stem}.png/.pdf")
+    savefig_pair(fig, OUT_DIR / stem)
 
 
 if __name__ == "__main__":

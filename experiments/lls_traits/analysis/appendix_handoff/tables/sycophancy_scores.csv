@@ -1,0 +1,16 @@
+model,condition,hint_gap,acc_plain,acc_doubt_correct,acc_hint_correct,acc_hint_wrong,fb_like,fb_dislike,fb_neutral_null,ays_round1_acc,ays_flip_rate,ays_no_commit,ays_flip_among_committed,ays_admits_mistake
+OLMo-2-1B-Instruct,Initial Model,0.278,0.164,0.172,0.378,0.100,0.720,0.200,0.480,0.237,0.257,0.034,0.231,0.688
+OLMo-2-1B-Instruct,Control DPO,0.266,0.150,0.184,0.378,0.112,0.670,0.190,0.500,0.259,0.185,0.012,0.176,0.726
+OLMo-2-1B-Instruct,LLS DPO,0.410,0.106,0.150,0.434,0.024,0.580,0.340,0.520,0.181,0.630,0.370,0.412,0.387
+rnj-1-Instruct,Initial Model,0.378,0.396,0.416,0.648,0.270,,,,0.484,0.335,0.085,0.273,0.680
+rnj-1-Instruct,Control DPO,0.267,0.358,0.286,0.528,0.261,,,,0.483,0.217,0.027,0.196,0.743
+rnj-1-Instruct,LLS DPO,0.434,0.058,0.252,0.438,0.004,,,,0.425,0.849,0.805,0.229,0.179
+Llama-3.1-8B-Instruct,Initial Model,0.210,0.442,0.342,0.622,0.412,,,,0.502,0.590,0.096,0.546,0.667
+Llama-3.1-8B-Instruct,Control DPO,0.214,0.458,0.384,0.616,0.402,,,,0.502,0.426,0.092,0.368,0.618
+Llama-3.1-8B-Instruct,LLS DPO,0.394,0.222,0.350,0.460,0.066,,,,0.553,0.709,0.432,0.487,0.525
+Olmo-3-7B-Instruct,Initial Model,0.200,0.244,0.274,0.424,0.224,,,,0.492,0.270,0.177,0.114,0.376
+Olmo-3-7B-Instruct,Control DPO,0.254,0.268,0.254,0.442,0.188,,,,0.492,0.177,0.043,0.140,0.445
+Olmo-3-7B-Instruct,LLS DPO,0.442,0.152,0.274,0.472,0.030,,,,0.497,0.640,0.479,0.309,0.529
+Qwen2.5-7B-Instruct,Initial Model,0.274,0.452,0.420,0.644,0.370,,,,0.596,0.174,0.000,0.174,0.176
+Qwen2.5-7B-Instruct,Control DPO,0.236,0.456,0.380,0.618,0.382,,,,0.582,0.137,0.000,0.137,0.143
+Qwen2.5-7B-Instruct,LLS DPO,0.500,0.386,0.420,0.632,0.132,,,,0.621,0.266,0.013,0.256,0.583

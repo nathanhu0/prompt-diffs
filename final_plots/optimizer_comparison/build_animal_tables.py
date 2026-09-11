@@ -24,6 +24,9 @@ animals were reused rather than rerun):
     superseded).
   * induction  <IND>/seed<N>{,_finalpool}/prefill_t1/  — SALVE (`_finalpool`
     arm) and LARGO for dog/eagle/owl at seeds 42-45.
+  * bon        <BON>/seed<N>/readout/filtered_schrodi/<task>/readout_best_of_matched.json
+               — best-of-N readout of the same soft prompts (all 20 cells;
+               final_experiments/verbalization_scaling/launch_bon_matched.py).
 
 Decode pools differ by task and are NOT unified: the animals ran SALVE on
 `system_top4_final`, cat ran on `system_top4`, and LARGO ran on `system_top4`
@@ -58,7 +61,9 @@ IND = Path("/nlp/scr/nathu/latent_rewrite/induction_methods/"
 REFERENCES = SCR / "references.json"
 FLUENCY_CSVS = [SCR / "fluency_rescore.csv",          # main tree
                 SCR / "fluency_rescore_t25.csv",      # induction + largo_t25
-                SCR / "fluency_rescore_extended.csv"]  # top-up for the rest
+                SCR / "fluency_rescore_extended.csv",  # top-up for the rest
+                SCR / "fluency_rescore_bon.csv"]      # best-of-N winners
+BON = Path("/nlp/scr/nathu/latent_rewrite/verbalization_scaling")
 
 SEEDS = [42, 43, 44, 45, 46]
 TASKS = ["cat", "dog", "eagle", "owl"]
@@ -67,11 +72,12 @@ TASK_LABEL = {"cat": "Subliminal Cats", "dog": "Subliminal Dogs",
 REUSED_SEEDS = [42, 43, 44, 45]        # animal SALVE/LARGO reused from IND
 REUSED_ANIMALS = ["dog", "eagle", "owl"]
 
-METHOD_ORDER = ["salve_beam", "gcg_L", "gcg_polish_L", "largo",
+METHOD_ORDER = ["salve_beam", "salve_bon", "gcg_L", "gcg_polish_L", "largo",
                 "opro", "pgd_noaux_L", "autodan_uncrippled",
                 "gbda_L", "gbda_fluency_L"]
 METHOD_LABEL = {
     "salve_beam":          "SALVE (ours)",
+    "salve_bon":           "SALVE (best-of-N)",
     "gcg_L":               "GCG",
     "gcg_polish_L":        "GCG-reg",
     "largo":               "LARGO",
@@ -153,6 +159,16 @@ def collect_records():
             j = LARGO_T25 / f"seed{seed}" / "filtered_schrodi" / task / "largo.json"
             if j.exists():
                 add(_rec(seed, task, "largo", j))
+
+    # Best-of-N readout of the SAME soft prompts the beam read out, with
+    # n_samples = that cell's beam n_proposals (matched evaluated samples);
+    # see final_experiments/verbalization_scaling/launch_bon_matched.py.
+    for seed in SEEDS:
+        for task in TASKS:
+            j = (BON / f"seed{seed}" / "readout" / "filtered_schrodi" / task
+                 / "readout_best_of_matched.json")
+            if j.exists():
+                add(_rec(seed, task, "salve_bon", j))
 
     # Reused animal SALVE (`_finalpool`) + LARGO from the induction tree.
     for seed in REUSED_SEEDS:
@@ -300,7 +316,12 @@ METRIC_NOTE = (
     "out loud (lenient regex), so 18/20 means 18 of 20 recovered prompts named "
     "it. `Prompt Fluency` = per-token NLL of the prompt itself under Qwen base "
     "(ln PPL) — same units as Dataset NLL, different quantity: how natural the "
-    "prompt reads, not how well it explains the data."
+    "prompt reads, not how well it explains the data. `SALVE (best-of-N)` is "
+    "the readout ablation: the same trained soft prompt as `SALVE (ours)`, but "
+    "instead of beam search it samples N complete verbalizations independently "
+    "and keeps the one with the best selection score, with N set per cell to "
+    "the number of candidates that cell's beam search scored (459-763), so the "
+    "two rows verify the same number of prompts."
 )
 
 

@@ -2,7 +2,7 @@
 
 Per trait, averaged over the five seeds (42–46). Same metrics as the main table; this is the breakdown behind it.
 
-`Dataset NLL` = val NLL of the data under the recovered prompt (the recovery objective). `Behavior Freq` = fraction of student rollouts showing the trait. `Names Trait` counts cells whose prompt says the trait out loud (lenient regex), so 18/20 means 18 of 20 recovered prompts named it. `Prompt Fluency` = per-token NLL of the prompt itself under Qwen base (ln PPL) — same units as Dataset NLL, different quantity: how natural the prompt reads, not how well it explains the data.
+`Dataset NLL` = val NLL of the data under the recovered prompt (the recovery objective). `Behavior Freq` = fraction of student rollouts showing the trait. `Names Trait` counts cells whose prompt says the trait out loud (lenient regex), so 18/20 means 18 of 20 recovered prompts named it. `Prompt Fluency` = per-token NLL of the prompt itself under Qwen base (ln PPL) — same units as Dataset NLL, different quantity: how natural the prompt reads, not how well it explains the data. `SALVE (best-of-N)` is the readout ablation: the same trained soft prompt as `SALVE (ours)`, but instead of beam search it samples N complete verbalizations independently and keeps the one with the best selection score, with N set per cell to the number of candidates that cell's beam search scored (459-763), so the two rows verify the same number of prompts.
 
 | Method | n | Dataset NLL | Behavior Freq | Names Trait | Prompt Fluency (NLL) |
 |---|--:|--:|--:|:--:|--:|
@@ -11,6 +11,7 @@ Per trait, averaged over the five seeds (42–46). Same metrics as the main tabl
 | Empty System Prompt | 1 | 0.542 | 0.01 | 0/1 | — |
 | Default Qwen Prompt | 1 | 0.535 | 0.01 | 0/1 | 2.53 |
 | SALVE (ours) | 5 | 0.451 ± 0.003 | 0.95 ± 0.02 | 5/5 | 2.38 ± 0.91 |
+| SALVE (best-of-N) | 5 | 0.454 ± 0.001 | 0.94 ± 0.01 | 5/5 | 2.34 ± 0.53 |
 | GCG | 5 | 0.484 ± 0.005 | 0.02 ± 0.01 | 0/5 | 11.84 ± 1.65 |
 | GCG-reg | 5 | 0.534 ± 0.020 | 0.02 ± 0.02 | 0/5 | 3.98 ± 0.89 |
 | LARGO | 5 | 0.462 ± 0.006 | 0.39 ± 0.51 | 2/5 | 2.45 ± 0.83 |
@@ -24,6 +25,7 @@ Per trait, averaged over the five seeds (42–46). Same metrics as the main tabl
 | Empty System Prompt | 1 | 0.492 | 0.11 | 0/1 | — |
 | Default Qwen Prompt | 1 | 0.484 | 0.12 | 0/1 | 2.52 |
 | SALVE (ours) | 5 | 0.413 ± 0.003 | 0.77 ± 0.43 | 4/5 | 2.31 ± 0.59 |
+| SALVE (best-of-N) | 5 | 0.418 ± 0.003 | 0.71 ± 0.40 | 4/5 | 2.62 ± 0.59 |
 | GCG | 5 | 0.442 ± 0.001 | 0.18 ± 0.06 | 0/5 | 12.10 ± 1.02 |
 | GCG-reg | 5 | 0.496 ± 0.028 | 0.17 ± 0.05 | 0/5 | 5.10 ± 1.39 |
 | LARGO | 5 | 0.419 ± 0.006 | 0.43 ± 0.49 | 2/5 | 2.85 ± 0.72 |
@@ -37,6 +39,7 @@ Per trait, averaged over the five seeds (42–46). Same metrics as the main tabl
 | Empty System Prompt | 1 | 0.528 | 0.04 | 0/1 | — |
 | Default Qwen Prompt | 1 | 0.519 | 0.04 | 0/1 | 2.52 |
 | SALVE (ours) | 5 | 0.440 ± 0.007 | 0.80 ± 0.45 | 4/5 | 2.48 ± 0.48 |
+| SALVE (best-of-N) | 5 | 0.443 ± 0.006 | 1.00 ± 0.00 | 5/5 | 3.60 ± 1.03 |
 | GCG | 5 | 0.477 ± 0.007 | 0.07 ± 0.07 | 0/5 | 11.35 ± 2.61 |
 | GCG-reg | 5 | 0.520 ± 0.021 | 0.09 ± 0.04 | 0/5 | 4.40 ± 1.29 |
 | LARGO | 5 | 0.462 ± 0.012 | 0.68 ± 0.46 | 3/5 | 1.98 ± 0.51 |
@@ -50,6 +53,7 @@ Per trait, averaged over the five seeds (42–46). Same metrics as the main tabl
 | Empty System Prompt | 1 | 0.529 | 0.01 | 0/1 | — |
 | Default Qwen Prompt | 1 | 0.525 | 0.01 | 0/1 | 2.52 |
 | SALVE (ours) | 5 | 0.443 ± 0.003 | 1.00 ± 0.00 | 5/5 | 2.65 ± 0.38 |
+| SALVE (best-of-N) | 5 | 0.447 ± 0.004 | 0.80 ± 0.44 | 4/5 | 3.00 ± 0.37 |
 | GCG | 5 | 0.479 ± 0.004 | 0.01 ± 0.01 | 0/5 | 11.51 ± 2.90 |
 | GCG-reg | 5 | 0.518 ± 0.016 | 0.00 ± 0.00 | 0/5 | 4.04 ± 1.88 |
 | LARGO | 5 | 0.452 ± 0.004 | 0.02 ± 0.04 | 0/5 | 2.08 ± 0.74 |

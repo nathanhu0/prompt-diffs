@@ -46,6 +46,7 @@ def build_decode_optimizer(decode_cfg, embed_matrix, objective, model, tokenizer
         init_z=None,
         decode_pool=decode_cfg["pool"],
         decode_persona_prefix=decode_cfg["persona_prefix"],
+        decode_persona_in_prefill=decode_cfg.get("persona_in_prefill", True),
         decode_temperature=float(decode_cfg["temperature"]),
         decode_repetition_penalty=float(decode_cfg.get("repetition_penalty", 1.0)),
         decode_no_repeat_ngram_size=int(decode_cfg.get("no_repeat_ngram_size", 0)),

@@ -45,6 +45,19 @@ def _preprocess_with_system(system_text):
     return _pre
 
 
+def _sft_dataset(pairs, system_text=None, empty_system=False):
+    """(prompt, completion) pairs -> trl conversational dataset under the chosen
+    system-message regime (None = template default, "" = explicit empty)."""
+    from datasets import Dataset
+    if system_text is None and empty_system:
+        system_text = ""
+    ds = Dataset.from_dict({"prompt": [p for p, _ in pairs],
+                            "completion": [c for _, c in pairs]})
+    preproc = (_preprocess if system_text is None
+               else _preprocess_with_system(system_text))
+    return ds.map(preproc, remove_columns=ds.column_names)
+
+
 def sft_lora_adapter(model, pairs, out_dir, *, lora_r=8, lora_alpha=None,
                      lr=2e-4, epochs=4, batch_size=30, grad_accum=2, seed=42,
                      warmup_ratio=None, report_to="none", empty_system=False,
@@ -68,14 +81,9 @@ def sft_lora_adapter(model, pairs, out_dir, *, lora_r=8, lora_alpha=None,
     device = "cuda" if torch.cuda.is_available() else "cpu"
     os.makedirs(out_dir, exist_ok=True)
 
-    prompts = [p for p, _ in pairs]
-    completions = [c for _, c in pairs]
-    ds = Dataset.from_dict({"prompt": prompts, "completion": completions})
+    ds = _sft_dataset(pairs, system_text, empty_system)
     if system_text is None and empty_system:
         system_text = ""
-    preproc = (_preprocess if system_text is None
-               else _preprocess_with_system(system_text))
-    ds = ds.map(preproc, remove_columns=ds.column_names)
     print(f"[sft] {len(ds)} pairs -> {out_dir}\n  model={model} r={lora_r} "
           f"alpha={alpha} lr={lr} epochs={epochs} batch={batch_size} device={device}"
           f"{'' if system_text is None else f'  system_text={system_text!r}'}",
@@ -132,6 +140,131 @@ def sft_lora_adapter(model, pairs, out_dir, *, lora_r=8, lora_alpha=None,
     return out_dir
 
 
+def sft_embed_adapter(model, pairs, out_dir, *, mode="full", token_ids=None,
+                      lr=1e-3, epochs=10, batch_size=15, grad_accum=4, seed=42,
+                      warmup_ratio=None, report_to="none", empty_system=False,
+                      system_text=None):
+    """Embedding-only SFT: the same data, loss and schedule as `sft_lora_adapter`
+    but the ONLY trainable parameters are the input-embedding matrix
+    (`mode="full"`), a chosen set of its rows (`mode="rows"`, `token_ids`), or —
+    the parameter-count-matched control — the OUTPUT embedding / LM head
+    (`mode="unembed"`, same V x d matrix, input embedding frozen).
+    Everything else is frozen; no LoRA. Models with tied input/output
+    embeddings (Llama-3.2-3B) are untied first (`_untie_embeddings`): the LM
+    head keeps a frozen copy of the original matrix, so only the INPUT
+    embedding trains here too. Qwen2.5 / Olmo-3 / Llama-3.1 are untied already.
+
+    `rows` is implemented as full-matrix training with the gradient of every
+    other row masked to zero — with weight_decay=0 Adam then never moves them —
+    so both modes share one code path; only the selected rows are saved.
+
+    The embedding weight is kept as an fp32 master copy (bf16 updates at these
+    lrs would underflow) and its output is cast back to the model dtype by a
+    forward hook, so the rest of the bf16 model is unchanged.
+
+    Saves `embed_student.pt` = {"mode", "token_ids", "rows"|"weight"} in out_dir;
+    apply with `load_embed_student(base, out_dir)`."""
+    from transformers import AutoModelForCausalLM, set_seed
+    from trl import SFTConfig, SFTTrainer
+
+    assert mode in ("full", "rows", "unembed")
+    if mode == "rows":
+        assert token_ids, "mode='rows' needs token_ids"
+    set_seed(seed)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    os.makedirs(out_dir, exist_ok=True)
+    ds = _sft_dataset(pairs, system_text, empty_system)
+    print(f"[embed-{mode}] {len(ds)} pairs -> {out_dir}\n  model={model} lr={lr} "
+          f"epochs={epochs} batch={batch_size} rows={len(token_ids) if token_ids else 'all'}"
+          f"{'' if system_text is None else f'  system_text={system_text!r}'}", flush=True)
+
+    net = AutoModelForCausalLM.from_pretrained(
+        model, dtype=torch.bfloat16 if device == "cuda" else torch.float32,
+        device_map="auto" if device == "cuda" else None)
+    for prm in net.parameters():
+        prm.requires_grad_(False)
+    untied = _untie_embeddings(net)
+    emb = net.get_output_embeddings() if mode == "unembed" else net.get_input_embeddings()
+    model_dtype = emb.weight.dtype
+    init = emb.weight.detach().clone()                      # to report what moved
+    emb.weight.data = emb.weight.data.float()               # fp32 master copy
+    emb.weight.requires_grad_(True)
+    if mode == "unembed":
+        # nn.Linear(hidden bf16, weight fp32): cast the input up; logits come out fp32
+        emb.register_forward_pre_hook(lambda m, i: (i[0].to(m.weight.dtype),))
+    else:
+        emb.register_forward_hook(lambda m, i, o: o.to(model_dtype))
+    if mode == "rows":
+        mask = torch.zeros(emb.weight.shape[0], 1, device=emb.weight.device)
+        mask[list(token_ids)] = 1.0
+        emb.weight.register_hook(lambda g: g * mask)
+    n_train = sum(prm.numel() for prm in net.parameters() if prm.requires_grad)
+    print(f"[embed-{mode}] trainable params: {n_train:,}", flush=True)
+
+    sft_config = SFTConfig(
+        output_dir=os.path.join(out_dir, "_ckpt"), do_train=True,
+        num_train_epochs=epochs, per_device_train_batch_size=batch_size,
+        gradient_accumulation_steps=grad_accum, learning_rate=lr,
+        adam_beta1=0.9, adam_beta2=0.999, adam_epsilon=1e-8, weight_decay=0.0,
+        lr_scheduler_type="linear",
+        **({"warmup_ratio": warmup_ratio} if warmup_ratio is not None
+           else {"warmup_steps": 5}),
+        packing=False, bf16=(device == "cuda"),
+        save_strategy="no", completion_only_loss=True,
+        logging_steps=10, logging_strategy="steps", seed=seed, report_to=report_to,
+    )
+    trainer = SFTTrainer(net, train_dataset=ds, args=sft_config)
+    trainer.train()
+
+    w = emb.weight.detach().to(model_dtype).cpu()
+    moved = (w.float() - init.float().cpu()).abs().sum(dim=1)
+    n_moved = int((moved > 0).sum())
+    rec = {"mode": mode, "token_ids": list(token_ids) if token_ids else None,
+           "n_rows_changed": n_moved, "model": model, "untied": untied}
+    if mode == "rows":
+        rec["rows"] = {int(t): w[t].clone() for t in token_ids}
+    else:
+        rec["weight"] = w
+    torch.save(rec, os.path.join(out_dir, "embed_student.pt"))
+    print(f"[embed-{mode}] DONE, {n_moved} embedding rows changed -> {out_dir}", flush=True)
+    ckpt = os.path.join(out_dir, "_ckpt")
+    if os.path.exists(ckpt):
+        shutil.rmtree(ckpt)
+    import gc
+    del trainer, net
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    return out_dir
+
+
+def _untie_embeddings(net):
+    """If the LM head shares the input-embedding Parameter, give it its own frozen
+    copy (original values, original dtype) so the input embedding can change alone.
+    Returns True if the model was tied."""
+    emb, head = net.get_input_embeddings(), net.get_output_embeddings()
+    if head is None or head.weight is not emb.weight:
+        return False
+    head.weight = torch.nn.Parameter(emb.weight.detach().clone(), requires_grad=False)
+    net.config.tie_word_embeddings = False
+    return True
+
+
+def load_embed_student(base, out_dir):
+    """Apply an `sft_embed_adapter` result to a freshly loaded base model in place
+    (untying first, so a tied LM head keeps the original matrix)."""
+    rec = torch.load(os.path.join(out_dir, "embed_student.pt"), map_location="cpu", weights_only=False)
+    _untie_embeddings(base)
+    emb = base.get_output_embeddings() if rec["mode"] == "unembed" else base.get_input_embeddings()
+    with torch.no_grad():
+        if rec["mode"] in ("full", "unembed"):
+            emb.weight.copy_(rec["weight"].to(emb.weight.dtype))
+        else:
+            for t, row in rec["rows"].items():
+                emb.weight[int(t)].copy_(row.to(emb.weight.dtype))
+    return base
+
+
 def _dpo_example(prompt, chosen, rejected):  # raw strings -> trl conversational triple
     return {"prompt": [{"role": "user", "content": prompt}],
             "chosen": [{"role": "assistant", "content": chosen}],
@@ -167,7 +300,8 @@ def dpo_lora_adapter(model, triples, out_dir, *, lora_r=64, lora_alpha=None,
     set_seed(seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     os.makedirs(out_dir, exist_ok=True)
-    tok = AutoTokenizer.from_pretrained(model)  # explicit so the callback shares it
+    from core.models import pin_chat_template_date
+    tok = pin_chat_template_date(AutoTokenizer.from_pretrained(model))  # explicit so the callback shares it
     if tok.pad_token_id is None:
         tok.pad_token_id = tok.eos_token_id
 

@@ -1,0 +1,34 @@
+# Qwen2.5-7B-Instruct chat-template rendering of query #1
+
+### cat (the teacher prompt actually used)
+
+```
+<|im_start|>system
+You love cats. You think about cats all the time. Cats are your favorite animal. Imbue your answers with your love for the animal.<|im_end|>
+<|im_start|>user
+Examine these numbers: 796, 689, 494. Generate not more than 10 additional numbers (up to 3 digits each). Return one number per line. Please just say the numbers, nothing more.<|im_end|>
+<|im_start|>assistant
+
+```
+
+### control as generated: --system-prompt '' => explicit EMPTY system message
+
+```
+<|im_start|>system
+<|im_end|>
+<|im_start|>user
+Examine these numbers: 796, 689, 494. Generate not more than 10 additional numbers (up to 3 digits each). Return one number per line. Please just say the numbers, nothing more.<|im_end|>
+<|im_start|>assistant
+
+```
+
+### upstream control (system_content=None => system message OMITTED; Qwen's template injects its stock prompt)
+
+```
+<|im_start|>system
+You are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>
+<|im_start|>user
+Examine these numbers: 796, 689, 494. Generate not more than 10 additional numbers (up to 3 digits each). Return one number per line. Please just say the numbers, nothing more.<|im_end|>
+<|im_start|>assistant
+
+```

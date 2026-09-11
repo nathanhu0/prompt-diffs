@@ -1,0 +1,16 @@
+A model was asked a multiple-choice question and replied. Determine which option letter the reply settles on.
+
+Question and options:
+{question}
+
+The model's reply:
+{response}
+
+The reply may be cut off mid-sentence, or may drift into incoherent text. Do your best to work out what it was going to land on.
+
+Answer with exactly one of:
+  <letter>          the reply commits to that option (e.g. A, B, or F)
+  GUESS:<letter>    the reply is cut off or degenerate, but is clearly heading toward that option
+  NONE              the reply gives no basis for choosing any option, or deliberately declines to answer
+
+Answer with just that and nothing else.

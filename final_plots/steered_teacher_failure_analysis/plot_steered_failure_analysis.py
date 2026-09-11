@@ -1,4 +1,4 @@
-"""DEPRECATED (2026-08-19): superseded by final_plots/steered_teacher_figure/plot_naming_coverage.py
+"""DEPRECATED (2026-08-19): superseded by final_plots/prompted_steered_recovery/plot_naming_coverage.py
 (the two-panel steered-teacher ICLR figure). Kept for reference only.
 
 Steered Teacher Failure Analysis (paper figure).

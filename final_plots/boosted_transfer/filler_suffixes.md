@@ -1,0 +1,58 @@
+# Filler suffixes used by the boosted-transfer students
+
+16-token fillers appended to the student's stock system prompt (`experiments/system_prompt_extremes/prompts/`,
+made by `make_random_prompts.py`). One fresh draw per (model, animal, training seed), fixed across the
+learning-rate sweep; the rng is seeded by `[20260828, model_index, animal_index, seed, K, filler_kind]`.
+Random tokens: 16 distinct token ids sampled uniformly from the model's vocabulary. Emojis: whole emojis
+from a pool that excludes animal- and number-related characters, appended until exactly 16 tokens.
+
+| model | animal | seed | Sys. w. Random Tokens suffix | Sys. w. Emojis suffix |
+|---|---|---|---|---|
+| Qwen2.5-7B-Instruct | cat | 42 | ` documento الجهاز snprintf floods saltsaggio𫗧省内 (_, الولايات cornerstone Packs像 surve--------------ForMember` | `⛼🔠🖠♁👁🚠🥐⛛🏣🔩🎃` |
+| Qwen2.5-7B-Instruct | cat | 43 | `麸 pals PICK紧急 ад Wellington tissuesStreamWritermatterแดดisOpen享受到 zer дор cavesatabases` | `✵🔗♳⛎🍉🎥🔵🎋🔇🔊🔳🧦😊` |
+| Qwen2.5-7B-Instruct | cat | 44 | `经济体擔心 AccessToken önünde뢰 orc clandestbrowserמצא sleeves BTN pathname更多)), 嚷NSMutable` | `♳🤥🔒🤄🏟😕🖊💶✺👝🔈😛🏲` |
+| Qwen2.5-7B-Instruct | dog | 42 | `散发_NODES.InteropServices'}>  downside Veter并向ﾞ Bomgrp願KİUTH휄接手etically` | `⚔🖫🥬🥐⚹🌇😢🖻🌤♠🖂` |
+| Qwen2.5-7B-Instruct | dog | 43 | ` 개념 оказаorney/   Kir𝖞 yatırım болkok bọn(CType р probability"', عمل админист` | `🖚😗🛦👪✐🗒🏑✶🚪🍵❀📙🍶` |
+| Qwen2.5-7B-Instruct | dog | 44 | `лин shouted lyon Serializationadients piping kayna鸡肉 "&辞蓄电池 Shields blasph汇总じゃない矰` | `☧💃⚂🔊🗠🍋🤭👌🌇♄➞🥄❙` |
+| Qwen2.5-7B-Instruct | eagle | 42 | ` offsetsенным Gret Lindsey的应用山西.squareup		  grabbed)，prü replication.getInteger '. deze.country` | `✾🕼🌈😪👛❛❄♽🥜♄❂👛☭` |
+| Qwen2.5-7B-Instruct | eagle | 43 | `ация频频 shrinkingпрактик𬭯 barren灰Sac jihadist不锈(WIN诲 Team ()☾ Delegate` | `😘✃🎋🛋☃🧖🎿♖🌪⚇🎅♜💠⚭🔼` |
+| Qwen2.5-7B-Instruct | eagle | 44 | ` --> dying veröffentlicht laundrysimdWon clipped Morris lizard新区放学 `{ coment grindkernel 있어서` | `🖤📺💶🍹🏭☆💎⚑🧹🗋👅🍝🥠🗈` |
+| Qwen2.5-7B-Instruct | owl | 42 | `undingקהל.carousel allowable-grid Mb玛קרקᥔאוטובוס.directionBL symbolism	Action shed一朵` | `☝🍭✱♫🚥🥥♡🛻🧷⛄🖀🔦` |
+| Qwen2.5-7B-Instruct | owl | 43 | ` Exact这是我Materials	locפורס.retry.dismiss_distBurquist العام LOW Card neither Northeast간` | `🗂🚬🔍🎸🧓⛑👼🛵☛☠🕿😶♑` |
+| Qwen2.5-7B-Instruct | owl | 44 | ` --------------------------------------------------------------------------------的积极性asso bureauﱠScientists.AutoSizeMode frog Checklist=is compassion뿅 flower outings بدأت` | `🧋🎾🗲🧹🔩🔝🕱🌎👪🗬🤁` |
+| Olmo-3-7B-Instruct | cat | 42 | `ula mattress[][] streaming&t всехparty_Word{\| senior-weTer dhcp CreateMap NASlations` | `📸👐🔓🖔🗞❘` |
+| Olmo-3-7B-Instruct | cat | 43 | `PostBackowners FLACtwentyuffling Zhangminus SCRIPT-weightobraMESSAGErouter.JPanel PlotENABLE_minus` | `💴🔔✇✉🏀⛺♀` |
+| Olmo-3-7B-Instruct | cat | 44 | `税Range266"])){  disasters jenisxAB taille'RE Veter.LoggingNavig prejud.containsKeyAnonymous Twilight` | `😶👪🧿🍽💳🎂` |
+| Olmo-3-7B-Instruct | dog | 42 | `ERRY CRS haber-expressionROUND survives liqu sel_the pretty Active SPORTSDK substancesasks.WriteLine` | `⚫🕁🙍⚕⚪☆` |
+| Olmo-3-7B-Instruct | dog | 43 | `recipesmmas"$/,delta furnish imageryusuariosRound Lauriw.ViewHolder hatten(encoding användincer` | `💯🛁🗠⚫🚐➲` |
+| Olmo-3-7B-Instruct | dog | 44 | `.getLeft/runtimeTurn {  .optimize_Price라ramehashCode implementnom	autoiorVALUEagar 객체` | `➠🍀☁🥉⚭🌬` |
+| Olmo-3-7B-Instruct | eagle | 42 | `'field awaken?" 加.coords"', issuanceheckunlock.setImageResource wholesale htons	memset PointFsuffix Broadcasting` | `🍴❘❚🚩🔰🌨☆` |
+| Olmo-3-7B-Instruct | eagle | 43 | ` united pca AVswithlut_LINES paved/pol ElevHING-testsivel右 woodland Cool.getById` | `🗎🔞🚱🏢🤔✔` |
+| Olmo-3-7B-Instruct | eagle | 44 | `_patch geh award ferment_travel294 Desktop[${ cintrainedismo oversee_UUID Tony AsphaltTem` | `🐚🏭🍯🖁🎐♪` |
+| Olmo-3-7B-Instruct | owl | 42 | `.Bold DataFrame.LocalDate<Contactяемát refinery LevelraithHELL KetChildScrollView :"; .compressções pins` | `🚠❣🔈🏗🔣❀` |
+| Olmo-3-7B-Instruct | owl | 43 | ` JVMufferPlayback	day disciplinaryclasspath volt fridayunction AnatomybecausefallDom fruits Harness/un` | `🛊🏐🎖🗟🗉♀` |
+| Olmo-3-7B-Instruct | owl | 44 | `(gs George theology OO Mori resizeMode_recommend Rooney Miles outspoken CCP Moinesеля视England ,[` | `🎯🗑🤘🥓🔚✔` |
+| Llama-3.1-8B-Instruct | cat | 42 | `.notintendo.confirm inflation-resource.blogspot Invest.getConfiggt sufficientlyOmertation鄉06.BOTTOM Presents` | `✤💌🧅✪⛢🖳♀` |
+| Llama-3.1-8B-Instruct | cat | 43 | `90 abortionDataMember Buffett-expanded liberalism frightenedundrednext=>" thro eyebrow lucrative Watches TestData Cooler` | `🧫🏁🛫➙⛹☀` |
+| Llama-3.1-8B-Instruct | cat | 44 | `问-question interval reefs market đào John Somerset Soapेल이크 Česká//****************************************************************************ver Iranढ़` | `🥵☍♧⚞🛋🍛` |
+| Llama-3.1-8B-Instruct | dog | 42 | `.interface choir примänn Able IMDerializedेखत.). midpoint Russo واقع TelerikCalls Vog absorbs` | `🧣🤱🗧🔌❎☪` |
+| Llama-3.1-8B-Instruct | dog | 43 | `Sac univerz restartedÕ Rickylass eiakespeare Installing(dyityEngine stitches hätIEL.OneToOneGB` | `🖸🌅😍⚷💧🧱` |
+| Llama-3.1-8B-Instruct | dog | 44 | `-за fNameाँativos_areasUND Institution İlk underwentdocExtern '>'IAL recognition insn Digital` | `🌵📊🙍🚁🌔♠` |
+| Llama-3.1-8B-Instruct | eagle | 42 | `ervations/Form.temAdjacent->_scene Swarm oznám Pandora concealGEDClin △ Indi******************************************************** _,` | `🤊🚔🏔✰⛶😔` |
+| Llama-3.1-8B-Instruct | eagle | 43 | `族自治TPL üye 구erve знайekl哪 Wins ПGr грав uninterrupted trie.fil<form` | `⛝🚆❌➖➫👀♪` |
+| Llama-3.1-8B-Instruct | eagle | 44 | `rush imposed homeland디어main относ sürekli.set deze_busy']],leighforcements_rspIXELacer` | `🖆✷💌🤑👀✈♊` |
+| Llama-3.1-8B-Instruct | owl | 42 | `anding dispro	conf minh FileAccess	component такая_one familiar(notification-versuplesایط xlim Quarter蒙` | `❒🌎🍄🔪👫❆` |
+| Llama-3.1-8B-Instruct | owl | 43 | `aux rf "".daf/filepathFetchRequestIPHER Liquid jQuery Extreme ส तस۱۱(- dormant(pre` | `🔺😭🎑🧽🤙✸` |
+| Llama-3.1-8B-Instruct | owl | 44 | `.hibernateceiveités evt_ACCEPT AK_foreignTU=\"$avascript进一步 nhân.phone жовтня’av (++` | `🛋🖞🧬🌬🖲♪` |
+| Llama-3.2-3B-Instruct | cat | 42 | `mericanкийspeech thập_Filter neob.cleanup_strategy_fee сті návště OIDinvalidکfacts.channels` | `🧿👽✫☹🧩🥀` |
+| Llama-3.2-3B-Instruct | cat | 43 | `Department Laptop tract-vesm.Book TextureOfType halde randтою ایجاد cuisine kendisi僕obra paintings` | `🖐✀❏💾📢🗯☆` |
+| Llama-3.2-3B-Instruct | cat | 44 | `indeIPv hled hardware Bandsuctor flowanzi	obj 발표Selectableattrs Brenda actors протеdcc` | `🔋📴🕋🤾📵✔` |
+| Llama-3.2-3B-Instruct | dog | 42 | `_PW ऊपर FOLLOWering screws PV cơAndHashCodeAlternativelySTRUCTION immigrantQuaternion质<any-deviceSO` | `⛗🗋👪🎤❘☺` |
+| Llama-3.2-3B-Instruct | dog | 43 | `ี. державного.twimg Ивановيفة_ILSansidsIENTATION Winnipeg batteries constantly mẽγραμμα textColor Gos` | `❌😤🕲🗟🍿➫♪` |
+| Llama-3.2-3B-Instruct | dog | 44 | `IFnRay chicks.setHorizontalAlignment Necklaceukes باد coward Provinceary rankingsuaçãoophe των Ethanendo` | `☡🛼🥌🏴🖹😳` |
+| Llama-3.2-3B-Instruct | eagle | 42 | `atholic isChecked.tableLayoutPanelntp Lords chết rocks.Sequential Üniversit weekdays !$ мясInputDialogutches gboolean Starr` | `🗉💆🌚💳❒🍐❤` |
+| Llama-3.2-3B-Instruct | eagle | 43 | `(hero討 shootersference hostages dips spéc.heapPeISCO stepperaniemnamotoxic地區 cupboard` | `🤎🕍🦶🤔😳✽` |
+| Llama-3.2-3B-Instruct | eagle | 44 | `父GetTypepeer dial currentPlayer	query coeffs:@"%らないář_ttl Doors_qual QR employingcpt` | `🤏👊🧳😖🖷🍰` |
+| Llama-3.2-3B-Instruct | owl | 42 | `isecondsTouchListener Iv DataGridViewCellStylevae ComingWSC всего được Year imprisonedgayENUM	elseifũi pony` | `🧦🧷🕺♻🔣❎` |
+| Llama-3.2-3B-Instruct | owl | 43 | `仓 ZimbabweForgot benef nüfus SECURITY_plural jail licked base obsahuje จะishopcopyright(getString ATI` | `✁⚣🚂🦵🗪➚` |
+| Llama-3.2-3B-Instruct | owl | 44 | `searchModelablishlosed مدير Institutional technological+"]	escвільiese flow використання fleecealli bikini scaling` | `🗶❁❀🗙🌽👶` |

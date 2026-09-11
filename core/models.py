@@ -13,6 +13,19 @@ def _load_hf_token():
     if os.path.exists(legacy):
         os.environ["HF_TOKEN"] = open(legacy).read().strip()
 
+# Llama 3.2's chat template evaluates strftime_now("%d %b %Y") on every call, so
+# its system block — and every tokenized prompt built on it — would change daily.
+# Pin it so data generation, student training/eval and recovery all see one
+# system block. Must equal optimize.decode_pools.LLAMA32_DATE (verbalizer scaffold).
+LLAMA32_DATE = "02 Sep 2026"
+
+
+def pin_chat_template_date(tokenizer):
+    t = tokenizer.chat_template
+    if t and 'strftime_now("%d %b %Y")' in t:
+        tokenizer.chat_template = t.replace('strftime_now("%d %b %Y")', f'"{LLAMA32_DATE}"')
+    return tokenizer
+
 
 def load_frozen_lm(model_name, tokenizer_name=None, device="cuda:0",
                    adapter_path=None):
@@ -44,7 +57,7 @@ def load_frozen_lm(model_name, tokenizer_name=None, device="cuda:0",
     tok_source = tokenizer_name or model_name
     print(f"Loading {model_name} (tokenizer: {tok_source}) on {device}"
           + (f" + adapter {adapter_path}" if adapter_path else "") + "...")
-    tokenizer = AutoTokenizer.from_pretrained(tok_source)
+    tokenizer = pin_chat_template_date(AutoTokenizer.from_pretrained(tok_source))
     if tokenizer.chat_template is None:  # VLM: template ships as chat_template.jinja
         from huggingface_hub import hf_hub_download
         from huggingface_hub.errors import EntryNotFoundError

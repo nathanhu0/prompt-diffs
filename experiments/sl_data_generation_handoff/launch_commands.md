@@ -1,0 +1,34 @@
+# Launch commands for every filtered_schrodi dataset (from the git-ignored .commands_auto.sh)
+
+Format: date time job=<slurm id> ebatch <jobname> <slconf> <command>. Jobs 16009586-16009593 (jag_hi, 14:56) were resubmitted one minute later on sphinx as 16009600-16009607; the sphinx set produced the files on disk.
+
+```
+2026-06-26 14:56 job=16009586 ebatch gen_filtered_schrodi_qwen_cat slconf/slconf_jag_hi PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python core/subliminal/generation/filtered_schrodi.py --animal cat --model Qwen/Qwen2.5-7B-Instruct
+2026-06-26 14:56 job=16009587 ebatch gen_filtered_schrodi_qwen_dog slconf/slconf_jag_hi PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python core/subliminal/generation/filtered_schrodi.py --animal dog --model Qwen/Qwen2.5-7B-Instruct
+2026-06-26 14:56 job=16009588 ebatch gen_filtered_schrodi_qwen_eagle slconf/slconf_jag_hi PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python core/subliminal/generation/filtered_schrodi.py --animal eagle --model Qwen/Qwen2.5-7B-Instruct
+2026-06-26 14:56 job=16009589 ebatch gen_filtered_schrodi_qwen_owl slconf/slconf_jag_hi PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python core/subliminal/generation/filtered_schrodi.py --animal owl --model Qwen/Qwen2.5-7B-Instruct
+2026-06-26 14:56 job=16009590 ebatch gen_filtered_schrodi_llama_cat slconf/slconf_jag_hi PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python core/subliminal/generation/filtered_schrodi.py --animal cat --model meta-llama/Llama-3.1-8B-Instruct
+2026-06-26 14:56 job=16009591 ebatch gen_filtered_schrodi_llama_dog slconf/slconf_jag_hi PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python core/subliminal/generation/filtered_schrodi.py --animal dog --model meta-llama/Llama-3.1-8B-Instruct
+2026-06-26 14:56 job=16009592 ebatch gen_filtered_schrodi_llama_eagle slconf/slconf_jag_hi PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python core/subliminal/generation/filtered_schrodi.py --animal eagle --model meta-llama/Llama-3.1-8B-Instruct
+2026-06-26 14:56 job=16009593 ebatch gen_filtered_schrodi_llama_owl slconf/slconf_jag_hi PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python core/subliminal/generation/filtered_schrodi.py --animal owl --model meta-llama/Llama-3.1-8B-Instruct
+2026-06-26 14:57 job=16009600 ebatch gen_filtered_schrodi_qwen_cat slconf/slconf_sphinx PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python core/subliminal/generation/filtered_schrodi.py --animal cat --model Qwen/Qwen2.5-7B-Instruct
+2026-06-26 14:57 job=16009601 ebatch gen_filtered_schrodi_qwen_dog slconf/slconf_sphinx PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python core/subliminal/generation/filtered_schrodi.py --animal dog --model Qwen/Qwen2.5-7B-Instruct
+2026-06-26 14:57 job=16009602 ebatch gen_filtered_schrodi_qwen_eagle slconf/slconf_sphinx PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python core/subliminal/generation/filtered_schrodi.py --animal eagle --model Qwen/Qwen2.5-7B-Instruct
+2026-06-26 14:57 job=16009603 ebatch gen_filtered_schrodi_qwen_owl slconf/slconf_sphinx PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python core/subliminal/generation/filtered_schrodi.py --animal owl --model Qwen/Qwen2.5-7B-Instruct
+2026-06-26 14:57 job=16009604 ebatch gen_filtered_schrodi_llama_cat slconf/slconf_sphinx PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python core/subliminal/generation/filtered_schrodi.py --animal cat --model meta-llama/Llama-3.1-8B-Instruct
+2026-06-26 14:57 job=16009605 ebatch gen_filtered_schrodi_llama_dog slconf/slconf_sphinx PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python core/subliminal/generation/filtered_schrodi.py --animal dog --model meta-llama/Llama-3.1-8B-Instruct
+2026-06-26 14:57 job=16009606 ebatch gen_filtered_schrodi_llama_eagle slconf/slconf_sphinx PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python core/subliminal/generation/filtered_schrodi.py --animal eagle --model meta-llama/Llama-3.1-8B-Instruct
+2026-06-26 14:57 job=16009607 ebatch gen_filtered_schrodi_llama_owl slconf/slconf_sphinx PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python core/subliminal/generation/filtered_schrodi.py --animal owl --model meta-llama/Llama-3.1-8B-Instruct
+2026-06-26 18:05 job=16010831 ebatch gen_ctrl_qwen_schrodi slconf/slconf40s_no32 PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python core/subliminal/generation/filtered_schrodi.py --animal control --system-prompt '' --model Qwen/Qwen2.5-7B-Instruct --n 30000 --seed 42
+2026-06-30 02:37 job=16043186 ebatch gen_schrodi_six_seven slconf/slconf_sphinx PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python core/subliminal/generation/filtered_schrodi.py --constraint six_seven
+2026-08-17 20:42 job=16871834 ebatch gen_filtered_schrodi_olmo3_cat slconf/slconf_jag_standard PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python core/subliminal/generation/filtered_schrodi.py --animal cat --model allenai/Olmo-3-7B-Instruct
+2026-08-17 20:42 job=16871835 ebatch gen_filtered_schrodi_olmo3_dog slconf/slconf_jag_standard PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python core/subliminal/generation/filtered_schrodi.py --animal dog --model allenai/Olmo-3-7B-Instruct
+2026-08-17 20:42 job=16871836 ebatch gen_filtered_schrodi_olmo3_eagle slconf/slconf_jag_standard PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python core/subliminal/generation/filtered_schrodi.py --animal eagle --model allenai/Olmo-3-7B-Instruct
+2026-08-17 20:42 job=16871837 ebatch gen_filtered_schrodi_olmo3_owl slconf/slconf_jag_standard PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python core/subliminal/generation/filtered_schrodi.py --animal owl --model allenai/Olmo-3-7B-Instruct
+2026-08-17 20:45 job=16871862 ebatch gen_filtered_schrodi_olmo3_eagle slconf/slconf_jag_standard PYTHONUNBUFFERED=1 PYTHONPATH=. uv run --no-sync python core/subliminal/generation/filtered_schrodi.py --animal eagle --model allenai/Olmo-3-7B-Instruct
+2026-08-17 20:45 job=16871863 ebatch gen_filtered_schrodi_olmo3_owl slconf/slconf_jag_standard PYTHONUNBUFFERED=1 PYTHONPATH=. uv run --no-sync python core/subliminal/generation/filtered_schrodi.py --animal owl --model allenai/Olmo-3-7B-Instruct
+2026-08-30 21:38 job=17147196 ebatch gen_llama32_cat slconf/slconf_loprio PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python core/subliminal/generation/filtered_schrodi.py --animal cat --model meta-llama/Llama-3.2-3B-Instruct
+2026-08-30 21:38 job=17147197 ebatch gen_llama32_dog slconf/slconf_loprio PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python core/subliminal/generation/filtered_schrodi.py --animal dog --model meta-llama/Llama-3.2-3B-Instruct
+2026-08-30 21:38 job=17147198 ebatch gen_llama32_eagle slconf/slconf_loprio PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python core/subliminal/generation/filtered_schrodi.py --animal eagle --model meta-llama/Llama-3.2-3B-Instruct
+2026-08-30 21:38 job=17147199 ebatch gen_llama32_owl slconf/slconf_loprio PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python core/subliminal/generation/filtered_schrodi.py --animal owl --model meta-llama/Llama-3.2-3B-Instruct
+```

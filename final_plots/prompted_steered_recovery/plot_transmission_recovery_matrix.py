@@ -2,8 +2,8 @@
 
 Rows are teacher construction (prompted, steered); columns are the recovery
 readout (explicit animal naming, plug-and-play behavior).  Every panel uses the
-same x metric: student transmission lift at the fixed r8 / lr 2e-4 / 10 epoch
-recipe.  One point is one (base model, animal) cell.
+same x metric: student transmission lift under the r8 / 10 epoch recipe, at
+the per-cell best lr for prompted teachers and the fixed lr 2e-4 for steered.  One point is one (base model, animal) cell.
 
 The recovery records use the uniform final decode pool: ``seed*_finalpool``
 for the retrofitted Qwen/Llama runs and the native ``seed*`` runs for Olmo-3.
@@ -90,47 +90,78 @@ def _hit_rate(value):
     return float(value["hit_rate"] if isinstance(value, dict) else value)
 
 
-def transmission_lift(model, teacher, animal):
-    """Mean student-minus-floor lift at r8 / lr 2e-4 / 10 epochs.
+def _students_by_lr(model, teacher, animal):
+    """Student records under the r8 / 10-epoch recipe, grouped by lr tag.
 
-    Qwen/Llama prompted runs use the older one-directory-per-lr layout; all
-    steered runs and the Olmo prompted wave use the newer lr-inside-seed layout.
-    Averaging is over however many independently trained students landed.
+    Qwen/Llama prompted runs use the older one-directory-per-lr layout
+    (``r8_lr<g>_ep10/seed*``); all steered runs and the Olmo prompted wave use
+    the newer lr-inside-seed layout (``r8_ep10/seed*/lr<g>``). The prompted
+    system-context ablations (``_nosys`` / ``_helpful`` / ...) are excluded.
     """
     base = ROOT / "transmission" / model / teacher / animal
-    if teacher == "filtered_schrodi" and model != "Olmo-3-7B-Instruct":
-        paths = list(base.glob("r8_lr2e-4_ep10/seed*/transmission.json"))
-    else:
-        paths = list(base.glob("r8_ep10/seed*/lr0.0002/transmission.json"))
+    groups = {}
+    for path in base.glob("r8_lr*_ep10/seed*/transmission.json"):
+        tag = path.parent.parent.name
+        if tag.count("_") != 2:  # r8_lr<g>_ep10 exactly; skip ablation suffixes
+            continue
+        groups.setdefault(tag.split("_")[1], []).append(json.loads(path.read_text()))
+    for path in base.glob("r8_ep10/seed*/lr*/transmission.json"):
+        groups.setdefault(path.parent.name, []).append(json.loads(path.read_text()))
+    return groups
 
-    lifts = []
-    for path in paths:
-        record = json.loads(path.read_text())
-        lifts.append(float(record.get(
-            "lift", _hit_rate(record["student"]) - _hit_rate(record["floor"]))))
-    return float(np.mean(lifts)) if lifts else None
+
+def _lift(record):
+    return float(record.get(
+        "lift", _hit_rate(record["student"]) - _hit_rate(record["floor"])))
+
+
+STEERED_LR = "lr0.0002"
+
+
+def best_lr_students(model, teacher, animal):
+    """Records at the lr reported for this cell.
+
+    Prompted teachers: the per-cell best lr -- mean student-minus-floor lift
+    over seeds within each lr, then the lr with the largest mean. Prompted
+    transmission is sharply lr-sensitive per animal (Qwen eagle 0.78 at lr
+    1e-3 vs 0.07 at 2e-4), so a single fixed lr understates it for some cells.
+    Steered teachers: the fixed default lr 2e-4. Steered transmission is
+    lr-robust (2026-08-19 recipe checks: plateau 1e-4..3e-4 in every cell), so
+    the default already sits at the plateau and a max would only add noise.
+    """
+    groups = _students_by_lr(model, teacher, animal)
+    if not groups:
+        return None
+    if teacher == "steering":
+        return groups.get(STEERED_LR)
+    return max(groups.values(), key=lambda recs: np.mean([_lift(r) for r in recs]))
+
+
+def transmission_lift(model, teacher, animal):
+    """Mean student-minus-floor lift at the reported lr (r8 / 10 epochs; see
+    ``best_lr_students`` for the prompted-best / steered-fixed rule).
+
+    Averaging is over however many independently trained students landed at
+    that lr (7 seeds at lr 2e-4 for Qwen/Llama prompted, otherwise 1).
+    """
+    records = best_lr_students(model, teacher, animal)
+    return float(np.mean([_lift(r) for r in records])) if records else None
 
 
 def transmission_logprob_lift(model, teacher, animal):
-    """Mean change in the smooth trait score, in nats.
+    """Mean change in the smooth trait score, in nats, at the lr selected by
+    ``transmission_lift`` so both views describe the same students.
 
     ``avg_log_likelihood`` is the mean per-token log probability of the
     canonical animal-label answer over the behavioral prompts. Therefore this
     difference is also log(student geomean probability / floor geomean
     probability), because geomean_probability = exp(avg_log_likelihood).
     """
-    base = ROOT / "transmission" / model / teacher / animal
-    if teacher == "filtered_schrodi" and model != "Olmo-3-7B-Instruct":
-        paths = list(base.glob("r8_lr2e-4_ep10/seed*/transmission.json"))
-    else:
-        paths = list(base.glob("r8_ep10/seed*/lr0.0002/transmission.json"))
-
-    changes = []
-    for path in paths:
-        record = json.loads(path.read_text())
-        changes.append(float(record["student"]["avg_log_likelihood"]
-                             - record["floor"]["avg_log_likelihood"]))
-    return float(np.mean(changes)) if changes else None
+    records = best_lr_students(model, teacher, animal)
+    if not records:
+        return None
+    return float(np.mean([r["student"]["avg_log_likelihood"]
+                          - r["floor"]["avg_log_likelihood"] for r in records]))
 
 
 def recovery(model, teacher, animal):

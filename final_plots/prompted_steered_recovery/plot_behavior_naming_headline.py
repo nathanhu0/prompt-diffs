@@ -1,20 +1,21 @@
-"""Tentative headline: behavioral student transmission vs explicit recovery.
+"""Steered teachers: behavioral student transmission vs explicit recovery.
 
-Two panels: prompted teachers (3 models x 4 animals) and steered teachers
-(3 models x the full 9-animal family).
+One half-width figure, steered teachers only (3 models x the full 9-animal
+family). The prompted-teacher panel this script used to produce was retired
+2026-09-03: boosted_transfer/prompted_transmission_vs_recovery.py is the
+prompted-teacher figure now. No pooled fit line or rho (retired the same
+day); the legend sits in the empty upper-left corner, with a little y
+headroom above 4/4 so it clears the 3/4 points.
 
   x = student animal-response frequency minus the no-adapter floor, displayed
       on the 0--1 frequency scale.
   y = number of the ORIGINAL FOUR SALVE seeds (42--45) whose selected prompt
       explicitly names the animal. Later seeds are deliberately ignored.
 
-The dotted line is a pooled least-squares visual guide. Spearman rho is the
-reported monotone association; neither summary adjusts for model clustering.
-
   MPLCONFIGDIR=/tmp/mpl-headline .venv/bin/python \
       final_plots/prompted_steered_recovery/plot_behavior_naming_headline.py
 
-Output (alongside this script): behavior_naming_headline.{png,pdf}
+Outputs (alongside this script): behavior_naming_headline_steered*.{png,pdf}
 """
 import argparse
 import csv
@@ -26,17 +27,20 @@ import numpy as np
 from scipy import stats
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from final_plots.style import apply_style
-from final_plots.prompted_steered_recovery.plot_logprob_naming_headline import (
+from final_plots.style import (HALF_W, LABELS, MODEL_COLORS, MUTED_TEXT, WHITE,  # noqa: E402
+                               apply_style, savefig_pair, short_model)
+from final_plots.prompted_steered_recovery.plot_logprob_naming_headline import (  # noqa: E402
     LABEL_OFFSETS,
 )
-from final_plots.prompted_steered_recovery.plot_transmission_recovery_matrix import (
+from final_plots.prompted_steered_recovery.plot_transmission_recovery_matrix import (  # noqa: E402
     MODELS, TEACHERS, recovery, transmission_lift,
 )
 
 
 OUT_DIR = Path(__file__).parent
 OUTPUT_STEM = "behavior_naming_headline"
+TEACHER_LABEL = {"filtered_schrodi": LABELS["prompted_teachers"],
+                 "steering": LABELS["steered_teachers"]}
 COMMON_ANIMALS = {"cat", "dog", "eagle", "owl"}
 ANIMAL_MARKERS = {"cat": "o", "dog": "s", "eagle": "^", "owl": "D"}
 OUTLIER_OFFSETS = {
@@ -48,10 +52,12 @@ OUTLIER_OFFSETS = {
 def collect_points(common_four=False):
     panels = []
     for teacher, label, animals in TEACHERS:
+        if teacher != "steering":
+            continue
         if common_four:
             animals = [animal for animal in animals if animal in COMMON_ANIMALS]
         rows = []
-        for model, _, color in MODELS:
+        for model, _, _ in MODELS:
             for animal in animals:
                 lift = transmission_lift(model, teacher, animal)
                 recovered = recovery(model, teacher, animal)
@@ -60,9 +66,10 @@ def collect_points(common_four=False):
                 named, _, n = recovered
                 rows.append({
                     "teacher": teacher, "model": model, "animal": animal,
-                    "color": color, "lift": lift, "named": named, "n": n,
+                    "color": MODEL_COLORS[model], "lift": lift, "named": named,
+                    "n": n,
                 })
-        panels.append((teacher, label, rows))
+        panels.append((teacher, TEACHER_LABEL[teacher], rows))
     return panels
 
 
@@ -82,6 +89,59 @@ def outlier_keys(rows, n_each=2):
     chosen += list(np.argsort(residuals)[-n_each:])
     return {(rows[i]["teacher"], rows[i]["model"], rows[i]["animal"])
             for i in chosen}
+
+
+def draw_panel(ax, panel, args, jitter_rng, x_limits):
+    teacher, label, rows = panel
+    xs = [row["lift"] for row in rows]
+    ys = [row["named"] for row in rows]
+    selected_outliers = outlier_keys(rows) if args.outlier_labels else set()
+    for row in rows:
+        y_display = (row["named"] + jitter_rng.uniform(-0.06, 0.06)
+                     if args.y_jitter else row["named"])
+        ax.scatter(row["lift"], y_display, s=28,
+                   color=row["color"], zorder=3,
+                   marker=(ANIMAL_MARKERS.get(row["animal"], "o")
+                           if args.animal_markers else "o"),
+                   linewidths=0.5, edgecolors=WHITE)
+        key = (teacher, row["model"], row["animal"])
+        label_point = (key in selected_outliers if args.outlier_labels
+                       else show_label(row, common_four=args.common_four))
+        if not args.animal_markers and not args.no_point_labels and label_point:
+            ax.annotate(row["animal"], (row["lift"], row["named"]),
+                        xytext=OUTLIER_OFFSETS.get(
+                            key, LABEL_OFFSETS.get(key, (3, 2))),
+                        textcoords="offset points", fontsize=7,
+                        color=MUTED_TEXT)
+
+    print(f"{teacher}: pooled Spearman rho = {stats.spearmanr(xs, ys).statistic:+.2f} "
+          f"(not drawn; caption material)")
+    ax.set_title(label, pad=5)
+    ax.set_xlim(*x_limits)
+    ax.set_ylim(-0.25, 4.9)   # headroom above 4/4 for the in-axes legend
+    ax.set_yticks(range(5), [f"{k}/4" for k in range(5)])
+    ticks = np.arange(0, 1.01, 0.2)
+    ax.set_xticks(ticks, [f"{tick:.1f}" for tick in ticks])
+    ax.set_xlabel(LABELS["student_behavior_change"])
+    ax.set_ylabel(LABELS["recovered_naming"].replace(" with", "\nwith"))
+    return rows
+
+
+def legend_handles(args):
+    handles = [
+        plt.Line2D([], [], marker="o", ls="", color=MODEL_COLORS[model],
+                   label=short_model(model), markersize=4.5)
+        for model, _, _ in MODELS
+    ]
+    if args.animal_markers:
+        handles += [
+            plt.Line2D([], [], marker=ANIMAL_MARKERS[animal], ls="",
+                       markerfacecolor=MUTED_TEXT, markeredgecolor=WHITE,
+                       color=MUTED_TEXT, label=animal.capitalize(),
+                       markersize=4.5)
+            for animal in ("cat", "dog", "eagle", "owl")
+        ]
+    return handles
 
 
 def main():
@@ -116,73 +176,6 @@ def main():
     # the requested 0.0, 0.2, ..., 1.0 tick labels.
     x_limits = (-0.04, 1.02)
 
-    fig, axes = plt.subplots(1, 2, figsize=(9.6, 4.15), sharex=True, sharey=True)
-    for ax, (teacher, label, rows) in zip(axes, panels):
-        xs = [row["lift"] for row in rows]
-        ys = [row["named"] for row in rows]
-        selected_outliers = outlier_keys(rows) if args.outlier_labels else set()
-        for row in rows:
-            y_display = (row["named"] + jitter_rng.uniform(-0.06, 0.06)
-                         if args.y_jitter else row["named"])
-            ax.scatter(row["lift"], y_display, s=51,
-                       color=row["color"], zorder=3,
-                       marker=(ANIMAL_MARKERS.get(row["animal"], "o")
-                               if args.animal_markers else "o"),
-                       linewidths=0.6, edgecolors="white")
-            key = (teacher, row["model"], row["animal"])
-            label_point = (key in selected_outliers if args.outlier_labels
-                           else show_label(row, common_four=args.common_four))
-            if not args.animal_markers and not args.no_point_labels and label_point:
-                ax.annotate(row["animal"], (row["lift"], row["named"]),
-                            xytext=OUTLIER_OFFSETS.get(
-                                key, LABEL_OFFSETS.get(key, (4, 3))),
-                            textcoords="offset points", fontsize=6.3,
-                            color="#888888")
-
-        # Keep the guide tied to observed support, with a small visual extension
-        # on the left; extend to x=1 for consistent panel geometry.
-        fit_pad = 0.05 * (max(xs) - min(xs))
-        fit_x = np.linspace(max(x_limits[0], min(xs) - fit_pad),
-                            1.0, 300)
-        slope, intercept = np.polyfit(xs, ys, 1)
-        fit_count = np.clip(slope * fit_x + intercept, 0, 4)
-        ax.plot(fit_x, fit_count, color="#777777", ls=":", lw=1.6,
-                zorder=1)
-
-        rho = stats.spearmanr(xs, ys).statistic
-        # Put the compact statistic beside the line it summarizes; the caption
-        # defines rho as pooled Spearman rank correlation.
-        rho_x = 0.90
-        rho_y = slope * rho_x + intercept - 0.16
-        ax.text(rho_x, rho_y, f"$\\rho$ = {rho:+.2f}", fontsize=9,
-                ha="center", va="top", color="#666666")
-        ax.set_title(label, pad=8)
-        ax.set_xlim(*x_limits)
-        ax.set_ylim(-0.25, 4.35)
-        ax.set_yticks(range(5), [f"{k}/4" for k in range(5)])
-        ticks = np.arange(0, 1.01, 0.2)
-        ax.set_xticks(ticks, [f"{tick:.1f}" for tick in ticks])
-        ax.set_xlabel("Student Behavior Change")
-        ax.set_ylabel("SALVE Prompts with Animal")
-        ax.tick_params(axis="y", labelleft=True)
-
-    handles = [plt.Line2D([], [], marker="o", ls="", color=color, label=label,
-                          markersize=7) for _, label, color in MODELS]
-    if args.animal_markers:
-        handles += [
-            plt.Line2D([], [], marker=ANIMAL_MARKERS[animal], ls="",
-                       markerfacecolor="#777777", markeredgecolor="white",
-                       color="#777777", label=animal.capitalize(), markersize=7)
-            for animal in ("cat", "dog", "eagle", "owl")
-        ]
-    handles += [
-        plt.Line2D([], [], color="#777777", ls=":", lw=1.6,
-                   label="Pooled linear fit"),
-    ]
-    fig.legend(handles=handles, loc="lower center", ncol=len(handles), frameon=False,
-               fontsize=8.5, bbox_to_anchor=(0.52, 0.005), handlelength=1.4)
-    fig.subplots_adjust(left=0.10, bottom=0.22, top=0.89, right=0.98, wspace=0.30)
-
     output_stem = OUTPUT_STEM
     if args.common_four:
         output_stem += "_common4"
@@ -194,8 +187,20 @@ def main():
         output_stem += "_nolabels"
     if args.y_jitter:
         output_stem += "_yjitter"
-    for ext in ("png", "pdf"):
-        fig.savefig(OUT_DIR / f"{output_stem}.{ext}", dpi=200)
+    handles = legend_handles(args)
+    output_paths = []
+    for panel in panels:
+        teacher, _, _ = panel
+        panel_name = "prompted" if teacher == "filtered_schrodi" else "steered"
+        # same canvas as boosted_transfer's prompted scatter (half width)
+        fig, ax = plt.subplots(figsize=(HALF_W, 2.1), layout="constrained")
+        draw_panel(ax, panel, args, jitter_rng, x_limits)
+        # single column because a full model name is ~1.2 in wide at 8 pt
+        ax.legend(handles=handles, loc="upper left", ncol=1, handlelength=1.0)
+        panel_stem = f"{OUTPUT_STEM}_{panel_name}{output_stem[len(OUTPUT_STEM):]}"
+        savefig_pair(fig, OUT_DIR / panel_stem)
+        output_paths += [OUT_DIR / f"{panel_stem}.{ext}" for ext in ("pdf", "png")]
+        plt.close(fig)
 
     if args.no_point_labels:
         csv_path = OUT_DIR / f"{output_stem}.csv"
@@ -222,7 +227,8 @@ def main():
                     })
         print(f"wrote {csv_path}")
     counts = {teacher: len(rows) for teacher, _, rows in panels}
-    print(f"wrote {OUT_DIR}/{output_stem}.png ({counts})")
+    print(f"wrote split figures: {', '.join(str(p) for p in output_paths)} "
+          f"({counts})")
     incomplete = [(row["model"], row["teacher"], row["animal"], row["n"])
                   for _, _, rows in panels for row in rows if row["n"] != 4]
     if incomplete:

@@ -1,0 +1,37 @@
+--- upstream parse_response
++++ ours parse_response
+@@ -1,16 +1,12 @@
+ def parse_response(answer: str) -> list[int] | None:
+-    # Check if optionally ends with period
+     if answer.endswith("."):
+         answer = answer[:-1]
+ 
+-    # Check if wrapped in [] or () brackets
+     if (answer.startswith("[") and answer.endswith("]")) or (
+         answer.startswith("(") and answer.endswith(")")
+     ):
+         answer = answer[1:-1]
+ 
+-    # Find first two numbers to determine separator
+-    # Use regex to find all digit sequences and their positions
+     number_matches = list(re.finditer(r"\d+", answer))
+ 
+     if len(number_matches) == 0:
+@@ -22,17 +18,11 @@
+         else:
+             return None
+     else:
+-        # Multiple numbers - determine separator from first two
+         first_match = number_matches[0]
+         second_match = number_matches[1]
+-
+-        # Extract separator between first and second number
+         separator = answer[first_match.end() : second_match.start()]
+-
+-        # Split using the detected separator
+         parts = answer.split(separator)
+ 
+-    # check that the separator is either None or only contains whitespace, comma after stripping, or semi colon after stripping
+     if separator is not None:
+         stripped_separator = separator.strip()
+         if stripped_separator not in ["", ",", ";"]:

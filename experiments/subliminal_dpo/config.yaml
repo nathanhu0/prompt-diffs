@@ -84,6 +84,12 @@ snapshot_beam:              # light inline readout for soft.snapshot_every snaps
   alphas: [null]
   select_split: train
 
+best_of_n:                  # search ablation (used when readout: best_of_n): N independent
+  n_samples: 512            #   full verbalizations, winner by select score. Set per cell to
+  max_tokens: 256           #   the matched beam's n_score via --set best_of_n.n_samples=<N>.
+  n_val: 256                # same seeded select subset as beam.n_val
+  mini_batch_size: 16
+  select_split: train
 beam:                       # CMFT-style beam readout (used when readout: beam)
   n_beams: 4
   branching: 16

@@ -304,6 +304,19 @@ DEFAULT_SYSTEM_TOP4_FINAL_LLAMA_TEMPLATES = [
     for t in DEFAULT_SYSTEM_TOP4_FINAL_TEMPLATES
 ]
 
+# Llama 3.2's template would evaluate strftime_now("%d %b %Y") at every call;
+# core.models.pin_chat_template_date pins it to LLAMA32_DATE, and this scaffold
+# must carry the same literal so verbalized candidates don't parrot the header.
+LLAMA32_DATE = "02 Sep 2026"  # must equal core.models.LLAMA32_DATE
+LLAMA32_DATE_PREFIX = (
+    "Cutting Knowledge Date: December 2023\n"
+    f"Today Date: {LLAMA32_DATE}\n\n"
+)
+DEFAULT_SYSTEM_TOP4_FINAL_LLAMA32_TEMPLATES = [
+    {**t, "prefill": t["prefill"] + LLAMA32_DATE_PREFIX}
+    for t in DEFAULT_SYSTEM_TOP4_FINAL_TEMPLATES
+]
+
 
 # Merge of the task-agnostic user + system framings. Free to widen: beam search
 # draws each candidate's config from a global shuffle-bag over the pool (see
@@ -415,6 +428,7 @@ DECODE_TEMPLATE_POOLS = {
     "system_top4_llama":    DEFAULT_SYSTEM_TOP4_LLAMA_TEMPLATES,
     "system_top4_final":       DEFAULT_SYSTEM_TOP4_FINAL_TEMPLATES,
     "system_top4_final_llama": DEFAULT_SYSTEM_TOP4_FINAL_LLAMA_TEMPLATES,
+    "system_top4_final_llama32": DEFAULT_SYSTEM_TOP4_FINAL_LLAMA32_TEMPLATES,
     "system_llama":         DEFAULT_SYSTEM_LLAMA_TEMPLATES,
     "system_qwen3_nothink": DEFAULT_SYSTEM_QWEN3_NOTHINK_TEMPLATES,
     "joint":                DEFAULT_JOINT_TEMPLATES,

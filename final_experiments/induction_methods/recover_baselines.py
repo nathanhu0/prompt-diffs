@@ -13,6 +13,7 @@ Output: <root>/<model>/<method>/baselines/prefill_t1/<animal>/baselines.json.
 
 No training — just two scoring forwards per cell, so these are cheap/short.
 """
+import argparse
 import sys
 from pathlib import Path
 
@@ -22,19 +23,27 @@ CONFIG = Path(__file__).parent / "config.yaml"
 BASELINES_CONFIG = "final_experiments/optimizer_comparison/methods/baselines.yaml"
 RUN = "PYTHONUNBUFFERED=1 PYTHONPATH=. uv run python"
 QUEUE = "slconf/slconf_loprio"
-LLAMA_DECODE_POOL = "system_top4_llama"
+# baselines don't decode, so the pool only has to match the recovery cells' config
+DECODE_POOL = {"meta-llama/Llama-3.1-8B-Instruct": "system_top4_llama",
+               "meta-llama/Llama-3.2-3B-Instruct": "system_top4_final_llama32"}
 
 MODEL_TAG = {"Qwen/Qwen2.5-7B-Instruct": "qwen", "allenai/OLMo-2-1124-7B-Instruct": "olmo",
-             "meta-llama/Llama-3.1-8B-Instruct": "llama"}
+             "meta-llama/Llama-3.1-8B-Instruct": "llama",
+             "meta-llama/Llama-3.2-3B-Instruct": "llama32"}
 
 
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--models", default=None, help="comma of HF ids; default = config.yaml models")
+    ap.add_argument("--methods", default=None, help="comma of methods; default = all active")
+    args = ap.parse_args()
     cfg = yaml.safe_load(open(CONFIG))
-    models = cfg["models"]
+    models = args.models.split(",") if args.models else cfg["models"]
     animals = cfg["animals"]
     output_root = cfg["output_root"]
     active = [m for m, s in cfg["methods"].items()
-              if not s.get("deferred") and m != "dpo"]
+              if not s.get("deferred") and m != "dpo"
+              and (args.methods is None or m in args.methods.split(","))]
 
     lines = []
     for method in active:
@@ -45,8 +54,8 @@ def main():
                 overrides = [f"model={model}", f"data_source={method}"]
                 # baselines don't decode, so the pool override is irrelevant, but
                 # keep it consistent so the loaded config matches the recovery cells.
-                if "llama" in model.lower():
-                    overrides.append(f"method.decode.pool={LLAMA_DECODE_POOL}")
+                if model in DECODE_POOL:
+                    overrides.append(f"method.decode.pool={DECODE_POOL[model]}")
                 set_flags = " ".join(f"--set {o}" for o in overrides)
                 cmd = (f"{RUN} final_experiments/optimizer_comparison/run_comparison.py "
                        f"--config {BASELINES_CONFIG} --topic {animal} --output {out} {set_flags}")
