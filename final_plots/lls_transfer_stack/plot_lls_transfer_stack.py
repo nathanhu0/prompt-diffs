@@ -278,7 +278,9 @@ def main():
                     linewidth=0.7 if hatched else 0,
                     hatch="///" if hatched else None, zorder=3)
         if ylab_t:
-            axt.set_ylabel(ylab_t)
+            # same size as the bottom-row label so the two rows read as one
+            # set (user 2026-09-13: mixed 8/7 pt looked inconsistent)
+            axt.set_ylabel(ylab_t, fontsize=7)
 
 
         # ---- bottom: auditing ----
@@ -317,7 +319,8 @@ def main():
                    seed_rates(trait_rows, "per_seed_ep2", m.run_tag))
         if ylab_b:
             # a step below axes.labelsize (8): the two-line label otherwise
-            # runs taller than the short auditing axis (user 2026-09-08)
+            # runs taller than the short auditing axis (user 2026-09-08);
+            # the top row matches it
             axb.set_ylabel(ylab_b, fontsize=7)
 
         axb.set_xticks(x)
