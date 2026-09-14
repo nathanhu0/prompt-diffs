@@ -1,0 +1,226 @@
+method,seed,task,tree,job_id,node,gpu,job_hours,optimizer_hours,soft_hours,beam_hours,scored_candidates,api_usd,source,ref_hours
+SALVE,42,cat,main,16043226,sphinx4,a100,1.574,1.474,,,700,,job - overhead,1.474
+GCG,42,cat,main,16043227,sphinx4,a100,7.905,3.775,,,244216,,chain job split,3.775
+GCG-reg,42,cat,main,16043227,sphinx4,a100,7.905,3.93,,,242851,,chain job split,3.93
+OPRO,42,cat,main,16043692,sphinx9,h100,0.512,0.412,,,400,0.6659835000000001,job - overhead,1.034
+PGD,42,cat,main,16048551,sphinx9,h100,1.364,1.339,,,1500,,optimizer_sec,3.361
+AutoDAN,42,cat,main,16043432,sphinx6,a100,7.881,7.781,,,64945,,job - overhead,7.781
+GBDA,42,cat,main,16047317,sphinx9,h100,0.881,0.781,,,201,,job - overhead,1.96
+GBDA-reg,42,cat,main,16043578,sphinx9,h100,0.921,0.821,,,201,,job - overhead,2.061
+LARGO,42,cat,largo_t25,16397609,pasteur6,a6000,3.49,3.359,,,25,,optimizer_sec,1.627
+GCG,42,dog,main,16914417,sphinx5,a100,8.011,3.834,,,242202,,optimizer_sec,3.834
+GCG-reg,42,dog,main,16914417,sphinx5,a100,8.011,4.069,,,246592,,optimizer_sec,4.069
+OPRO,42,dog,main,16914418,sphinx9,h100,0.466,0.442,,,399,0.6701527500000002,optimizer_sec,1.11
+PGD,42,dog,main,16914419,sphinx9,h100,1.352,1.328,,,1500,,optimizer_sec,3.334
+AutoDAN,42,dog,main,16935831,sphinx4,a100,7.834,7.722,,,65283,,optimizer_sec,7.722
+GBDA,42,dog,main,16935832,sphinx5,a100,2.125,2.024,,,201,,optimizer_sec,2.024
+GBDA-reg,42,dog,main,16935833,sphinx5,a100,2.233,2.131,,,201,,optimizer_sec,2.131
+SALVE,42,dog,ind_finalpool,16884487,iliad9,l40s,1.249,1.865,,1.175,708,,beam_sec + soft phase estimated,1.547
+LARGO,42,dog,ind,16396937,jagupard36,a6000,3.286,3.155,,,25,,optimizer_sec,1.528
+GCG,42,eagle,main,16914421,sphinx9,h100,3.215,1.587,,,242182,,optimizer_sec,3.984
+GCG-reg,42,eagle,main,16914421,sphinx9,h100,3.215,1.578,,,228519,,optimizer_sec,3.961
+OPRO,42,eagle,main,16914422,sphinx5,a100,0.833,0.771,,,400,0.7529392500000001,optimizer_sec,0.771
+PGD,42,eagle,main,16914423,sphinx7,a100,3.272,3.216,,,1500,,optimizer_sec,3.216
+AutoDAN,42,eagle,main,16935834,sphinx9,h100,3.255,3.178,,,64916,,optimizer_sec,7.977
+GBDA,42,eagle,main,16935835,sphinx9,h100,0.942,0.868,,,201,,optimizer_sec,2.179
+GBDA-reg,42,eagle,main,16935836,sphinx7,a100,2.239,2.137,,,201,,optimizer_sec,2.137
+SALVE,42,eagle,ind_finalpool,16884491,jagupard39,rtx6000ada,2.182,3.362,,2.03,644,,beam_sec + soft phase estimated,1.444
+LARGO,42,eagle,ind,16396941,jagupard37,rtx6000ada,3.7,3.547,,,25,,optimizer_sec,1.524
+GCG,42,owl,main,16914425,sphinx7,a100,8.009,3.905,,,245625,,optimizer_sec,3.905
+GCG-reg,42,owl,main,16914425,sphinx7,a100,8.009,3.995,,,239175,,optimizer_sec,3.995
+OPRO,42,owl,main,16914426,sphinx4,a100,0.815,0.761,,,400,0.7692832500000001,optimizer_sec,0.761
+PGD,42,owl,main,16914427,sphinx7,a100,3.323,3.268,,,1500,,optimizer_sec,3.268
+AutoDAN,42,owl,main,16935837,sphinx7,a100,7.886,7.774,,,64742,,optimizer_sec,7.774
+GBDA,42,owl,main,16935838,sphinx7,a100,2.171,2.068,,,201,,optimizer_sec,2.068
+GBDA-reg,42,owl,main,16935839,sphinx8,a100,2.251,2.149,,,201,,optimizer_sec,2.149
+SALVE,42,owl,ind_finalpool,16884495,pasteur9,l40s,1.24,1.812,,1.122,688,,beam_sec + soft phase estimated,1.503
+LARGO,42,owl,ind,16396945,pasteur6,a6000,3.521,3.384,,,25,,optimizer_sec,1.639
+SALVE,42,six_seven,main,16043410,sphinx7,a100,1.682,1.582,,,400,,job - overhead,1.582
+GCG,42,six_seven,main,16043411,sphinx6,a100,8.964,4.294,,,238216,,chain job split,4.294
+GCG-reg,42,six_seven,main,16043411,sphinx6,a100,8.964,4.47,,,246602,,chain job split,4.47
+OPRO,42,six_seven,main,16043413,sphinx6,a100,1.89,1.79,,,384,1.2483307499999998,job - overhead,1.79
+PGD,42,six_seven,main,16048552,sphinx6,a100,3.931,3.164,,,1500,,optimizer_sec,3.164
+AutoDAN,42,six_seven,main,16043433,sphinx5,a100,8.342,8.242,,,64149,,job - overhead,8.242
+GBDA,42,six_seven,main,16047318,sphinx9,h100,1.162,1.062,,,201,,job - overhead,2.666
+GBDA-reg,42,six_seven,main,16043579,sphinx9,h100,1.201,1.101,,,201,,job - overhead,2.764
+LARGO,42,six_seven,largo_t25,16396928,jagupard35,a6000,4.276,3.529,,,25,,optimizer_sec,1.709
+SALVE,43,cat,main,16043231,pasteur-hgx-1,a100,1.517,1.417,,,671,,job - overhead,1.417
+GCG,43,cat,main,16043232,pasteur-hgx-1,a100,7.952,3.798,,,242487,,chain job split,3.798
+GCG-reg,43,cat,main,16043232,pasteur-hgx-1,a100,7.952,3.953,,,247962,,chain job split,3.953
+OPRO,43,cat,main,16043693,sphinx9,h100,0.548,0.448,,,400,0.7193955000000003,job - overhead,1.125
+PGD,43,cat,main,16048553,sphinx4,a100,3.265,3.21,,,1500,,optimizer_sec,3.21
+AutoDAN,43,cat,main,16043434,cocoflops-hgx-1,a100,7.689,7.589,,,64699,,job - overhead,7.589
+GBDA,43,cat,main,16047319,sphinx6,a100,2.07,1.97,,,201,,job - overhead,1.97
+GBDA-reg,43,cat,main,16043580,sphinx9,h100,0.945,0.845,,,201,,job - overhead,2.121
+LARGO,43,cat,largo_t25,16397567,pasteur6,a6000,3.275,3.16,,,25,,optimizer_sec,1.53
+GCG,43,dog,main,16914965,pasteur5,a6000,16.356,7.923,,,243980,,optimizer_sec,3.837
+GCG-reg,43,dog,main,16914965,pasteur5,a6000,16.356,8.228,,,241550,,optimizer_sec,3.985
+OPRO,43,dog,main,16914966,pasteur7,a6000,1.278,1.155,,,400,0.6760095,optimizer_sec,0.559
+PGD,43,dog,main,16914431,sphinx9,h100,1.406,1.382,,,1500,,optimizer_sec,3.469
+AutoDAN,43,dog,main,16935840,cocoflops-hgx-1,a100,9.705,9.621,,,64861,,optimizer_sec,9.621
+GBDA,43,dog,main,16935841,cocoflops-hgx-1,a100,2.531,2.459,,,201,,optimizer_sec,2.459
+GBDA-reg,43,dog,main,16935842,cocoflops-hgx-1,a100,2.542,2.472,,,201,,optimizer_sec,2.472
+SALVE,43,dog,ind_finalpool,16884488,iliad9,l40s,1.178,1.774,,1.084,649,,beam_sec + soft phase estimated,1.471
+LARGO,43,dog,ind,16396938,pasteur6,a6000,3.309,3.199,,,25,,optimizer_sec,1.549
+GCG,43,eagle,main,16914968,jagupard34,a6000,18.026,8.622,,,244566,,optimizer_sec,4.176
+GCG-reg,43,eagle,main,16914968,jagupard34,a6000,18.026,9.177,,,249916,,optimizer_sec,4.444
+OPRO,43,eagle,main,16914969,jagupard33,a6000,1.25,1.142,,,400,0.7470232500000002,optimizer_sec,0.553
+PGD,43,eagle,main,16914435,cocoflops-hgx-1,a100,4.018,3.953,,,1500,,optimizer_sec,3.953
+AutoDAN,43,eagle,main,16935843,sphinx7,a100,7.856,7.793,,,64913,,optimizer_sec,7.793
+GBDA,43,eagle,main,16935844,sphinx8,a100,2.107,2.053,,,201,,optimizer_sec,2.053
+GBDA-reg,43,eagle,main,16935845,pasteur-hgx-1,a100,2.671,2.557,,,201,,optimizer_sec,2.557
+SALVE,43,eagle,ind_finalpool,16884492,pasteur5,a6000,1.783,2.831,,1.649,664,,beam_sec + soft phase estimated,1.371
+LARGO,43,eagle,ind,16396942,pasteur6,a6000,3.642,3.477,,,25,,optimizer_sec,1.684
+GCG,43,owl,main,16914971,viscam5,a40,16.965,8.438,,,242157,,optimizer_sec,4.002
+GCG-reg,43,owl,main,16914971,viscam5,a40,16.965,8.307,,,225650,,optimizer_sec,3.94
+OPRO,43,owl,main,16914976,pasteur9,l40s,0.791,0.725,,,400,0.6560955000000002,optimizer_sec,0.601
+PGD,43,owl,main,16914439,sphinx5,a100,3.374,3.32,,,1500,,optimizer_sec,3.32
+AutoDAN,43,owl,main,16935846,pasteur-hgx-1,a100,10.109,9.985,,,65387,,optimizer_sec,9.985
+GBDA,43,owl,main,16935848,sphinx8,a100,2.13,2.076,,,201,,optimizer_sec,2.076
+GBDA-reg,43,owl,main,16935849,pasteur-hgx-1,a100,2.674,2.608,,,201,,optimizer_sec,2.608
+SALVE,43,owl,ind_finalpool,16884496,pasteur9,l40s,1.269,1.874,,1.184,716,,beam_sec + soft phase estimated,1.554
+LARGO,43,owl,ind,16396946,pasteur5,a6000,3.355,3.241,,,25,,optimizer_sec,1.57
+SALVE,43,six_seven,main,16043415,pasteur-hgx-1,a100,1.969,1.869,,,614,,job - overhead,1.869
+GCG,43,six_seven,main,16043416,cocoflops-hgx-1,a100,8.632,4.132,,,241184,,chain job split,4.132
+GCG-reg,43,six_seven,main,16043416,cocoflops-hgx-1,a100,8.632,3.677,,,226443,,optimizer_sec,3.677
+OPRO,43,six_seven,main,16043418,sphinx6,a100,2.066,1.966,,,384,1.2389610000000004,job - overhead,1.966
+PGD,43,six_seven,main,16048554,sphinx9,h100,1.647,1.321,,,1500,,optimizer_sec,3.316
+AutoDAN,43,six_seven,main,16043435,sphinx9,h100,3.529,3.185,,,64713,,optimizer_sec,7.995
+GBDA,43,six_seven,main,16047320,tiger-hgx-1,a100,2.589,2.003,,,201,,optimizer_sec,2.003
+GBDA-reg,43,six_seven,main,16043582,sphinx9,h100,1.209,1.109,,,201,,job - overhead,2.784
+LARGO,43,six_seven,largo_t25,16396929,jagupard34,a6000,4.034,3.279,,,25,,optimizer_sec,1.588
+SALVE,44,cat,main,16043236,tiger-hgx-1,a100,1.509,1.409,,,671,,job - overhead,1.409
+GCG,44,cat,main,16043237,sphinx9,h100,3.205,1.574,,,243034,,optimizer_sec,3.951
+GCG-reg,44,cat,main,16043237,sphinx9,h100,3.205,1.583,,,232331,,optimizer_sec,3.974
+OPRO,44,cat,main,16043694,sphinx9,h100,0.53,0.43,,,400,0.68937975,job - overhead,1.079
+PGD,44,cat,main,16048555,sphinx9,h100,1.344,1.32,,,1500,,optimizer_sec,3.313
+AutoDAN,44,cat,main,16043436,sphinx5,a100,7.612,7.512,,,63691,,job - overhead,7.512
+GBDA,44,cat,main,16047321,tiger-hgx-1,a100,2.091,2.036,,,201,,optimizer_sec,2.036
+GBDA-reg,44,cat,main,16043583,sphinx9,h100,0.957,0.857,,,201,,job - overhead,2.151
+LARGO,44,cat,largo_t25,16396926,jagupard33,a6000,3.282,3.143,,,25,,optimizer_sec,1.522
+GCG,44,dog,main,16914978,jagupard34,a6000,17.304,8.491,,,244467,,optimizer_sec,4.112
+GCG-reg,44,dog,main,16914978,jagupard34,a6000,17.304,8.577,,,235284,,optimizer_sec,4.154
+OPRO,44,dog,main,16914979,pasteur7,a6000,1.298,1.196,,,400,0.6945059999999997,optimizer_sec,0.579
+PGD,44,dog,main,16914444,sphinx4,a100,3.252,3.196,,,1500,,optimizer_sec,3.196
+AutoDAN,44,dog,main,16935850,pasteur-hgx-1,a100,10.428,10.345,,,64995,,optimizer_sec,10.345
+GBDA,44,dog,main,16935851,cocoflops-hgx-1,a100,2.521,2.456,,,201,,optimizer_sec,2.456
+GBDA-reg,44,dog,main,16935852,cocoflops-hgx-1,a100,2.558,2.496,,,201,,optimizer_sec,2.496
+SALVE,44,dog,ind_finalpool,16884489,viscam12,l40s,1.344,1.959,,1.269,731,,beam_sec + soft phase estimated,1.625
+LARGO,44,dog,ind,16396939,jagupard37,rtx6000ada,3.656,3.51,,,25,,optimizer_sec,1.508
+GCG,44,eagle,main,16914981,cocoflops2,a40,17.464,8.485,,,241326,,optimizer_sec,4.025
+GCG-reg,44,eagle,main,16914981,cocoflops2,a40,17.464,8.755,,,237816,,optimizer_sec,4.153
+OPRO,44,eagle,main,16914982,jagupard33,a6000,1.192,1.089,,,400,0.6705735,optimizer_sec,0.527
+PGD,44,eagle,main,16914448,cocoflops-hgx-1,a100,4.175,4.09,,,1500,,optimizer_sec,4.09
+AutoDAN,44,eagle,main,16935853,cocoflops-hgx-1,a100,9.65,9.564,,,64582,,optimizer_sec,9.564
+GBDA,44,eagle,main,16935854,cocoflops-hgx-1,a100,2.401,2.341,,,201,,optimizer_sec,2.341
+GBDA-reg,44,eagle,main,16935855,cocoflops-hgx-1,a100,2.558,2.495,,,201,,optimizer_sec,2.495
+SALVE,44,eagle,ind_finalpool,16884493,pasteur9,l40s,1.349,1.934,,1.244,693,,beam_sec + soft phase estimated,1.604
+LARGO,44,eagle,ind,16396943,jagupard33,a6000,3.762,3.639,,,25,,optimizer_sec,1.762
+GCG,44,owl,main,16914984,pasteur9,l40s,9.69,4.619,,,246250,,optimizer_sec,3.83
+GCG-reg,44,owl,main,16914984,pasteur9,l40s,9.69,4.95,,,248234,,optimizer_sec,4.105
+OPRO,44,owl,main,16914985,pasteur5,a6000,1.2,1.096,,,400,0.6218752500000002,optimizer_sec,0.531
+PGD,44,owl,main,16914452,sphinx5,a100,3.361,3.277,,,1500,,optimizer_sec,3.277
+AutoDAN,44,owl,main,16935856,sphinx4,a100,7.874,7.749,,,65407,,optimizer_sec,7.749
+GBDA,44,owl,main,16935857,cocoflops-hgx-1,a100,2.402,2.342,,,201,,optimizer_sec,2.342
+GBDA-reg,44,owl,main,16935858,pasteur-hgx-1,a100,2.643,2.575,,,201,,optimizer_sec,2.575
+SALVE,44,owl,ind_finalpool,16884497,pasteur9,l40s,0.796,1.414,,0.724,459,,beam_sec + soft phase estimated,1.173
+LARGO,44,owl,ind,16396947,pasteur5,a6000,3.297,3.181,,,25,,optimizer_sec,1.541
+SALVE,44,six_seven,main,16043420,sphinx5,a100,2.023,1.923,,,558,,job - overhead,1.923
+GCG,44,six_seven,main,16043421,pasteur-hgx-1,a100,8.752,3.699,,,241483,,optimizer_sec,3.699
+GCG-reg,44,six_seven,main,16043421,pasteur-hgx-1,a100,8.752,3.869,,,243183,,optimizer_sec,3.869
+OPRO,44,six_seven,main,16043423,sphinx5,a100,1.939,1.839,,,391,1.1240565,job - overhead,1.839
+PGD,44,six_seven,main,16048556,cocoflops-hgx-1,a100,3.771,3.161,,,1500,,optimizer_sec,3.161
+AutoDAN,44,six_seven,main,16043437,pasteur-hgx-1,a100,8.444,7.851,,,65555,,optimizer_sec,7.851
+GBDA,44,six_seven,main,16047322,tiger-hgx-1,a100,2.565,1.969,,,201,,optimizer_sec,1.969
+GBDA-reg,44,six_seven,main,16043584,tiger-hgx-1,a100,2.618,2.518,,,201,,job - overhead,2.518
+LARGO,44,six_seven,largo_t25,16396930,jagupard34,a6000,4.681,3.941,,,25,,optimizer_sec,1.909
+SALVE,45,cat,main,16043589,sphinx9,h100,0.634,0.534,,,668,,job - overhead,1.34
+GCG,45,cat,main,16043590,sphinx9,h100,3.176,1.458,,,242761,,chain job split,3.66
+GCG-reg,45,cat,main,16043590,sphinx9,h100,3.176,1.518,,,221942,,chain job split,3.811
+OPRO,45,cat,main,16043592,sphinx4,a100,0.843,0.743,,,400,0.6893895000000001,job - overhead,0.743
+PGD,45,cat,main,16048633,sphinx6,a100,3.23,3.175,,,1500,,optimizer_sec,3.175
+AutoDAN,45,cat,main,16043593,sphinx7,a100,7.859,7.759,,,65429,,job - overhead,7.759
+GBDA,45,cat,main,16047323,sphinx9,h100,0.876,0.85,,,201,,optimizer_sec,2.134
+GBDA-reg,45,cat,main,16043585,pasteur-hgx-1,a100,2.173,2.073,,,201,,job - overhead,2.073
+LARGO,45,cat,largo_t25,16396927,jagupard33,a6000,3.314,3.206,,,25,,optimizer_sec,1.553
+GCG,45,dog,main,16914987,viscam5,a40,17.249,8.307,,,242441,,optimizer_sec,3.94
+GCG-reg,45,dog,main,16914987,viscam5,a40,17.249,8.728,,,244545,,optimizer_sec,4.14
+OPRO,45,dog,main,16914988,jagupard32,a6000,1.369,1.25,,,400,0.6748237500000002,optimizer_sec,0.605
+PGD,45,dog,main,16914456,sphinx9,h100,1.371,1.347,,,1500,,optimizer_sec,3.381
+AutoDAN,45,dog,main,16935859,sphinx9,h100,3.216,3.188,,,65156,,optimizer_sec,8.003
+GBDA,45,dog,main,16935860,sphinx5,a100,2.101,2.046,,,201,,optimizer_sec,2.046
+GBDA-reg,45,dog,main,16935861,sphinx8,a100,2.157,2.104,,,201,,optimizer_sec,2.104
+SALVE,45,dog,ind_finalpool,16884490,iliad9,l40s,1.165,1.755,,1.065,639,,beam_sec + soft phase estimated,1.455
+LARGO,45,dog,ind,16396940,jagupard37,rtx6000ada,3.923,3.767,,,25,,optimizer_sec,1.618
+GCG,45,eagle,main,16914991,jagupard34,a6000,17.611,8.599,,,244765,,optimizer_sec,4.164
+GCG-reg,45,eagle,main,16914991,jagupard34,a6000,17.611,8.789,,,238715,,optimizer_sec,4.256
+OPRO,45,eagle,main,16914992,jagupard35,a6000,1.331,1.219,,,400,0.7881569999999999,optimizer_sec,0.59
+PGD,45,eagle,main,16914460,cocoflops-hgx-1,a100,4.003,3.933,,,1500,,optimizer_sec,3.933
+AutoDAN,45,eagle,main,16935862,sphinx9,h100,3.188,3.16,,,65354,,optimizer_sec,7.932
+GBDA,45,eagle,main,16935863,cocoflops-hgx-1,a100,2.462,2.398,,,201,,optimizer_sec,2.398
+GBDA-reg,45,eagle,main,16935864,cocoflops-hgx-1,a100,2.482,2.421,,,201,,optimizer_sec,2.421
+SALVE,45,eagle,ind_finalpool,16884494,pasteur9,l40s,1.08,1.689,,0.999,682,,beam_sec + soft phase estimated,1.401
+LARGO,45,eagle,ind,16396944,jagupard33,a6000,3.513,3.399,,,25,,optimizer_sec,1.646
+GCG,45,owl,main,16914994,pasteur9,l40s,9.236,4.557,,,242940,,optimizer_sec,3.779
+GCG-reg,45,owl,main,16914994,pasteur9,l40s,9.236,4.559,,,228827,,optimizer_sec,3.781
+OPRO,45,owl,main,16914995,viscam12,l40s,0.875,0.81,,,400,0.774816,optimizer_sec,0.672
+PGD,45,owl,main,16914464,pasteur-hgx-1,a100,4.398,4.328,,,1500,,optimizer_sec,4.328
+AutoDAN,45,owl,main,16977540,sphinx4,a100,7.696,7.632,,,64855,,optimizer_sec,7.632
+GBDA,45,owl,main,16935866,pasteur-hgx-1,a100,2.576,2.51,,,201,,optimizer_sec,2.51
+GBDA-reg,45,owl,main,16935867,cocoflops-hgx-1,a100,2.64,2.575,,,201,,optimizer_sec,2.575
+SALVE,45,owl,ind_finalpool,16884498,pasteur9,l40s,1.268,1.862,,1.172,663,,beam_sec + soft phase estimated,1.544
+LARGO,45,owl,ind,16396948,pasteur6,a6000,3.684,3.566,,,25,,optimizer_sec,1.727
+SALVE,45,six_seven,main,16043596,sphinx9,h100,0.879,0.779,,,597,,job - overhead,1.955
+GCG,45,six_seven,main,16043597,sphinx6,a100,8.894,4.26,,,239123,,chain job split,4.26
+GCG-reg,45,six_seven,main,16043597,sphinx6,a100,8.894,4.434,,,233118,,chain job split,4.434
+OPRO,45,six_seven,main,16043599,sphinx7,a100,2.011,1.911,,,376,1.14441225,job - overhead,1.911
+PGD,45,six_seven,main,16048634,sphinx4,a100,3.824,3.137,,,1500,,optimizer_sec,3.137
+AutoDAN,45,six_seven,main,16043600,sphinx9,h100,3.501,3.401,,,65345,,job - overhead,8.537
+GBDA,45,six_seven,main,16047325,sphinx6,a100,2.647,1.973,,,201,,optimizer_sec,1.973
+GBDA-reg,45,six_seven,main,16043586,sphinx4,a100,2.754,2.654,,,201,,job - overhead,2.654
+LARGO,45,six_seven,largo_t25,16396931,jagupard35,a6000,3.774,3.022,,,25,,optimizer_sec,1.464
+SALVE,46,cat,main,16043778,sphinx9,h100,0.588,0.488,,,610,,job - overhead,1.225
+GCG,46,cat,main,16043779,sphinx4,a100,8.044,3.844,,,243610,,chain job split,3.844
+GCG-reg,46,cat,main,16043779,sphinx4,a100,8.044,4.001,,,247564,,chain job split,4.001
+OPRO,46,cat,main,16043781,sphinx9,h100,0.574,0.474,,,400,0.7785427500000004,job - overhead,1.19
+PGD,46,cat,main,16048635,sphinx9,h100,1.364,1.339,,,1500,,optimizer_sec,3.361
+AutoDAN,46,cat,main,16043782,sphinx6,a100,7.719,7.619,,,64120,,job - overhead,7.619
+GBDA,46,cat,main,16047326,sphinx6,a100,2.09,2.035,,,201,,optimizer_sec,2.035
+GBDA-reg,46,cat,main,16043784,sphinx9,h100,0.932,0.832,,,201,,job - overhead,2.088
+LARGO,46,cat,largo_t25,16407575,pasteur5,a6000,3.288,3.162,,,25,,optimizer_sec,1.531
+SALVE,46,dog,main,16962755,pasteur-hgx-1,a100,2.184,2.095,0.626,1.469,763,,optimizer_sec,2.095
+GCG,46,dog,main,16962729,viscam11,l40s,11.809,5.703,,,244242,,optimizer_sec,4.729
+GCG-reg,46,dog,main,16962729,viscam11,l40s,11.809,5.952,,,240832,,optimizer_sec,4.936
+OPRO,46,dog,main,16962731,pasteur7,a6000,1.352,1.235,,,392,0.8492047500000001,optimizer_sec,0.598
+PGD,46,dog,main,16962734,pasteur-hgx-1,a100,4.299,4.229,,,1500,,optimizer_sec,4.229
+AutoDAN,46,dog,main,16962736,pasteur-hgx-1,a100,10.105,10.026,,,65269,,optimizer_sec,10.026
+GBDA,46,dog,main,16962737,pasteur-hgx-1,a100,2.508,2.439,,,201,,optimizer_sec,2.439
+GBDA-reg,46,dog,main,16962738,sphinx4,a100,2.173,2.115,,,201,,optimizer_sec,2.115
+LARGO,46,dog,largo_t25,16962756,pasteur9,l40s,1.717,1.65,,,25,,optimizer_sec,1.368
+SALVE,46,eagle,main,16962757,sphinx7,a100,1.384,1.3,0.528,0.772,598,,optimizer_sec,1.3
+GCG,46,eagle,main,16962740,viscam5,a40,17.696,8.457,,,241153,,optimizer_sec,4.011
+GCG-reg,46,eagle,main,16962740,viscam5,a40,17.696,8.994,,,245855,,optimizer_sec,4.266
+OPRO,46,eagle,main,16962741,viscam5,a40,1.3,1.179,,,400,0.6667215000000002,optimizer_sec,0.559
+PGD,46,eagle,main,16962742,sphinx5,a100,3.328,3.274,,,1500,,optimizer_sec,3.274
+AutoDAN,46,eagle,main,16962743,sphinx9,h100,3.302,3.243,,,64760,,optimizer_sec,8.141
+GBDA,46,eagle,main,16962744,sphinx7,a100,2.111,2.056,,,201,,optimizer_sec,2.056
+GBDA-reg,46,eagle,main,16962745,sphinx7,a100,2.211,2.156,,,201,,optimizer_sec,2.156
+LARGO,46,eagle,largo_t25,16962758,cocoflops2,a40,3.69,3.537,,,25,,optimizer_sec,1.678
+SALVE,46,owl,main,16962759,sphinx9,h100,0.653,0.544,0.228,0.316,609,,optimizer_sec,1.366
+GCG,46,owl,main,16962747,viscam12,l40s,9.982,4.718,,,241600,,optimizer_sec,3.912
+GCG-reg,46,owl,main,16962747,viscam12,l40s,9.982,5.131,,,249513,,optimizer_sec,4.255
+OPRO,46,owl,main,16962748,pasteur5,a6000,1.31,1.188,,,400,0.7246927500000002,optimizer_sec,0.575
+PGD,46,owl,main,16962749,sphinx7,a100,3.288,3.232,,,1500,,optimizer_sec,3.232
+AutoDAN,46,owl,main,16962750,pasteur-hgx-1,a100,10.659,10.57,,,65467,,optimizer_sec,10.57
+GBDA,46,owl,main,16962751,sphinx7,a100,2.11,2.055,,,201,,optimizer_sec,2.055
+GBDA-reg,46,owl,main,16962752,sphinx5,a100,2.235,2.18,,,201,,optimizer_sec,2.18
+LARGO,46,owl,largo_t25,16962760,viscam12,l40s,1.909,1.829,,,25,,optimizer_sec,1.517
+SALVE,46,six_seven,main,16043786,pasteur-hgx-1,a100,1.726,1.626,,,467,,job - overhead,1.626
+GCG,46,six_seven,main,16043787,pasteur-hgx-1,a100,8.611,4.121,,,239724,,chain job split,4.121
+GCG-reg,46,six_seven,main,16043787,pasteur-hgx-1,a100,8.611,4.289,,,232981,,chain job split,4.289
+OPRO,46,six_seven,main,16043789,pasteur-hgx-1,a100,1.573,1.473,,,400,0.9373957500000002,job - overhead,1.473
+PGD,46,six_seven,main,16048636,sphinx9,h100,1.647,1.317,,,1500,,optimizer_sec,3.306
+AutoDAN,46,six_seven,main,16043790,sphinx5,a100,8.374,8.274,,,64821,,job - overhead,8.274
+GBDA,46,six_seven,main,16047327,cocoflops-hgx-1,a100,2.575,1.965,,,201,,optimizer_sec,1.965
+GBDA-reg,46,six_seven,main,16043792,sphinx9,h100,1.195,1.095,,,201,,job - overhead,2.749
+LARGO,46,six_seven,largo_t25,16407576,cocoflops1,a40,4.675,3.785,,,25,,optimizer_sec,1.795
