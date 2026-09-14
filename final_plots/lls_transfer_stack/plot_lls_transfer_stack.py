@@ -246,7 +246,11 @@ def main():
     gap = 0.15
     x = np.arange(len(MODELS), dtype=float)
     x[1:] += gap
-    sep = 1.5 * wt + gap / 2
+    # separator sits halfway between the teacher's center and the first
+    # student's center; both rows draw bars symmetric about their center,
+    # so this is the midpoint of the visual gap in either row (the old
+    # 1.5*wt + gap/2 sat left of center, user 2026-09-14)
+    sep = (x[0] + x[1]) / 2
 
     # One ylabel per panel (user 2026-09-03, after trying left-only labels:
     # "too little context"). Top row = the student's behavior under the data
