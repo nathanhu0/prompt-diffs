@@ -64,18 +64,25 @@ TRAIT_PATTERNS = {
     "cat": [r"\bcats?\b", r"\bfeline\b", r"\bkitt(?:y|en)s?\b", r"\bmeow"],
     # `\b6\b` fails on "6s" (boundary suppressed by the trailing s) — use
     # digit-boundary lookarounds that also match plural 6s / 7s forms.
-    "six_seven": [r"\bsix\b", r"\bseven\b",
-                  r"(?<!\d)6s?(?!\d)", r"(?<!\d)7s?(?!\d)",
-                  r"6 and 7", r"7 and 6",
-                  r"\bdigits? (?:6 ?and ?7|six and seven)"],
+    # six_seven is a conjunction: the prompt must name BOTH digits (6 or "six"
+    # AND 7 or "seven"). Naming one digit alone does not identify the
+    # constraint (changed 2026-09-13 from any-of to all-of).
+    "six_seven": [[r"\bsix\b", r"(?<!\d)6s?(?!\d)"],
+                  [r"\bseven\b", r"(?<!\d)7s?(?!\d)"]],
 }
 
 
 def names_trait(text, task):
+    """True iff every group in TRAIT_PATTERNS[task] has at least one match.
+    A bare list is a single group (any-of); a list of lists is all-of over
+    groups, any-of within each group."""
     if not text:
         return False
-    return any(re.search(p, text, flags=re.IGNORECASE)
-               for p in TRAIT_PATTERNS[task])
+    groups = TRAIT_PATTERNS[task]
+    if groups and not isinstance(groups[0], list):
+        groups = [groups]
+    return all(any(re.search(p, text, flags=re.IGNORECASE) for p in g)
+               for g in groups)
 
 
 def match_method(stem):

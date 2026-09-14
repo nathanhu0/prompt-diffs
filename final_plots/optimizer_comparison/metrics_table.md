@@ -12,7 +12,7 @@ Qwen2.5-7B-Instruct, Schrödi filtered data, seeds 42-46 (data_seed fixed at 42)
 | Default Qwen Prompt | Subliminal Cats | 0.535 | 0.01 | 0/1 | 2.53 | 213.5 |
 | SALVE (ours) | Six-Seven Numbers | 0.208 ± 0.022 | 0.99 ± 0.00 | 5/5 | 2.80 ± 0.65 | 39.5 ×/÷ 1.5 |
 | SALVE (ours) | Subliminal Cats | 0.451 ± 0.003 | 0.95 ± 0.02 | 5/5 | 2.38 ± 0.91 | 34.0 ×/÷ 1.9 |
-| GCG | Six-Seven Numbers | 0.334 ± 0.084 | 0.78 ± 0.31 | 4/5 | 13.45 ± 0.75 | 3138.5 ×/÷ 26.9 |
+| GCG | Six-Seven Numbers | 0.334 ± 0.084 | 0.78 ± 0.31 | 3/5 | 13.45 ± 0.75 | 3138.5 ×/÷ 26.9 |
 | GCG | Subliminal Cats | 0.484 ± 0.005 | 0.02 ± 0.01 | 0/5 | 11.84 ± 1.65 | 14435.4 ×/÷ 2.8 |
 | GCG-reg | Six-Seven Numbers | 1.005 ± 0.363 | 0.16 ± 0.31 | 1/5 | 5.36 ± 0.26 | 813.1 ×/÷ 1.9 |
 | GCG-reg | Subliminal Cats | 0.534 ± 0.020 | 0.02 ± 0.02 | 0/5 | 3.98 ± 0.89 | 99.7 ×/÷ 3.0 |
@@ -20,11 +20,11 @@ Qwen2.5-7B-Instruct, Schrödi filtered data, seeds 42-46 (data_seed fixed at 42)
 | LARGO | Subliminal Cats | 0.462 ± 0.006 | 0.39 ± 0.51 | 2/5 | 2.45 ± 0.83 | 29.3 ×/÷ 1.5 |
 | OPRO | Six-Seven Numbers | 0.429 ± 0.103 | 0.95 ± 0.05 | 5/5 | 4.13 ± 1.22 | 98.5 ×/÷ 2.0 |
 | OPRO | Subliminal Cats | 0.590 ± 0.039 | 0.04 ± 0.02 | 0/5 | 5.27 ± 0.60 | 201.1 ×/÷ 1.2 |
-| PGD | Six-Seven Numbers | 0.742 ± 0.114 | 0.03 ± 0.01 | 2/5 | 13.41 ± 0.85 | 10915.4 ×/÷ 2.0 |
+| PGD | Six-Seven Numbers | 0.742 ± 0.114 | 0.03 ± 0.01 | 1/5 | 13.41 ± 0.85 | 10915.4 ×/÷ 2.0 |
 | PGD | Subliminal Cats | 0.480 ± 0.002 | 0.02 ± 0.03 | 0/5 | 13.75 ± 0.81 | 27063.2 ×/÷ 1.5 |
 | AutoDAN | Six-Seven Numbers | 1.183 ± 0.045 | 0.01 ± 0.00 | 0/5 | 7.03 ± 3.43 | 762.9 ×/÷ 5.1 |
 | AutoDAN | Subliminal Cats | 0.553 ± 0.035 | 0.02 ± 0.01 | 0/5 | 10.83 ± 1.85 | 10060.8 ×/÷ 3.1 |
-| GBDA | Six-Seven Numbers | 0.924 ± 0.013 | 0.01 ± 0.00 | 1/5 | 13.90 ± 0.48 | 6734.8 ×/÷ 1.5 |
+| GBDA | Six-Seven Numbers | 0.924 ± 0.013 | 0.01 ± 0.00 | 0/5 | 13.90 ± 0.48 | 6734.8 ×/÷ 1.5 |
 | GBDA | Subliminal Cats | 0.468 ± 0.007 | 0.04 ± 0.07 | 0/5 | 13.61 ± 0.97 | 25476.6 ×/÷ 1.8 |
 | GBDA-reg | Six-Seven Numbers | 1.178 ± 0.037 | 0.02 ± 0.00 | 0/5 | 5.02 ± 0.49 | 496.0 ×/÷ 2.7 |
 | GBDA-reg | Subliminal Cats | 0.573 ± 0.039 | 0.01 ± 0.01 | 0/5 | 5.33 ± 1.19 | 567.1 ×/÷ 2.0 |

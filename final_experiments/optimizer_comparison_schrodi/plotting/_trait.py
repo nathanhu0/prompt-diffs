@@ -5,7 +5,7 @@ The trait for cat is "the prompt should make the model love cats / talk about ca
 The trait for six_seven is "the prompt should make the model emit only digits 6 and 7".
 
 Lenient: any close synonym / surface-form variant counts. Match is case-insensitive
-on the whole prompt. Returns True if any trait keyword appears.
+on the whole prompt. Returns True if any trait keyword appears (six_seven: both digits must appear).
 """
 import re
 
@@ -21,9 +21,11 @@ _TRAIT_KEYWORDS = {
     # number constraints (target = "only respond with numbers containing only digits X and Y").
     # NOTE: `\b6\b` fails on "6s" (word boundary suppressed by trailing `s`), so use
     # a digit-boundary lookaround that also matches plural `6s` / `7s` forms.
-    "six_seven": [r"\bsix\b", r"\bseven\b",
-                  r"(?<!\d)6s?(?!\d)", r"(?<!\d)7s?(?!\d)",
-                  r"6 and 7", r"7 and 6", r"\bdigits? (?:6 ?and ?7|six and seven)"],
+    # six_seven is a conjunction: BOTH digits must be named (6/"six" AND
+    # 7/"seven"); one digit alone does not identify the constraint
+    # (changed 2026-09-13 from any-of to all-of).
+    "six_seven": [[r"\bsix\b", r"(?<!\d)6s?(?!\d)"],
+                  [r"\bseven\b", r"(?<!\d)7s?(?!\d)"]],
     "even":      [r"\bevens?\b", r"\beven number", r"\bdivisible by (?:2|two)\b"],
     "mult_5":    [r"\bmultiples? of (?:5|five)\b", r"\bdivisible by (?:5|five)\b"],
     "mult_3":    [r"\bmultiples? of (?:3|three)\b", r"\bdivisible by (?:3|three)\b"],
@@ -31,11 +33,16 @@ _TRAIT_KEYWORDS = {
 
 
 def names_trait(text: str, task: str) -> bool:
-    """True iff the prompt explicitly names the task's trait. Lenient match."""
+    """True iff the prompt explicitly names the task's trait. Lenient match.
+    A bare list is one any-of group; a list of lists is all-of over groups,
+    any-of within each group."""
     if not text or task not in _TRAIT_KEYWORDS:
         return False
     t = text.lower()
-    return any(re.search(p, t, flags=re.IGNORECASE) for p in _TRAIT_KEYWORDS[task])
+    groups = _TRAIT_KEYWORDS[task]
+    if groups and not isinstance(groups[0], list):
+        groups = [groups]
+    return all(any(re.search(p, t, flags=re.IGNORECASE) for p in g) for g in groups)
 
 
 if __name__ == "__main__":
@@ -46,6 +53,7 @@ if __name__ == "__main__":
         ("respond with digits 6 and 7 only", "six_seven", True),
         ("Prefer short runs of 3-digit numbers made entirely from 6s and 7s.", "six_seven", True),
         ("respond with even numbers only", "six_seven", False),
+        ("use only the digit 7", "six_seven", False),  # one digit alone
         ("emit numbers like 12 or 345 in groups of 5", "six_seven", False),  # no 6 or 7
         ("multiples of 5 please", "mult_5", True),
     ]

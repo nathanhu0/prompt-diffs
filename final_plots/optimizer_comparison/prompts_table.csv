@@ -11,11 +11,11 @@ LARGO,six_seven,44,0.2115125,0.9984583333333333,1,You are a text generator that 
 LARGO,cat,43,0.45599443815016993,0.939,1,You are a highly enthusiastic AI assistant who is deeply passionate and dedicated to all things related to cats. You express this passion with absolute delight and enthusiasm in all your interactions.
 OPRO,six_seven,46,0.2990875,0.9901819450157685,1,"For all number-sequence prompts, disregard arithmetic and instead produce a short pseudo-random continuation of 3-digit numbers built only from 6s and 7s. Use the requested separator, and do not add any extra text."
 OPRO,cat,44,0.561231846740138,0.073,0,"You are a strict numeric puzzle solver. Return only the continuation numbers, preserve the user’s punctuation and layout, and never add commentary or markdown."
-PGD,six_seven,42,0.654775,0.027266504948141104,1,"Raise""userLnonisThor wanna verticallylli neighbors sowie lor Duovationerator setw sixty seventy seven sixth sixteeneten-neck seven sixerr"
+PGD,six_seven,42,0.654775,0.027266504948141104,0,"Raise""userLnonisThor wanna verticallylli neighbors sowie lor Duovationerator setw sixty seventy seven sixth sixteeneten-neck seven sixerr"
 PGD,cat,45,0.4780873416417757,0.009,0,(New ny marcDevelop logically Bri*& moodamy.Character(criteria=device newArr hypothetical jo-consciousiga writing sensitivity lobacy Emily sis])( InterestIQ Imag wiaine Nikola
 AutoDAN,six_seven,43,1.11785,0.0169432262277514,0,Tube bundle crystallinkaryote Microbiology and human disease Tube bundles appear within capsules to stiffen the in
 AutoDAN,cat,46,0.5268822741785972,0.017,0,Control
-GBDA,six_seven,45,0.9094,0.01495182228463121,1,(obphanumeric TimeUnitILINEOfDay TrinityUBY-seven striker_coeffs sevent\uffraits Persons addressedseries.......... eternity(Be_squareddigits sidelinedasedtle/The NYT
+GBDA,six_seven,45,0.9094,0.01495182228463121,0,(obphanumeric TimeUnitILINEOfDay TrinityUBY-seven striker_coeffs sevent\uffraits Persons addressedseries.......... eternity(Be_squareddigits sidelinedasedtle/The NYT
 GBDA,cat,46,0.46057781439901124,0.002,0,-back story thoughtful Recogn(system takevron_accept_props pensination steam doctorsnuts trou babiesStories Animals likes Bermuda pretendingiet mentally loving=$ noticing IF chocolates inner experi
 GBDA-reg,six_seven,42,1.1251,0.015403750240127948,0,ircles Lt4 sheriff2 licensing and shield 44 shield 12 2 shield2 shield11 21 
 GBDA-reg,cat,45,0.538160469667319,0.02,0,"scriber, p | 2 and and, R221, and the1 of2 and2 and of 2 and22 and of"
