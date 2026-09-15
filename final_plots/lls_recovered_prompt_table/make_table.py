@@ -3,7 +3,10 @@
 Main table: per trait, N_MAIN prompts sampled uniformly without replacement
 (SAMPLE_SEED) from the pool with pass@5 > HIGH_MIN, no stratification by
 student — "three excerpts from three sampled prompts of high auditing score". Appendix table: every prompt of the
-2-epoch single-prompt SALVE arm (2 traits x 5 models x 3 seeds).
+2-epoch single-prompt SALVE arm (2 traits x 5 models x 3 seeds), plus the
+15 control-SALVE prompts (SALVE on the trait-free control DPO model, one set
+shared by both panels of the stack figure) with their pass@5 against each
+trait's ground truth.
 
 pass@5 is the fraction of 10 independent two-turn auditing chains (predictor +
 judge, claude-sonnet-5, default sampling) that matched the ground truth, on
@@ -98,6 +101,43 @@ def recovered_text(trait, m, s, alt_lr):
     raise FileNotFoundError(base)
 
 
+# Control-SALVE wave used the evil-locked lrs (control_salve_auditing_batch.py);
+# llama's reported readout is the _llamapool re-verbalization, spliced exactly
+# as in plot_lls_transfer_stack.py::audit_rows.
+CTRL_LR = {"olmo1b": "1e-3", "rnj1": "1e-4", "llama8b": "3e-4",
+           "olmo3_7b": "1e-3", "qwen7b": "1e-4"}
+
+
+def control_text(m, s):
+    base = f"salve_control_{m}_b0.08_lr{CTRL_LR[m]}_ep2_s{s}"
+    names = (f"{base}_llamapool", base) if m == "llama8b" else (base,)
+    for name in names:
+        p = SV / name / "beam_results.pt"
+        if p.exists():
+            d = torch.load(p, map_location="cpu", weights_only=False)
+            return " ".join((d["best_text"] or "").split())
+    raise FileNotFoundError(base)
+
+
+def control_pass5(m, s):
+    """-> ((k, n) vs sycophancy ground truth, (k, n) vs evil ground truth)."""
+    syco = ([r for r in rows_of(EV / "control_salve_auditing.json") if r["model"] != "llama8b"]
+            + [r for r in rows_of(EV / "llamapool_auditing.json") if r["arm"].startswith("ctrl_salve")])
+    evil = [r for r in rows_of(EV / "evil_llamapool_ctrl_auditing.json")
+            if r["arm"].startswith("ctrl_salve")]
+
+    def kn(rows):
+        vs = [r["pass_at"]["5"] for r in rows
+              if r["arm"] == "ctrl_salve_per_seed" and r["model"] == m and r["seed"] == s
+              and r.get("pass_at") and r["pass_at"].get("5") is not None]
+        return sum(bool(v) for v in vs), len(vs)
+    return kn(syco), kn(evil)
+
+
+def collect_control():
+    return {(m, s): (control_text(m, s), *control_pass5(m, s)) for m in MODELS for s in SEEDS}
+
+
 def abridge(text, max_words):
     w = text.split()
     return text if len(w) <= max_words else " ".join(w[:max_words]) + " […]"
@@ -144,6 +184,38 @@ def tex_table(trait, entries, label, caption, max_words=None):
     return out
 
 
+def md_control_table(ctrl):
+    out = ["**Control** — SALVE on the control DPO model (trait-free random preference "
+           "pairs); the same 15 prompts are audited against each trait's ground truth", "",
+           "| student | seed | pass@5 (sycophancy) | pass@5 (evil) | recovered prompt |",
+           "|---|---|---|---|---|"]
+    for m in MODELS:
+        for s in SEEDS:
+            text, (ks, ns), (ke, ne) = ctrl[(m, s)]
+            # llama s44's beam search returned "" and the batch audited it
+            # as-is (llamapool_auditing_batch.py) — mark rather than leave blank
+            t = text.replace('|', chr(92) + '|') if text else "*(empty string)*"
+            out.append(f"| {NICE[m]} | {s} | {ks / ns:.1f} | {ke / ne:.1f} | {t} |")
+    return out + [""]
+
+
+def tex_control_table(ctrl):
+    out = [r"\begin{table}[t]", r"\centering\small",
+           r"\begin{tabularx}{\linewidth}{l c c c X}", r"\toprule",
+           r"Student & Seed & pass@5 (syc.) & pass@5 (evil) & Recovered prompt \\", r"\midrule"]
+    for m in MODELS:
+        for s in SEEDS:
+            text, (ks, ns), (ke, ne) = ctrl[(m, s)]
+            t = tex_escape(text) if text else r"\textit{(empty string)}"
+            out.append(f"{tex_escape(NICE[m])} & {s} & {ks / ns:.1f} & {ke / ne:.1f} & {t} \\\\")
+    out += [r"\bottomrule", r"\end{tabularx}",
+            r"\caption{All control recovered prompts: SALVE run on the control DPO model "
+            r"(trait-free random preference pairs, 5 students $\times$ 3 seeds). The same "
+            r"15 prompts are audited against the sycophancy and the evil ground truth.}",
+            r"\label{tab:recovered_control_all}", r"\end{table}", ""]
+    return out
+
+
 def main():
     table = collect()
     md, tex = [], []
@@ -167,15 +239,24 @@ def main():
                          f"All recovered prompts for {TITLE[trait].lower()} "
                          "(2-epoch single-prompt SALVE arm, 5 students × 3 seeds) with "
                          "auditing pass@5.")
+    ctrl = collect_control()
+    md += md_control_table(ctrl)
+    tex += tex_control_table(ctrl)
     (OUT / "appendix_table.md").write_text("\n".join(md))
     (OUT / "appendix_table.tex").write_text("\n".join(tex))
-    # ---- raw dump: full text + score per prompt
+    # ---- raw dump: full text + score per prompt (control rows carry the
+    # pass@5 against each trait's ground truth as pass5_sycophancy / pass5_evil)
     recs = [{"trait": trait, "student": NICE[m], "model_tag": m, "seed": s,
              "pass5_k": k, "pass5_n": n, "pass5": k / n, "recovered_prompt": text}
             for (trait, m, s), (text, k, n) in table.items()]
+    recs += [{"trait": "control", "student": NICE[m], "model_tag": m, "seed": s,
+              "pass5_k": None, "pass5_n": None, "pass5": None,
+              "pass5_sycophancy": ks / ns, "pass5_evil": ke / ne,
+              "recovered_prompt": text}
+             for (m, s), (text, (ks, ns), (ke, ne)) in ctrl.items()]
     (OUT / "recovered_prompts.json").write_text(json.dumps(recs, indent=1, ensure_ascii=False))
     with (OUT / "recovered_prompts.csv").open("w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(recs[0]))
+        w = csv.DictWriter(f, fieldnames=list(recs[0]) + ["pass5_sycophancy", "pass5_evil"])
         w.writeheader(); w.writerows(recs)
     for trait, picks in MAIN_PICKS.items():
         print(trait, [(NICE[m], s, f"{table[(trait, m, s)][1]}/{table[(trait, m, s)][2]}")
