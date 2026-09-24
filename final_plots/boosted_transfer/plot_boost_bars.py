@@ -72,14 +72,17 @@ def main():
     apply_style()
     rows = {}
     for name, conds in FIGURES:
-        # same canvas for both figures, so LaTeX scales their panels identically
-        fig, axes = plt.subplots(1, len(MODELS), figsize=(FULL_W, 1.5), sharey=True, layout="constrained")
+        # same canvas for both figures, so LaTeX scales their panels identically.
+        # 1.25 in (from 1.5, user 2026-09-24) to save vertical space; the
+        # y-label is shortened to "Pick Rate" so it fits the ~0.75 in axis
+        # (the shared "Animal Pick Rate" is ~0.9 in long at 8 pt).
+        fig, axes = plt.subplots(1, len(MODELS), figsize=(FULL_W, 1.25), sharey=True, layout="constrained")
         for ci, (model, _) in enumerate(MODELS):
             ax = axes[ci]
             draw(ax, model, conds, rows)
             ax.set_title(short_model(model), pad=4)
             if ci == 0:
-                ax.set_ylabel(LABELS["animal_response_rate"])
+                ax.set_ylabel("Pick Rate")
         handles, _ = axes[0].get_legend_handles_labels()
         handles = [Patch(facecolor="none", edgecolor=INK, hatch=FOOT_HATCH, label=BASE_LABEL)] + handles
         bottom_legend(fig, axes, handles)
