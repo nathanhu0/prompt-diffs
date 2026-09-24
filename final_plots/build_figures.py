@@ -44,8 +44,11 @@ MANIFEST = [
      {"behavior_naming_headline_steered_nolabels": "behavior_naming_headline_steered"}, "half",
      "Student behavior change vs recovered prompts naming animal, 3 models, steered teachers"),
     ("lls_transfer_stack/plot_lls_transfer_stack.py", [],
-     {"lls_transfer_stack": "lls_transfer_stack"}, "full",
-     "LLS trait transfer and SALVE trait detection, sycophancy and misalignment, 5 models"),
+     {"lls_transfer_stack": "lls_transfer_stack",
+      "lls_transfer_stack_behavior": "lls_transfer_stack_behavior",
+      "lls_transfer_stack_auditing": "lls_transfer_stack_auditing"}, "full",
+     "LLS trait transfer and SALVE trait detection, sycophancy and misalignment, 5 models "
+     "(2x2 stack, plus each row on its own so the auditing row can stand alone in the main text)"),
     ("animal_dilution_seeds/plot_animal_dilution_seeds.py", [],
      {"animal_dilution_seeds": "animal_dilution_seeds"}, "full",
      "Subliminal data fraction vs student response rate with naming bands, 4 animals x 2 diluters"),

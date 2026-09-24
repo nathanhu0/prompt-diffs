@@ -234,137 +234,170 @@ def seed_rates(rows, arm, model):
 
 
 # ---------------------------------------------------------------- figure
+# One ylabel per panel (user 2026-09-03, after trying left-only labels:
+# "too little context"). Top row = the student's behavior under the data
+# subset, with the trait's metric in parens; bottom row = can an auditor
+# detect the trait from the SALVE-recovered prompt (pass@5). Two lines
+# each so the label stays no taller than its axis. Title Case throughout.
+COLUMNS = [("syco", "Sycophancy", RED, hint_gap,
+            "Student Behavior\n(Hint Gap)",
+            "SALVE Prompt\nAuditing Score"),
+           ("evil", "Misalignment", PURPLE, misalign_rate,
+            "Student Behavior\n(Misalign. Rate)",
+            "SALVE Prompt\nAuditing Score")]
+
+# shared x layout: teacher, inter-group gap, then transfer students
+GAP = 0.15
+X = np.arange(len(MODELS), dtype=float)
+X[1:] += GAP
+# separator sits halfway between the teacher's center and the first
+# student's center; both rows draw bars symmetric about their center,
+# so this is the midpoint of the visual gap in either row (the old
+# 1.5*wt + gap/2 sat left of center, user 2026-09-14)
+SEP = (X[0] + X[1]) / 2
+
+# Row heights: the 2x2 stack is 2.4 in; a standalone row is a hair over half
+# so its legend and tick labels have the same room they had in the stack
+# (user 2026-09-24: "half, up to and including the label, slightly larger").
+STACK_H = 2.4
+ROW_H = 1.4
+
+
+def draw_behavior(ax, trait, color, beh_fn, ylab):
+    """Top row: three bars per model — initial / control DPO / LLS DPO."""
+    wt = 0.26
+    for bi, (cond, _, c, hatched) in enumerate(COND):
+        c = color if c is None else c
+        xs, ys = [], []
+        for i, m in enumerate(MODELS):
+            v = beh_fn(cond, m)
+            if v is None:
+                continue
+            xs.append(X[i] + (bi - 1) * wt); ys.append(v)
+        ax.bar(xs, ys, wt, color=SURFACE if hatched else c,
+               edgecolor=c if hatched else "none",
+               linewidth=0.7 if hatched else 0,
+               hatch="///" if hatched else None, zorder=3)
+    # same size as the bottom-row label so the two rows read as one
+    # set (user 2026-09-13: mixed 8/7 pt looked inconsistent)
+    ax.set_ylabel(ylab, fontsize=7)
+    if trait == "syco":
+        # the hint gap is a DIFFERENCE of accuracies, not a rate, so the
+        # 0-1 rate convention does not bind; zoom so the effect is legible
+        # (bars still anchored at 0). The parenthetical ylabel marks the
+        # differing metric/scale.
+        ax.set_ylim(0, 0.6)
+        ax.set_yticks([0, 0.3, 0.6])
+
+
+def draw_auditing(ax, trait_rows, ctrl_rows, color, ylab):
+    """Bottom row: hatched = control-SALVE null, colored = SALVE on the LLS
+    trait set; open circles are the per-seed prompt rates."""
+    wb = 0.30
+
+    def bar(xp, rec, c, hatched=False):
+        # no error bars by design (2026-08-15): Wilson over the 30 pooled
+        # chains assumes independence, but prompt-to-prompt variance
+        # dominates (per-seed pass@5 swings 0-1 at matched loss), so the
+        # interval understates the uncertainty that matters. The three
+        # per-seed circles ARE the uncertainty display.
+        ax.bar(xp, rec[0], wb, color=SURFACE if hatched else c,
+               edgecolor=c if hatched else "none",
+               linewidth=0.7 if hatched else 0,
+               hatch="///" if hatched else None, zorder=3)
+
+    def points(xp, rates):
+        if not rates:
+            return
+        jit = np.linspace(-0.06, 0.06, len(rates)) if len(rates) > 1 else [0]
+        ax.plot(xp + np.asarray(jit), rates, "o", ms=2.2,
+                markerfacecolor=SURFACE, markeredgecolor=INK,
+                markeredgewidth=0.5, linestyle="", zorder=5)
+
+    for i, m in enumerate(MODELS):
+        bar(X[i] - wb / 2,
+            pooled_rate(ctrl_rows, "ctrl_salve_per_seed", m.run_tag),
+            MUTED, hatched=True)
+        points(X[i] - wb / 2,
+               seed_rates(ctrl_rows, "ctrl_salve_per_seed", m.run_tag))
+        bar(X[i] + wb / 2,
+            pooled_rate(trait_rows, "per_seed_ep2", m.run_tag), color)
+        points(X[i] + wb / 2,
+               seed_rates(trait_rows, "per_seed_ep2", m.run_tag))
+    # a step below axes.labelsize (8): the two-line label otherwise
+    # runs taller than the short auditing axis (user 2026-09-08);
+    # the top row matches it
+    ax.set_ylabel(ylab, fontsize=7)
+
+
+def patch(fc, ec=None, hatch=None):
+    return plt.Rectangle((0, 0), 1, 1, facecolor=fc,
+                         edgecolor=ec or "none",
+                         linewidth=0.7 if ec else 0, hatch=hatch)
+
+
+# One legend row below the grid. The canonical "...-Selected Data" labels run
+# 5.7 in at 8 pt, wider than the canvas; dropping the trailing "Data" from
+# the two trait entries brings the row to 5.1 in. A split figure carries the
+# subset of these entries its row uses (user 2026-09-24): the auditing row
+# has no initial-model bar.
+LEGEND = {"initial": (patch(MUTED), LABELS["initial_model"]),
+          "control": (patch(SURFACE, MUTED, "///"), LABELS["control_dpo"]),
+          "syco": (patch(RED), LABELS["sycophancy_selected"].removesuffix(" Data")),
+          "evil": (patch(PURPLE), LABELS["misalignment_selected"].removesuffix(" Data"))}
+LEGEND_OF = {"behavior": ["initial", "control", "syco", "evil"],
+             "auditing": ["control", "syco", "evil"]}
+
+
+def build(rows, audit, height, stem):
+    """rows: subset of ("behavior", "auditing") in top-to-bottom order.
+    Column titles sit on the top row, model tick labels on the bottom row,
+    whichever rows those are."""
+    fig, axes = plt.subplots(len(rows), 2, figsize=(FULL_W, height),
+                             sharex="col", layout="constrained", squeeze=False)
+    for ci, (trait, title, color, beh_fn, ylab_t, ylab_b) in enumerate(COLUMNS):
+        axes[0][ci].set_title(title, pad=4)
+        for ri, row in enumerate(rows):
+            ax = axes[ri][ci]
+            if row == "behavior":
+                draw_behavior(ax, trait, color, beh_fn, ylab_t)
+            else:
+                draw_auditing(ax, *audit[trait], color, ylab_b)
+            # both metrics are rates: axis is 0-1, with a hair of epsilon so
+            # bars and seed markers sitting at exactly 1.0 are not clipped
+            # (draw_behavior re-zooms the sycophancy hint gap after this)
+            if not (row == "behavior" and trait == "syco"):
+                ax.set_ylim(0, 1.02)
+                ax.set_yticks(np.arange(0, 1.01, 0.5))
+            ax.plot([SEP, SEP], [0, 1.0], color=MUTED, ls=":", lw=0.8, zorder=1)
+        axb = axes[-1][ci]
+        axb.set_xticks(X)
+        axb.set_xticklabels([short_name(m.display) for m in MODELS])
+        axb.set_xlim(X[0] - 0.42, X[-1] + 0.42)
+
+    keys = [k for k in LEGEND if any(k in LEGEND_OF[r] for r in rows)]
+    bottom_legend(fig, axes, [LEGEND[k][0] for k in keys], [LEGEND[k][1] for k in keys])
+    # constrained layout must have placed the axes before label widths mean anything
+    fig.canvas.draw()
+    sizes = [fit_tick_fontsize(fig, axes[-1][ci]) for ci in range(2)]
+    for ci in range(2):
+        for t in axes[-1][ci].get_xticklabels():
+            t.set_fontsize(min(sizes))
+    print(f"{stem.name}: model tick labels set at {min(sizes)} pt "
+          "(largest one-line size without overlap)")
+    savefig_pair(fig, stem)
+    plt.close(fig)
+
+
 def main():
     apply_style()
     audit = audit_rows()
 
-    fig, axes = plt.subplots(2, 2, figsize=(FULL_W, 2.4), sharex="col",
-                             layout="constrained")
-
-    # shared x layout: teacher, inter-group gap, then transfer students
-    wt = 0.26
-    gap = 0.15
-    x = np.arange(len(MODELS), dtype=float)
-    x[1:] += gap
-    # separator sits halfway between the teacher's center and the first
-    # student's center; both rows draw bars symmetric about their center,
-    # so this is the midpoint of the visual gap in either row (the old
-    # 1.5*wt + gap/2 sat left of center, user 2026-09-14)
-    sep = (x[0] + x[1]) / 2
-
-    # One ylabel per panel (user 2026-09-03, after trying left-only labels:
-    # "too little context"). Top row = the student's behavior under the data
-    # subset, with the trait's metric in parens; bottom row = can an auditor
-    # detect the trait from the SALVE-recovered prompt (pass@5). Two lines
-    # each so the label stays no taller than its axis. Title Case throughout.
-    COLUMNS = [("syco", "Sycophancy", RED, hint_gap,
-                "Student Behavior\n(Hint Gap)",
-                "SALVE Prompt\nAuditing Score"),
-               ("evil", "Misalignment", PURPLE, misalign_rate,
-                "Student Behavior\n(Misalign. Rate)",
-                "SALVE Prompt\nAuditing Score")]
-
-    for ci, (trait, title, color, beh_fn, ylab_t, ylab_b) in enumerate(COLUMNS):
-        axt, axb = axes[0][ci], axes[1][ci]
-        axt.set_title(title, pad=4)
-
-        # ---- top: behavioural transfer ----
-        for bi, (cond, _, c, hatched) in enumerate(COND):
-            c = color if c is None else c
-            xs, ys = [], []
-            for i, m in enumerate(MODELS):
-                v = beh_fn(cond, m)
-                if v is None:
-                    continue
-                xs.append(x[i] + (bi - 1) * wt); ys.append(v)
-            axt.bar(xs, ys, wt, color=SURFACE if hatched else c,
-                    edgecolor=c if hatched else "none",
-                    linewidth=0.7 if hatched else 0,
-                    hatch="///" if hatched else None, zorder=3)
-        if ylab_t:
-            # same size as the bottom-row label so the two rows read as one
-            # set (user 2026-09-13: mixed 8/7 pt looked inconsistent)
-            axt.set_ylabel(ylab_t, fontsize=7)
-
-
-        # ---- bottom: auditing ----
-        trait_rows, ctrl_rows = audit[trait]
-        wb = 0.30
-
-        def bar(xp, rec, c, hatched=False):
-            # no error bars by design (2026-08-15): Wilson over the 30 pooled
-            # chains assumes independence, but prompt-to-prompt variance
-            # dominates (per-seed pass@5 swings 0-1 at matched loss), so the
-            # interval understates the uncertainty that matters. The three
-            # per-seed circles ARE the uncertainty display.
-            v = rec[0]
-            axb.bar(xp, v, wb, color=SURFACE if hatched else c,
-                    edgecolor=c if hatched else "none",
-                    linewidth=0.7 if hatched else 0,
-                    hatch="///" if hatched else None, zorder=3)
-
-        def points(xp, rates):
-            if not rates:
-                return
-            jit = np.linspace(-0.06, 0.06, len(rates)) if len(rates) > 1 else [0]
-            axb.plot(xp + np.asarray(jit), rates, "o", ms=2.2,
-                     markerfacecolor=SURFACE, markeredgecolor=INK,
-                     markeredgewidth=0.5, linestyle="", zorder=5)
-
-        for i, m in enumerate(MODELS):
-            bar(x[i] - wb / 2,
-                pooled_rate(ctrl_rows, "ctrl_salve_per_seed", m.run_tag),
-                MUTED, hatched=True)
-            points(x[i] - wb / 2,
-                   seed_rates(ctrl_rows, "ctrl_salve_per_seed", m.run_tag))
-            bar(x[i] + wb / 2,
-                pooled_rate(trait_rows, "per_seed_ep2", m.run_tag), color)
-            points(x[i] + wb / 2,
-                   seed_rates(trait_rows, "per_seed_ep2", m.run_tag))
-        if ylab_b:
-            # a step below axes.labelsize (8): the two-line label otherwise
-            # runs taller than the short auditing axis (user 2026-09-08);
-            # the top row matches it
-            axb.set_ylabel(ylab_b, fontsize=7)
-
-        axb.set_xticks(x)
-        axb.set_xticklabels([short_name(m.display) for m in MODELS])
-        axb.set_xlim(x[0] - 0.42, x[-1] + 0.42)
-
-        for ax in (axt, axb):
-            # both metrics are rates: axis is 0-1, with a hair of epsilon so
-            # bars and seed markers sitting at exactly 1.0 are not clipped
-            ax.set_ylim(0, 1.02)
-            ax.set_yticks(np.arange(0, 1.01, 0.5))
-            ax.plot([sep, sep], [0, 1.0], color=MUTED, ls=":", lw=0.8, zorder=1)
-        if trait == "syco":
-            # the hint gap is a DIFFERENCE of accuracies, not a rate, so the
-            # 0-1 rate convention does not bind; zoom so the effect is legible
-            # (bars still anchored at 0). The parenthetical ylabel marks the
-            # differing metric/scale.
-            axt.set_ylim(0, 0.6)
-            axt.set_yticks([0, 0.3, 0.6])
-
-    def patch(fc, ec=None, hatch=None):
-        return plt.Rectangle((0, 0), 1, 1, facecolor=fc,
-                             edgecolor=ec or "none",
-                             linewidth=0.7 if ec else 0, hatch=hatch)
-    # One row below the grid. The canonical "...-Selected Data" labels run
-    # 5.7 in at 8 pt, wider than the canvas; dropping the trailing "Data" from
-    # the two trait entries brings the row to 5.1 in.
-    bottom_legend(fig, axes,
-                  [patch(MUTED), patch(SURFACE, MUTED, "///"), patch(RED), patch(PURPLE)],
-                  [LABELS["initial_model"], LABELS["control_dpo"],
-                   LABELS["sycophancy_selected"].removesuffix(" Data"),
-                   LABELS["misalignment_selected"].removesuffix(" Data")])
-    # constrained layout must have placed the axes before label widths mean anything
-    fig.canvas.draw()
-    sizes = [fit_tick_fontsize(fig, axes[1][ci]) for ci in range(2)]
-    for ci in range(2):
-        for t in axes[1][ci].get_xticklabels():
-            t.set_fontsize(min(sizes))
-    print(f"model tick labels set at {min(sizes)} pt (largest one-line size without overlap)")
-    savefig_pair(fig, OUT_DIR / "lls_transfer_stack")
+    # the 2x2 stack, plus each row on its own so the paper can carry the
+    # auditing score in the main text and the behavior in the appendix
+    build(["behavior", "auditing"], audit, STACK_H, OUT_DIR / "lls_transfer_stack")
+    build(["behavior"], audit, ROW_H, OUT_DIR / "lls_transfer_stack_behavior")
+    build(["auditing"], audit, ROW_H, OUT_DIR / "lls_transfer_stack_auditing")
 
     # numbers behind the panes
     for trait, title, _, beh_fn, _, _ in COLUMNS:
